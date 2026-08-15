@@ -6,7 +6,7 @@ it against a chain-seeded task set inside a resource jail, ranks the survivors,
 and publishes one weight vector per round.
 
 Miners run none of this. If you are here to submit a model, read
-[miner_setup.md](miner_setup.md) instead — the two roles share almost no surface.
+[miner_setup.md](miner_setup.md) instead. The two roles share almost no surface.
 
 ---
 
@@ -18,7 +18,7 @@ Miners run none of this. If you are here to submit a model, read
 | **Executes** | untrusted third-party model artifacts |
 | **Needs** | Linux, certified reference hardware per class you serve |
 | **Storage** | 200 GB artifact cache by default, plus state |
-| **Fails** | closed — an unenforceable sandbox refuses to run rather than guess |
+| **Fails** | closed, so an unenforceable sandbox refuses to run rather than guess |
 
 The hard requirement is the sandbox. Envelope measurements are the product of
 this subnet, and a measurement taken without CPU and memory limits is not
@@ -41,7 +41,7 @@ mt inspect engines
 ## 2 · Reference hardware
 
 Every class publishes a `device_profile`. A validator whose hardware does not
-conform **may still score accuracy** — accuracy is hardware-independent — but its
+conform **may still score accuracy**, since accuracy is hardware-independent, but its
 envelope measurements are excluded from aggregation, and conforming measurements
 aggregate by median.
 
@@ -111,7 +111,7 @@ Each line is one task:
 ```
 
 `partition` is `rotating` or `fixed`. Every corpus **must** carry a fixed
-partition — the loader refuses one without it, because a corpus with no
+partition. The loader refuses one without it, because a corpus with no
 invariant slice cannot tell "the models improved" from "the generator drew an
 easier batch".
 
@@ -150,7 +150,30 @@ mt inspect tracks
 
 ## 6 · Run
 
-Dry run first — evaluates a full round and computes weights without submitting:
+Prove the machinery works before you touch a chain at all. Loopback stands up a
+synthetic chain, a seeded corpus and several fake miners, then runs real rounds
+end to end on your own hardware:
+
+```bash
+mt validator loopback --rounds 3 --miners 4
+```
+
+```
+   round  status      participants  scored  weights  reason
+       3  settled                4       4        0  evaluated cleanly, but no artifact is eligible for emission yet
+       4  settled                4       4        4
+       5  settled                4       4        4
+
+weight vectors submitted: 2
+  uids [1, 2, 3, 4]  values [20565, 17481, 14859, 12630]  sum 65535
+```
+
+Round 3 paying nobody is correct: an artifact must be observed for
+`MIN_ROUNDS_OBSERVED` rounds before it can earn. The values are the geometric
+curve at decay 0.85, and they sum to exactly 65535.
+
+Then dry run against the real chain, which evaluates a full round and computes
+weights without submitting them:
 
 ```bash
 mt validator once --dry-run
@@ -207,17 +230,17 @@ MT_WALLET_NAME=<coldkey> MT_WALLET_HOTKEY=<hotkey> \
 
 1. **Wait** until the close block. Submissions are open until then.
 2. **Seed** from `hash(B_close)`. Nobody who submitted could have seen it.
-3. **Discover** — read commitments, fetch each manifest, verify its signature and
+3. **Discover.** Read commitments, fetch each manifest, verify its signature and
    that it hashes to the committed digest. Malformed pointers are skipped.
-4. **Materialise** — fetch every artifact and re-derive its whole file tree
+4. **Materialise.** Fetch every artifact and re-derive its whole file tree
    digest *before* any execution begins, so fetch failures surface at round start.
-5. **Profile** — measure size, peak RSS at declared maximum input under sustained
+5. **Profile.** Measure size, peak RSS at declared maximum input under sustained
    load, TTFT p50/p95, cold start. Inside the jail.
-6. **Gate** — binary. Over a class ceiling, or over its own declaration, and the
+6. **Gate.** Binary. Over a class ceiling, or over its own declaration, and the
    artifact does not exist for the round.
-7. **Score** — run the task set in the jail; quantise to 4 decimals so two
+7. **Score.** Run the task set in the jail, quantising to 4 decimals so two
    validators computing in different float orders emit identical vectors.
-8. **Settle** — rank with hysteresis, apply incumbent decay and the concentration
+8. **Settle.** Rank with hysteresis, apply incumbent decay and the concentration
    cap, blend into the prior vector asymmetrically, submit.
 
 ---
@@ -239,8 +262,8 @@ next round. A partial vector is never submitted: since every validator scores
 every track, a missing track removes that track's whole emission share, which is
 a consensus divergence rather than a smaller sample.
 
-A round that evaluates cleanly but pays nobody — because no artifact has been
-observed for `MIN_ROUNDS_OBSERVED` rounds yet — is **settled**, not abstained.
+A round that evaluates cleanly but pays nobody, because no artifact has been
+observed for `MIN_ROUNDS_OBSERVED` rounds yet, is **settled**, not abstained.
 The evaluations are real and next round depends on them.
 
 ---
@@ -249,7 +272,7 @@ The evaluations are real and next round depends on them.
 
 Validators that run different builds compute different weights. Worse, weight
 `version_key` is derived from `MECHANISM_VERSION`, so a validator on a newer
-mechanism submits a *different* version key — the chain treats it as a different
+mechanism submits a *different* version key, and the chain treats it as a different
 mechanism. Version drift is a consensus problem here, not a hygiene problem.
 
 Auto-update is **off by default**. Arm it explicitly:
@@ -264,9 +287,9 @@ What it will and will not do:
 |---|---|
 | patch or minor release, same mechanism | installed, validator exits 75, supervisor restarts it |
 | round is sealed (evaluation in flight) | **deferred** until the next submission window |
-| release changes `MECHANISM_VERSION`, no activation block | **held** — applying at a different moment than other validators splits consensus |
+| release changes `MECHANISM_VERSION`, no activation block | **held**, since applying at a different moment than other validators splits consensus |
 | release changes the mechanism *with* an activation block | deferred until that block, then held unless `--allow-mechanism-change` |
-| major version bump | **held** — never automatic |
+| major version bump | **held**, never automatic |
 | SHA256SUMS missing, unsigned, or the digest mismatches | refused, validator stays on the running build |
 | `pip install` fails | logged, no restart, validator keeps running the old build |
 
@@ -296,7 +319,7 @@ Docker's `restart: unless-stopped` already handles it. Under PM2 use
 `--exp-backoff-restart-delay=15000`.
 
 If you would rather not run unattended updates, leave the flag off and watch
-`mt update check` from cron — it exits 2 when something is waiting for you.
+`mt update check` from cron. It exits 2 when something is waiting for you.
 
 ---
 
@@ -310,12 +333,12 @@ mt inspect engines             # what this host can execute, sandbox status
 ```
 
 State lives in `$MT_HOME/state/validator.sqlite` (WAL). It is the only thing you
-must back up — the artifact cache and work directory are both disposable.
+must back up. The artifact cache and work directory are both disposable.
 
 **Watch for**
-- repeated `abstaining:` lines — usually one unreachable source or a missing engine
-- cache thrash — raise `--cache-cap-bytes` if eviction runs every round
-- `holds no validator permit` — your weights are being ignored
+- repeated `abstaining:` lines, usually one unreachable source or a missing engine
+- cache thrash, so raise `--cache-cap-bytes` if eviction runs every round
+- `holds no validator permit`, meaning your weights are being ignored
 
 **Upgrades.** The schema carries a `user_version` and refuses to open state
 written by a newer build. Upgrade the validator, never downgrade its state.

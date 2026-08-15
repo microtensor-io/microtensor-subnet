@@ -79,7 +79,7 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
         except FetchError as exc:
             reason = f"manifest unfetchable: {exc}"
         else:
-            reason = _manifest_reason(manifest, hotkey)
+            reason = _manifest_reason(manifest, hotkey, context.config.verify_signatures)
 
         if reason:
             rejected.append((hotkey, reason))
@@ -132,13 +132,14 @@ def _reject_reason(
     return ""
 
 
-def _manifest_reason(manifest: ArtifactManifest, hotkey: str) -> str:
+def _manifest_reason(manifest: ArtifactManifest, hotkey: str, verify: bool = True) -> str:
     if manifest.hotkey != hotkey:
         return "manifest declares a different hotkey than the one that committed it"
 
-    ok, reason = _signature_ok(manifest)
-    if not ok:
-        return reason
+    if verify:
+        ok, reason = _signature_ok(manifest)
+        if not ok:
+            return reason
 
     fits, reason = manifest.fits_class()
     if not fits:

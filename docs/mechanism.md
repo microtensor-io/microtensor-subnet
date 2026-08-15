@@ -17,8 +17,8 @@ The governing principle, from which everything else follows:
 
 ## 1 · Overview
 
-Miners submit a **compressed model** — weights, a load manifest, and a declared
-envelope — pinned by hash and registered to exactly one track and one hardware
+Miners submit a **compressed model** made of weights, a load manifest, and a
+declared envelope, pinned by hash and registered to exactly one track and hardware
 class. Every validator, every round:
 
 1. freezes the participant set by artifact digest,
@@ -60,11 +60,11 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 | `document` | ✅ | extraction F1 · span accuracy | 0.30 |
 | `analytics` | ✅ | exact-match · numeric tolerance | 0.20 |
 | `support` | ✅ | rubric F1 · tool-call correctness | 0.20 |
-| `detect` | ⏸ | mAP @ fixed IoU | — |
-| `vqa` | ⏸ | answer accuracy · grounding IoU | — |
-| `speech` | ⏸ | word / character error rate | — |
-| `video` | ⏸ | temporal localisation · event F1 | — |
-| `image-synth` | ⏸ | reference-anchored perceptual distance | — |
+| `detect` | ⏸ | mAP @ fixed IoU | none |
+| `vqa` | ⏸ | answer accuracy · grounding IoU | none |
+| `speech` | ⏸ | word / character error rate | none |
+| `video` | ⏸ | temporal localisation · event F1 | none |
+| `image-synth` | ⏸ | reference-anchored perceptual distance | none |
 
 Disabled tracks are registered but carry zero emission share and are not drawn.
 Enabling one is a mechanism version bump, not a code change.
@@ -95,7 +95,7 @@ preventing a single permanent winner.**
 
 Three parts, signed by the miner's hotkey and pinned by digest:
 
-**1 · Weights**, in a portable format appropriate to the class —
+**1 · Weights**, in a portable format appropriate to the class:
 `safetensors`, `onnx`, or `gguf`.
 
 **2 · A load manifest**, declaring format, quantisation, preprocessing, the
@@ -110,7 +110,7 @@ This is strictly safer than executing submitted code, and it has a cost that is
 stated rather than hidden: architectures are bounded to what the engine
 implements. The engine contract is pinned in §9.
 
-**3 · A declared envelope** `ê(a) = (ŝ, m̂, ℓ̂)` — the size, sustained peak
+**3 · A declared envelope** `ê(a) = (ŝ, m̂, ℓ̂)`, giving the size, sustained peak
 memory, and p95 latency the miner asserts the artifact will exhibit on the class
 reference device.
 
@@ -155,7 +155,7 @@ seed_e     = H(hash(B_close) ‖ track ‖ class)
 ```
 
 The round has three phases. `[start, close)` accepts submissions. `[close,
-deadline]` is the evaluation window — 560 blocks, about two hours. The last
+deadline]` is the evaluation window of 560 blocks, about two hours. The last
 `DEADLINE_MARGIN_BLOCKS` are slack for the weight extrinsic to be included
 before the round turns over.
 
@@ -182,9 +182,9 @@ Everything is length-bounded so the whole record fits the 128-byte commitment
 limit with room for the locator. The digest is the leading 128 bits of the
 manifest's SHA-256; the manifest carries the full digest of every file, and the
 validator re-derives and re-checks it after the fetch. Truncation here costs
-nothing — the short digest only has to bind the pointer to one manifest, and a
+nothing, because the short digest only has to bind the pointer to one manifest, and a
 128-bit second-preimage is not a budget anyone has. Anything the chain cannot
-hold — the load manifest, the declared envelope, the signature — lives in the
+hold, meaning the load manifest, the declared envelope and the signature, lives in the
 manifest, addressed by that digest.
 
 Unparseable commitments are skipped, not rejected loudly. A malformed pointer
@@ -223,7 +223,7 @@ Resident memory decomposes into a constant part and an input-dependent part:
 
 ```
 m(x) = m_w + m_a(x)
-        │      └── activation and cache — zero at load, not zero in service
+        │      └── activation and cache: zero at load, not zero in service
         └── weights
 ```
 
@@ -231,8 +231,8 @@ m(x) = m_w + m_a(x)
 
 | Family | Growth | Consequence |
 |---|---|---|
-| autoregressive | `2·L·h·d·c·b` — linear in context | passes at short context, exceeds at long |
-| vision / conv | `≈ β·φ·HW/s²·b` — quadratic in linear resolution | 640² → 1280² is ~4× |
+| autoregressive | `2·L·h·d·c·b`, linear in context | passes at short context, exceeds at long |
+| vision / conv | `≈ β·φ·HW/s²·b`, quadratic in linear resolution | 640² → 1280² is ~4× |
 | iterative generative | ≈ constant across steps | memory and latency have different governing parameters |
 
 So the measurement is taken at the artifact's **declared maximum input** under
@@ -268,8 +268,8 @@ change an outcome.
 
 Every envelope quantity is measured on the published reference profile for the
 class, identified in the certificate by `device_profile` hash. A validator whose
-hardware does not conform **may still score accuracy** — that is
-hardware-independent — but its envelope measurements are excluded from
+hardware does not conform **may still score accuracy**, since that is
+hardware-independent, but its envelope measurements are excluded from
 aggregation. Conforming measurements aggregate by **median**.
 
 ---
@@ -310,7 +310,7 @@ m̂* = m + z·ς
 ```
 
 for a small confidence multiplier covering measurement variance across
-conforming devices. **The miner declares the truth plus a margin it can defend —
+conforming devices. **The miner declares the truth plus a margin it can defend,
 which is exactly the number a deployer needs.**
 
 Ceilings describe a class. Declarations describe an artifact. A deployer
@@ -345,14 +345,14 @@ exists and is worse:
 Σ(a) = A(a)/P(a) · 1/ℓ(a) · 1/m̂(a)        ✗
 ```
 
-It fails four ways. **Unboundedness** — as `ℓ → 0` the score diverges, so scores
-are not comparable across rounds, tracks or classes. **Substitutability** — a
+It fails four ways. **Unboundedness.** As `ℓ → 0` the score diverges, so scores
+are not comparable across rounds, tracks or classes. **Substitutability.** A
 product permits arbitrary trade, so a near-useless model with tiny memory can
 outrank a strong one; below an accuracy floor a model is worthless at any
-footprint. **Gradient misdirection** — latency and memory admit large cheap
+footprint. **Gradient misdirection.** Latency and memory admit large cheap
 gains through aggressive quantisation and accuracy does not, so the formula
 instructs the network to produce very small models that do not work.
-**Dimensional incoherence** — accuracy over perplexity times inverse
+**Dimensional incoherence.** Accuracy over perplexity times inverse
 milliseconds times inverse bytes is a quantity with no interpretation, which
 cannot be audited or explained to a customer.
 
@@ -365,14 +365,14 @@ my hardware, and how good is it.**
 
 | Family | Requirement |
 |---|---|
-| discriminative (`detect`, `speech`, `vqa`, `video`) | single forward pass with argmax/threshold — deterministic by construction once runtime, precision and preprocessing are pinned |
+| discriminative (`detect`, `speech`, `vqa`, `video`) | single forward pass with argmax/threshold, deterministic by construction once runtime, precision and preprocessing are pinned |
 | autoregressive (`code`, `document`, `analytics`, `support`) | greedy decoding, temperature 0, pinned engine version |
 | iterative generative (`image-synth`) | fixed seed, fixed scheduler, fixed step count, published per round |
 
 Under these conditions inference is a deterministic function, so for validators
 `v, v'` on the same artifact and task set: `A_v(a) = A_v'(a)`.
 
-### Score quantisation — making that literally true
+### Score quantisation, making that literally true
 
 Floating-point reduction order is not associative. Two conforming validators can
 differ in the last decimals from SM count, cuDNN algorithm selection, or batch
@@ -400,7 +400,7 @@ Per round, each validator:
 1. Applies the gate, then the track threshold `τ`, and ranks the survivors
    within each `(track, class)`.
 2. Requires `MIN_ROUNDS_OBSERVED` before an artifact can hold weight at all. A
-   new artifact scores, but scores zero weight until there is enough evidence —
+   new artifact scores, but scores zero weight until there is enough evidence,
    *unknown is not the same as good.*
 3. Pays a geometric schedule over `K` paid ranks:
    ```
@@ -424,7 +424,7 @@ rank j is taken from the holder only if   Σ(challenger) > Σ(holder) + ε
 ```
 
 The whitepaper originally specified this for rank 1 only. That is not enough.
-With `γ = 0.85, K = 8`, rank 2 pays ~15% of the track pool — copying the leader
+With `γ = 0.85, K = 8`, rank 2 pays ~15% of the track pool, so copying the leader
 and landing second is a **very profitable** attack that a rank-1-only margin
 never touches. Applying `ε` pairwise removes the return on appropriation
 everywhere, which is a stronger defence than detection because it operates
@@ -437,7 +437,7 @@ everywhere, which is a stronger defence than detection because it operates
 ```
 
 where `n` counts consecutive rounds without a **material** improvement, defined
-as clearing `ε` — not merely resubmitting. Without that definition an incumbent
+as clearing `ε`, not merely resubmitting. Without that definition an incumbent
 resets `n` every round with a re-seeded retrain and the decay becomes a cosmetic
 resubmission tax. The attenuated remainder redistributes down the schedule.
 Rank is unchanged; only share moves.
@@ -484,8 +484,8 @@ Infrastructure faults differ per validator and must never leak into a vector.
 
 | Event | Consequence |
 |---|---|
-| Exceeds class ceiling on any axis | Inadmissible — scores 0 for the round |
-| Measured envelope exceeds its own declaration | Inadmissible — scores 0 |
+| Exceeds class ceiling on any axis | Inadmissible, scores 0 for the round |
+| Measured envelope exceeds its own declaration | Inadmissible, scores 0 |
 | Missing entrypoint, wrong track/class, digest mismatch | Scores 0 |
 | Custom operators, unsupported format | Rejected at submission |
 | Manifest declares an input the engine cannot honour | Scores 0 |
@@ -515,7 +515,7 @@ entirely legitimate.
 **The convergence problem.** Two miners independently distilling from the same
 teacher, on the same task distribution, under the same ceiling, produce models
 that behave similarly. *That convergence is the mechanism working.* A naive
-behavioural cutoff would punish it — and hardest in exactly the tracks where
+behavioural cutoff would punish it, and hardest in exactly the tracks where
 competition is healthiest.
 
 So detection requires **two independent signals in agreement**:
@@ -530,7 +530,7 @@ flag ⟺ ( D_θ < θ_θ )  ∧  ( D_π < θ_π )
 Parameter distance alone false-negatives, because retraining from a copied
 initialisation moves weights while preserving behaviour. Behavioural distance
 alone false-positives on legitimate convergence. The conjunction is required.
-`P` is a secret probe set. Jensen–Shannon over KL for symmetry and boundedness.
+`P` is a secret probe set. Jensen-Shannon over KL for symmetry and boundedness.
 
 On a flag, the **earlier commitment holds position and the later scores zero.**
 
@@ -561,7 +561,7 @@ afford to run its most valuable tracks most often.
 
 ### Ordering is per track, chosen by the ratio
 
-Profiling and accuracy scoring differ in cost by track — often by two orders of
+Profiling and accuracy scoring differ in cost by track, often by two orders of
 magnitude. Running them in a fixed order wastes the cheaper one:
 
 - `c_env ≫ c_acc` → **score accuracy first, profile only the top cohort.**
@@ -614,7 +614,7 @@ produced the measurement.
 
 ## 14 · Frozen versus tunable
 
-**Frozen** — miners build against these; changing them is a mechanism version bump:
+**Frozen.** Miners build against these, and changing them is a mechanism version bump:
 
 - The track and class tables, and their emission shares
 - Chain-seeded shared task selection, and the 70/30 partition
@@ -625,7 +625,7 @@ produced the measurement.
 - The failure semantics table
 - The plagiarism criterion
 
-**Tunable with notice** — never invalidates a submitted artifact:
+**Tunable with notice.** Never invalidates a submitted artifact:
 
 - Round length, slot caps, eviction window
 - `γ`, `K`, `ε`, `δ`, EMA `α`, decay/recovery rates
@@ -644,8 +644,8 @@ differ, and a dishonest one hides inside that spread.
 
 Microtensor scores a **frozen artifact under pinned decoding**. Two correctly
 configured validators compute the identical quantised score. Divergence is
-therefore attributable to the validator producing it — a non-conforming engine, a
-corrupted corpus copy, or dishonesty — rather than excusable as sampling.
+therefore attributable to the validator producing it, whether a non-conforming
+engine, a corrupted corpus copy, or dishonesty, rather than excusable as sampling.
 
 Consensus continues to bound the damage. Determinism additionally **identifies
 the source.**

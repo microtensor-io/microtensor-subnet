@@ -61,9 +61,16 @@ def _entry(
     except MemoryError:
         conn.send(("artifact", "exhausted the memory ceiling", _cpu(), _rss()))
     except BaseException as exc:
-        conn.send(("artifact", f"{type(exc).__name__}: {exc}", _cpu(), _rss()))
+        kind = "infrastructure" if _is_infrastructure(exc) else "artifact"
+        conn.send((kind, f"{type(exc).__name__}: {exc}", _cpu(), _rss()))
     finally:
         conn.close()
+
+
+def _is_infrastructure(exc: BaseException) -> bool:
+    from microtensor.harness.registry import EngineUnavailable
+
+    return isinstance(exc, (EngineUnavailable, ImportError, UnsupportedPlatform))
 
 
 def _cpu() -> float:

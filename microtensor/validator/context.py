@@ -36,6 +36,7 @@ class ValidatorConfig:
     profile_seconds: int = 60
     allow_unsandboxed: bool = False
     dry_run: bool = False
+    verify_signatures: bool = True
 
     @property
     def state_path(self) -> Path:

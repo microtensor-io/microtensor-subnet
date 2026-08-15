@@ -202,3 +202,43 @@ def test_a_hung_artifact_is_killed_and_blamed() -> None:
 def test_infrastructure_failure_abstains_rather_than_scoring_zero() -> None:
     result = JailResult(completed=False, error="engine binary is missing")
     assert result.fault is Fault.INFRASTRUCTURE
+
+
+def no_engine() -> None:
+    from microtensor.harness.registry import EngineUnavailable
+
+    raise EngineUnavailable("no engine is registered for safetensors")
+
+
+def missing_dependency() -> None:
+    raise ImportError("onnxruntime is not installed")
+
+
+def test_a_missing_engine_is_the_validators_fault_not_the_miners() -> None:
+    result = run_jailed(
+        no_engine,
+        limits=Limits(cpu_seconds=20, wall_seconds=60, rss_bytes=1 << 30),
+        allow_unsandboxed=True,
+    )
+    assert not result.ok
+    assert result.fault is Fault.INFRASTRUCTURE
+
+
+def test_a_missing_dependency_does_not_zero_an_innocent_miner() -> None:
+    result = run_jailed(
+        missing_dependency,
+        limits=Limits(cpu_seconds=20, wall_seconds=60, rss_bytes=1 << 30),
+        allow_unsandboxed=True,
+    )
+    assert result.fault is Fault.INFRASTRUCTURE
+
+
+def test_an_engine_registered_only_in_the_parent_does_not_reach_the_child() -> None:
+    register(ArtifactFormat.SAFETENSORS, ReferenceEngine, INFO)
+    assert has(ArtifactFormat.SAFETENSORS)
+    result = run_jailed(
+        no_engine,
+        limits=Limits(cpu_seconds=20, wall_seconds=60, rss_bytes=1 << 30),
+        allow_unsandboxed=True,
+    )
+    assert result.fault is Fault.INFRASTRUCTURE

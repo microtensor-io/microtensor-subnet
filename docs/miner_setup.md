@@ -39,12 +39,12 @@ mt inspect tracks
 
 Emission splits `code` 30 %, `document` 30 %, `analytics` 20 %, `support` 20 %,
 then evenly across the four classes within each track. Sixteen competitions, each
-paying the top 8 on a geometric curve — rank 8 still earns about a third of rank 1,
+paying the top 8 on a geometric curve. Rank 8 still earns about a third of rank 1,
 so the tail is worth competing for.
 
 ---
 
-## 2 · Declare honestly — the mechanism makes it your best move
+## 2 · Declare honestly, because the mechanism makes it your best move
 
 You declare an envelope. The validator measures one. Both are checked:
 
@@ -55,7 +55,7 @@ measured > your declaration   → inadmissible
 
 **Over-declaring does not help you.** Your declaration is published in the
 Verified Model Certificate, and a deployer choosing between two admissible models
-picks the one with the tighter guarantee. **Under-declaring is fatal** — a 2 %
+picks the one with the tighter guarantee. **Under-declaring is fatal.** A 2 %
 tolerance is applied to your declaration only, never to the class ceiling.
 
 The truthful declaration is the one that is barely above what you actually
@@ -65,7 +65,7 @@ measured. `mt miner selfcheck` computes exactly that, with a 10 % margin.
 
 ## 3 · Install
 
-Miners need almost nothing — no runtime, no profiler dependencies for the base
+Miners need almost nothing: no runtime and no profiler dependencies for the base
 install:
 
 ```bash
@@ -75,7 +75,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install .
 ```
 
-To run `selfcheck` locally — strongly recommended — add the runtime too:
+To run `selfcheck` locally, which is strongly recommended, add the runtime too:
 
 ```bash
 pip install ".[validator]"
@@ -83,7 +83,7 @@ pip install ".[validator]"
 
 ### Register
 
-Microtensor is **netuid 70** on finney, and that is the built-in default — you
+Microtensor is **netuid 70** on finney, and that is the built-in default. You
 only pass `--netuid` when pointing at testnet.
 
 ```bash
@@ -109,10 +109,10 @@ my-model/
 ```
 
 **Constraints that will reject you at submission:**
-- ONNX opset 13–21, standard domains only (`""`, `ai.onnx`, `ai.onnx.ml`). Custom
-  operators are rejected — a validator will not run code it cannot audit.
+- ONNX opset 13 to 21, standard domains only (`""`, `ai.onnx`, `ai.onnx.ml`). Custom
+  operators are rejected, because a validator will not run code it cannot audit.
 - Greedy decoding. The track fixes it; temperature is not a knob you control.
-- Size is *total* — weights, tokenizer, config, everything in the directory.
+- Size is *total*: weights, tokenizer, config, everything in the directory.
 - No `manifest.json` of your own. Packaging writes it.
 
 ---
@@ -147,7 +147,7 @@ declare this envelope:
   p95_latency_ms  157
 ```
 
-If it prints `INADMISSIBLE`, fix the model — do not declare around it.
+If it prints `INADMISSIBLE`, fix the model. Do not declare around it.
 
 > Your numbers will differ from the validator's; it measures on certified
 > reference hardware. Leave headroom on any axis you are close to.
@@ -170,7 +170,7 @@ pm2 start "mt miner run" --name microtensor-miner --kill-timeout 3000
 ```
 
 `mt miner init` writes `~/.microtensor/miner.json` once. **After that every
-command runs bare** — no repeated flags. Any flag you do pass overrides the
+command runs bare**, with no repeated flags. Any flag you do pass overrides the
 saved value for that invocation only.
 
 `mt miner ship` runs the whole pipeline: self-check if you haven't, package
@@ -187,7 +187,7 @@ mt1|41|code|laptop|3f9a…c21b|hf:youracct/mt-code-3b@v1
 
 `mt miner run` then re-commits before every round closes, so you stay in the
 competition without touching anything. It serves no traffic and holds no
-inference — it is a scheduler, and it can go down between rounds without costing
+inference. It is a scheduler, and it can go down between rounds without costing
 you a thing.
 
 ### The individual steps, if you prefer them
@@ -252,15 +252,15 @@ you and why.
 
 - **Quantise past where it looks safe.** The gate is on the envelope, not on
   parameter count. int8 or int4 that holds accuracy beats fp16 that misses RSS.
-- **Peak RSS is measured at your declared maximum input, under sustained load** —
+- **Peak RSS is measured at your declared maximum input, under sustained load.**
   not at load, not at steady state. For autoregressive models the KV cache grows
   linearly in context. Declare a maximum you can actually hold, then hold it.
 - **Cold start is measured on an unwarmed cache.** A single warm measurement is
   precisely what a miner would construct if permitted to, so it is not admissible.
-- **Rank 8 pays.** The curve is geometric with decay 0.85 — do not concede a
+- **Rank 8 pays.** The curve is geometric with decay 0.85, so do not concede a
   competition because you cannot take rank 1.
 - **Incumbency decays.** Resubmitting the same digest round after round bleeds
   share to active positions. Ship improvements.
 - **Hysteresis protects holders at every rank.** Beating an incumbent takes a
-  margin of 0.005, not a tie — copying the leader to land just behind them does
+  margin of 0.005, not a tie. Copying the leader to land just behind them does
   not work.

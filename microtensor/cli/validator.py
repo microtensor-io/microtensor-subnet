@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 from pathlib import Path
 
 from microtensor.chain.wallet import hotkey_address
@@ -26,6 +27,7 @@ from microtensor.core.constants import (
 )
 from microtensor.harness.limits import sandbox_available
 from microtensor.update.loop import UpdateChecker, UpdateSettings
+from microtensor.validator import loopback
 from microtensor.validator.context import ValidatorConfig, ValidatorContext
 from microtensor.validator.loop import RoundLoop
 from microtensor.validator.round import current_round, run_round
@@ -49,6 +51,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     status = inner.add_parser("status", help="show local validator state")
     _add_validator_arguments(status)
     status.set_defaults(handler=_status)
+
+    loop = inner.add_parser(
+        "loopback", help="run real rounds against a synthetic chain, no wallet needed"
+    )
+    add_common_arguments(loop)
+    loop.add_argument("--rounds", type=int, default=2)
+    loop.add_argument("--miners", type=int, default=3)
+    loop.add_argument("--tasks", type=int, default=12)
+    loop.set_defaults(handler=_loopback)
 
 
 def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
@@ -169,6 +180,42 @@ def _once(args: argparse.Namespace) -> int:
         return 0 if outcome.settled else 2
     finally:
         context.close()
+
+
+def _loopback(args: argparse.Namespace) -> int:
+    home = Path(args.home) / "loopback"
+    shutil.rmtree(home, ignore_errors=True)
+
+    log.warning("loopback mode: synthetic chain, reference engine, signatures not verified")
+    world = loopback.build(home, miners=args.miners, tasks_per_round=args.tasks)
+
+    try:
+        outcomes = []
+        for _ in range(max(1, args.rounds)):
+            outcome = run_round(world.context, world.round)
+            outcomes.append(outcome)
+            world = loopback.advance(world)
+
+        print()
+        header = f"{'round':>8}  {'status':<11}{'participants':>13}{'scored':>8}"
+        print(f"{header}{'weights':>9}  reason")
+        for outcome in outcomes:
+            weights = len(outcome.settlement.vector) if outcome.settlement else 0
+            print(
+                f"{outcome.round_index:>8}  {outcome.status:<11}{outcome.participants:>13}"
+                f"{outcome.scored:>8}{weights:>9}  {outcome.reason}"
+            )
+
+        submitted = world.client.submitted
+        print(f"\nweight vectors submitted: {len(submitted)}")
+        for vector in submitted:
+            print(f"  uids {list(vector.uids)}  values {list(vector.values)}  sum {vector.total}")
+
+        settled = sum(1 for o in outcomes if o.settled)
+        print(f"\n{settled}/{len(outcomes)} rounds settled")
+        return 0 if settled == len(outcomes) else 2
+    finally:
+        world.context.close()
 
 
 def _status(args: argparse.Namespace) -> int:
