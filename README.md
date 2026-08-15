@@ -1,122 +1,175 @@
-# Microtensor · netuid 70
+<div align="center">
 
-A Bittensor subnet that pays for **frontier accuracy at one four-hundredth the
-size**. Models are compressed into hardware-constrained specialists and held to a
-*verified* deployment envelope.
+# Microtensor
 
-Most inference subnets score behaviour: send a prompt, judge the answer. That
-measures a service under conditions the miner partly controls. Microtensor
-measures the artifact itself on certified reference hardware, checking size,
-resident memory at declared maximum input and tail latency. It gates on those
-numbers, then scores accuracy only among the models that fit.
+**Frontier accuracy at one four-hundredth the size, with the size guaranteed.**
+
+Bittensor subnet 70
+
+[Mine](docs/miner_setup.md) · [Validate](docs/validator_setup.md) · [Mechanism](docs/mechanism.md)
+
+</div>
+
+---
+
+## The problem
+
+A 1.2-trillion-parameter model can do your task. It cannot do your task on a
+laptop, in a hospital with no outbound network, on a factory line, or inside a
+phone. So the industry ships a compromise: a smaller model with a benchmark
+score attached and no commitment whatsoever about what it costs to run.
+
+That benchmark score is the wrong number. A deployer does not need to know a
+model scored 71.4 on some public set. They need to know it fits in 3 GB, answers
+in under 180 ms at the ninety-fifth percentile, and will still do both under
+sustained load at their maximum context. Nobody publishes that, because nobody
+is paid to measure it.
+
+## How Microtensor is different
+
+Most inference subnets score behaviour. They send a prompt, wait, and judge the
+answer. That measures a *service*, running on hardware the miner chose, under
+conditions the miner partly controls. Two miners with identical models and
+different GPUs get different scores.
+
+Microtensor scores the **artifact**. Miners submit weights, not an endpoint. The
+network holds those weights and runs them itself, on its own certified hardware,
+and measures what they cost before it ever asks whether they are any good.
 
 ```
 measurement  →  gate (binary)  →  accuracy (only among survivors)  →  weights
 ```
 
-## Quick start
+The gate is not a term in a weighted sum. A model that misses the memory ceiling
+scores zero no matter how accurate it is. Fit is a precondition for having a
+score at all.
 
-```bash
-pip install ".[validator]"     # validators
-pip install "."                # miners need nothing else
+What comes out the other end is a **Verified Model Certificate**: a model, and a
+signed claim about what it costs to run, produced by a network with no incentive
+to flatter it.
 
-mt inspect tracks              # competitions, ceilings, emission shares
-mt inspect engines             # what this host can execute, sandbox status
+## How it works
+
+### Miners ship a file, not a service
+
+There is no axon, no request handler, no GPU that has to stay warm. A miner
+compresses a model, hosts the artifact wherever it likes, and commits an 84-byte
+pointer on chain.
+
+```
+mt1|41|code|laptop|3f9a…c21b|hf:youracct/mt-code-3b@v1
 ```
 
-Everything defaults to **netuid 70** on finney. Pass `--netuid` only for testnet.
+Validators fetch that artifact and run it themselves. A miner's box can be
+offline between rounds and lose nothing, because the miner's hardware is never
+part of the measurement. That is the whole point.
 
-- **Mining** → [docs/miner_setup.md](docs/miner_setup.md)
-- **Validating** → [docs/validator_setup.md](docs/validator_setup.md)
-- **The mechanism, in full** → [docs/mechanism.md](docs/mechanism.md)
+### Nobody can see the questions before they commit
 
-The two operator guides share almost nothing, because the two roles share almost
-nothing. Miners run no neuron, serve no inference, and ship no container. They
-publish an artifact and commit an 84-byte pointer. Validators do everything else.
-
-## How a round works
+Rounds are windows of blocks, computed from block height, so every validator
+agrees on the schedule with no coordination.
 
 ```
 [start ─────────────────── close) [close ──────── deadline] [·· margin ··]
  submissions open           freeze  evaluate + settle          extrinsic slack
 ```
 
-The round seed is drawn from the hash of the **close** block, the exact block at
-which submissions stop. No submitter can have seen the task set, and anyone can
-reproduce the selection afterwards.
+The task set is seeded from the hash of the **close** block, the exact block at
+which submissions stop. Seeding from the start block, as the obvious design
+does, would let anyone read the chain, compute the seed, and then submit with
+the questions already in hand. Here the seed cannot exist until it is too late
+to use, and it is public immediately after, so anyone can reproduce the draw.
 
-1. **Discover.** Decode on-chain pointers, fetch each manifest, verify its
-   signature and that it hashes to what was committed.
-2. **Materialise.** Fetch every artifact and re-derive its full file-tree digest
-   before any execution begins.
-3. **Profile.** Cold start, then sustained load at declared maximum input,
-   sampling RSS throughout. Inside a resource jail.
-4. **Gate.** Over a class ceiling, or over its own declaration, and the artifact
-   does not exist this round.
-5. **Score.** Chain-seeded task set, 70 % rotating and 30 % fixed, quantised to 4
-   decimals so validators agree bit-for-bit.
-6. **Settle.** Geometric ranks with hysteresis, incumbent decay, concentration
-   cap, asymmetric EMA blend, one vector.
+### The envelope is measured, never reported
 
-## Design commitments
+The miner declares what its artifact costs. The validator measures what it
+actually costs, on the reference device for that class, at the declared maximum
+input, under sustained load, sampling resident memory throughout and keeping the
+maximum. Not the mean, not the value at load.
 
-**Measurement is not scoring.** The envelope is a hard gate, not a term in a
-weighted sum. A model that misses the memory ceiling scores zero regardless of
-how accurate it is.
+Both numbers are then checked against each other:
 
-**Declaring honestly is the dominant strategy.** Over-declare and your published
-certificate is weaker than a competitor's. Under-declare and you are
-inadmissible. The 2 % tolerance applies to your declaration, never to the class
-ceiling.
+```
+measured > class ceiling      → inadmissible
+measured > your declaration   → inadmissible
+```
 
-**Artifact faults score zero; infrastructure faults abstain.** A model that hangs
-or crashes is the model's problem and is scored deterministically. A source that
-is unreachable is the validator's problem, so it sets no weights that round
-rather than publishing a partial vector. A missing track is a consensus
+Over-declaring is safe but weakens your published certificate, and a deployer
+picks the tighter guarantee. Under-declaring is fatal. Honesty is not asked for;
+it is the profit-maximising move.
+
+### A miner's score never depends on which validator drew it
+
+Two honest validators emit byte-identical weight vectors. Task selection sorts
+by keyed SHA-256 rather than a seeded RNG, so it survives interpreter and
+library changes. Scores quantise on a fixed grid, so summing in a different
+float order cannot produce a different answer. Any divergence is therefore
+attributable rather than excusable as sampling noise.
+
+### Faults are attributed before they are punished
+
+**A fault of the artifact scores zero. A fault of the infrastructure abstains.**
+
+A model that hangs, crashes or exceeds its declaration is the model's problem
+and is scored deterministically. A source that is unreachable, or an engine that
+will not load, is the *validator's* problem, and it sets no weights at all that
+round rather than publishing a partial vector. A missing track is a consensus
 divergence, not a smaller sample.
 
-**Fail closed.** A host that cannot enforce CPU and memory limits refuses to
-execute untrusted artifacts. Every jail result carries `sandboxed`, so an
-unenforced measurement can never reach a weight vector.
+The execution jail fails closed. A host that cannot enforce CPU and memory
+limits refuses to run untrusted artifacts, and every result carries whether the
+sandbox was genuinely enforced, so an unverified measurement can never reach a
+weight vector.
 
-**Determinism is enforced, not hoped for.** Task selection sorts by keyed
-SHA-256 rather than a seeded RNG, so it survives interpreter changes. Scores
-quantise at a fixed grid, so two validators summing in different float orders
-emit identical vectors.
+## The competitions
 
-## Layout
+Four tracks, four hardware classes, sixteen independent competitions.
 
-```
-microtensor/
-├── core/       types, constants, canonical hashing, the gate, certificates
-├── scoring/    metrics, geometric schedule, hysteresis, weight blending
-├── chain/      the only place the Bittensor SDK is imported
-├── harness/    engine contract, resource limits, the execution jail
-├── envelope/   device profile, latency distributions, RSS sampler, profiler
-├── registry/   signed manifests, digest-pinned fetch, LRU artifact cache
-├── tasks/      corpus loading, deterministic per-round selection
-├── store/      versioned sqlite state that survives a restart
-├── update/     signed releases applied only between rounds
-├── validator/  discover → evaluate → settle → the round loop
-├── miner/      selfcheck, package, upload, publish
-└── cli/        mt validator | miner | corpus | update | inspect
+| Track | Metric | Share |
+|---|---|---|
+| `code` | execution pass rate, schema conformance | 30 % |
+| `document` | extraction F1, span accuracy | 30 % |
+| `analytics` | exact match, numeric tolerance | 20 % |
+| `support` | rubric F1, tool-call correctness | 20 % |
 
-neurons/        validator.py, miner.py
-deploy/         Dockerfiles and compose for both roles
-```
+| Class | Size | Peak RSS | p95 TTFT | Reference device |
+|---|---|---|---|---|
+| `server-cpu` | 8 GiB | 16 GiB | 400 ms | x86-64 server, no accelerator |
+| `edge-gpu` | 2.5 GiB | 4 GiB | 120 ms | consumer or embedded GPU |
+| `laptop` | 1.5 GiB | 3 GiB | 180 ms | developer workstation |
+| `embedded` | 600 MiB | 1 GiB | 300 ms | mobile SoC or NPU |
 
-## Development
+Each competition pays its top 8 on a geometric curve, so rank 8 still earns
+about a third of rank 1 and the tail is worth contesting. Classes rotate across
+rounds: the architecture that wins at 8 GB is not the one that wins at 600 MB,
+which is what stops a single permanent winner.
+
+Every metric is **computed, not judged**. No model renders an opinion on another
+model's output. If a track's quality cannot be reduced to a deterministic
+computation against ground truth, it does not become a track.
+
+## Getting started
 
 ```bash
-pip install ".[validator,dev]"
-PYTHONPATH=. pytest tests -q
-ruff check . && mypy microtensor
+mt inspect tracks     # the competitions, their ceilings and emission shares
+mt inspect engines    # what this host can execute, and whether the jail is enforced
 ```
 
-The suite runs a **full round end to end** with no chain and no network:
-commitment → manifest → fetch → jail → profile → gate → score → allocate →
-blend → weight vector. It also covers a restart, a tampered artifact, an unsigned
-manifest, and an unreachable source.
+**Mining** takes four commands and no uptime commitment.
+Read [docs/miner_setup.md](docs/miner_setup.md).
 
-Code and tests carry no comments by design. The reasoning lives in
-[docs/mechanism.md](docs/mechanism.md), where it can be argued with.
+**Validating** runs a neuron continuously and needs Linux and reference
+hardware, but no GPU. Read [docs/validator_setup.md](docs/validator_setup.md).
+
+Prove the machinery works before touching a chain:
+
+```bash
+mt validator loopback --rounds 3 --miners 4
+```
+
+That stands up a synthetic chain, a seeded corpus and fake miners, then runs
+real rounds end to end on your own machine.
+
+Hardware floors for both roles are in [min_compute.yml](min_compute.yml). The
+full specification, including everything frozen and everything tunable, is
+[docs/mechanism.md](docs/mechanism.md).

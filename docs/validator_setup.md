@@ -12,13 +12,27 @@ Miners run none of this. If you are here to submit a model, read
 
 ## 1 · What you are signing up for
 
+Unlike a miner's rig, this is enforced. Envelope measurements are the product of
+this subnet, so a measurement taken on the wrong device is excluded from
+aggregation and a measurement taken without limits is not evidence at all.
+
 | | |
 |---|---|
-| **Runs** | continuously, one round every `ROUND_BLOCKS` (7200 blocks ≈ 24 h) |
-| **Executes** | untrusted third-party model artifacts |
-| **Needs** | Linux, certified reference hardware per class you serve |
-| **Storage** | 200 GB artifact cache by default, plus state |
+| **OS** | Linux. Not optional, the jail needs `resource.setrlimit` |
+| **CPU** | 8 cores |
+| **RAM** | 32 GB |
+| **Disk** | 1 to 2 TB NVMe |
+| **GPU** | **none** |
+| **Network** | 1 Gbps, 500 GB to 1 TB monthly transfer |
+| **Uptime** | continuous, runs a neuron, one round every `ROUND_BLOCKS` (7200 blocks ≈ 24 h) |
+| **Bench** | one reference device per hardware class you serve |
 | **Fails** | closed, so an unenforceable sandbox refuses to run rather than guess |
+
+**No GPU, deliberately.** The engine runs on `CPUExecutionProvider`, so
+validating is cheap and is not a capital barrier. The transfer budget is driven
+by artifact fetches: a full round pulls every submission it has not cached.
+
+Full breakdown in [min_compute.yml](../min_compute.yml).
 
 The hard requirement is the sandbox. Envelope measurements are the product of
 this subnet, and a measurement taken without CPU and memory limits is not

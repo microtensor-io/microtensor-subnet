@@ -1,0 +1,122 @@
+version: "0.1.0"
+netuid: 70
+
+# Miner hardware is guidance, not policy. The subnet never sees a miner's
+# machine: miners upload an artifact and commit a pointer, so nothing here is
+# verifiable or enforced. It is what the work realistically takes.
+miner:
+  enforced: false
+  rationale: >
+    A miner compresses a frontier model into a specialist. That training run is
+    the real cost and happens entirely off-subnet. Running the microtensor
+    tooling itself needs almost nothing.
+
+  training:
+    gpu:
+      recommended:
+        - name: "NVIDIA RTX 4090"
+          vram_gb: 24
+        - name: "NVIDIA RTX 5090"
+          vram_gb: 32
+      minimum:
+        - name: "NVIDIA RTX 3090"
+          vram_gb: 24
+      vendor: "NVIDIA only"
+      vendor_reason: >
+        bitsandbytes and unsloth require CUDA. AMD, Apple Silicon and Intel GPUs
+        will not run the recommended compression stack.
+    cpu_cores: 8
+    ram_gb: 32
+    disk_gb: 500
+    disk_type: "SSD"
+
+  toolchain:
+    recommended:
+      - name: "unsloth"
+        why: "60-70% lower VRAM and 2-5x faster fine-tuning"
+      - name: "bitsandbytes"
+        why: "4-bit and 8-bit quantisation"
+
+  # Running the subnet CLI only. No GPU, no accelerator.
+  subnet_tooling:
+    cpu_cores: 2
+    ram_gb: 4
+    gpu: none
+    disk_gb: 50
+    note: "mt miner init | package | upload | publish | run"
+
+  # `mt miner selfcheck` loads and runs your artifact locally, so it needs
+  # headroom above the ceiling of whichever class you target.
+  selfcheck_ram_gb_by_class:
+    server-cpu: 20
+    edge-gpu: 6
+    laptop: 5
+    embedded: 3
+
+  uptime:
+    required: false
+    note: >
+      A miner serves no axon and answers no request. It must be reachable once
+      per round, inside the submission window, long enough to send one
+      extrinsic. Offline between windows costs nothing.
+
+# Validator hardware is enforced by the mechanism, not by policy text. Envelope
+# measurements are this subnet's product, and a measurement taken on the wrong
+# device is excluded from aggregation.
+validator:
+  enforced: true
+
+  host:
+    os: "Linux"
+    os_reason: >
+      The execution jail needs resource.setrlimit. `mt validator run` refuses to
+      start where it is unavailable, and any run that slips through is flagged
+      sandboxed=False and can never reach a weight vector.
+    cpu_cores: 8
+    ram_gb: 32
+    disk_gb: 1000
+    disk_max_gb: 2000
+    disk_type: "NVMe"
+    gpu: none
+    gpu_reason: >
+      The engine runs on CPUExecutionProvider. Validation is deliberately cheap
+      so that validating is not a capital barrier.
+
+  network:
+    bandwidth_mbps: 1000
+    monthly_transfer_gb_min: 500
+    monthly_transfer_gb_max: 1000
+    note: "Driven by artifact fetches; a full round pulls every submission."
+
+  uptime:
+    required: true
+    note: >
+      Runs a neuron continuously, one round every ROUND_BLOCKS. Missing the
+      evaluation window means abstaining for that round.
+
+  # Envelope measurement happens on the published reference device for each
+  # class. A validator whose device does not conform may still score accuracy,
+  # which is hardware-independent, but its envelope numbers are excluded.
+  reference_bench:
+    required: "one device per hardware class served"
+    classes:
+      - id: "server-cpu"
+        max_size_gb: 8
+        max_rss_gb: 16
+        max_p95_ms: 400
+        reference: "x86-64 server, no accelerator"
+      - id: "edge-gpu"
+        max_size_gb: 2.5
+        max_rss_gb: 4
+        max_p95_ms: 120
+        reference: "consumer or embedded GPU"
+      - id: "laptop"
+        max_size_gb: 1.5
+        max_rss_gb: 3
+        max_p95_ms: 180
+        reference: "developer workstation"
+      - id: "embedded"
+        max_size_gb: 0.6
+        max_rss_gb: 1
+        max_p95_ms: 300
+        reference: "mobile SoC or NPU"

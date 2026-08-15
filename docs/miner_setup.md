@@ -63,7 +63,42 @@ measured. `mt miner selfcheck` computes exactly that, with a 10 % margin.
 
 ---
 
-## 3 · Install
+## 3 · Your rig
+
+Nothing here is enforced or even visible to the subnet. You upload an artifact
+and commit a pointer, so your hardware is unverifiable by construction. This is
+what the work actually takes.
+
+**The GPU is for building the model, not for running it.** Compression and
+fine-tuning are the real cost, and they happen entirely off-subnet.
+
+| | |
+|---|---|
+| **Recommended** | RTX 4090 24 GB, or RTX 5090 32 GB |
+| **Floor** | RTX 3090 24 GB |
+| **RAM** | 32 GB |
+| **Disk** | 500 GB SSD |
+| **Vendor** | **NVIDIA only** |
+
+NVIDIA is not a preference. `bitsandbytes` and `unsloth` require CUDA, so AMD,
+Apple Silicon and Intel GPUs will not run the recommended stack at all.
+
+Use **Unsloth**. It cuts VRAM by 60 to 70 % and runs 2 to 5 times faster, which
+is the difference between a 24 GB card being enough and not being enough.
+
+Two smaller numbers, which people conflate with the above:
+
+- **Running the microtensor CLI**: 2 cores, 4 GB RAM, no GPU. That is all
+  `init`, `package`, `upload`, `publish` and `run` ever need.
+- **Running `mt miner selfcheck`**: RAM above the ceiling of the class you
+  target, so roughly 20 GB for `server-cpu`, 6 GB for `edge-gpu`, 5 GB for
+  `laptop`, 3 GB for `embedded`. Still no GPU, since the engine is CPU-only.
+
+Full breakdown in [min_compute.yml](../min_compute.yml).
+
+---
+
+## 4 · Install
 
 Miners need almost nothing: no runtime and no profiler dependencies for the base
 install:
@@ -98,7 +133,7 @@ export MT_WALLET_HOTKEY=<hotkey>
 
 ---
 
-## 4 · Build the artifact
+## 5 · Build the artifact
 
 A directory containing everything needed to load and run the model:
 
@@ -117,7 +152,7 @@ my-model/
 
 ---
 
-## 5 · Self-check before you declare
+## 6 · Self-check before you declare
 
 ```bash
 mt miner selfcheck \
@@ -154,7 +189,7 @@ If it prints `INADMISSIBLE`, fix the model. Do not declare around it.
 
 ---
 
-## 6 · Ship it
+## 7 · Ship it
 
 Everything above is one-time. Mining is four commands total:
 
@@ -210,7 +245,7 @@ Supported schemes: `hf`, `https`, `s3`, `r2`, `ipfs`.
 
 ---
 
-## 7 · Timing
+## 8 · Timing
 
 ```
 [start ─────────────────── close) [close ──────── deadline]
@@ -226,7 +261,7 @@ can see the task set. Do not bother trying to time it.
 
 ---
 
-## 8 · What gets you zeroed
+## 9 · What gets you zeroed
 
 | | |
 |---|---|
@@ -248,7 +283,7 @@ you and why.
 
 ---
 
-## 9 · Where the wins are
+## 10 · Where the wins are
 
 - **Quantise past where it looks safe.** The gate is on the envelope, not on
   parameter count. int8 or int4 that holds accuracy beats fp16 that misses RSS.
