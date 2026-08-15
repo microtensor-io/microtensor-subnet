@@ -1,0 +1,90 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "testnet-v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install ".[validator,dev]" build
+
+      - name: The suite must pass before anything is published
+        run: |
+          ruff check .
+          pytest tests -q
+
+      - name: Refuse a tag that disagrees with MECHANISM_VERSION
+        run: |
+          python - <<'PY'
+          import os, re, sys
+          from microtensor.core.constants import MECHANISM_VERSION
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = re.sub(r"^(?:[a-z]+-)?v", "", tag)
+          if version != MECHANISM_VERSION:
+              sys.exit(
+                  f"tag {tag} claims {version} but MECHANISM_VERSION is {MECHANISM_VERSION}; "
+                  "validators derive version_key from the constant, not the tag"
+              )
+          print(f"tag {tag} matches MECHANISM_VERSION {MECHANISM_VERSION}")
+          PY
+
+      - name: Build the wheel
+        run: python -m build --wheel --sdist
+
+      - name: Write and sign SHA256SUMS
+        env:
+          MT_RELEASE_SIGNING_SEED: ${{ secrets.MT_RELEASE_SIGNING_SEED }}
+        run: python scripts/sign_release.py dist
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/*.whl
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTIVATION_BLOCK: ${{ vars.ACTIVATION_BLOCK }}
+        run: |
+          set -euo pipefail
+          MECHANISM=$(python -c 'from microtensor.core.constants import MECHANISM_VERSION; print(MECHANISM_VERSION)')
+          case "${GITHUB_REF_NAME}" in
+            testnet-*) CHANNEL=testnet ;;
+            *)         CHANNEL=mainnet ;;
+          esac
+
+          NOTES=$(mktemp)
+          {
+            echo "mechanism: ${MECHANISM}"
+            if [ -n "${ACTIVATION_BLOCK:-}" ]; then
+              echo "activation-block: ${ACTIVATION_BLOCK}"
+            fi
+            echo
+            echo "Channel: ${CHANNEL}"
+            echo
+            echo "Verify before installing:"
+            echo ""
+            echo "    mt update check --channel ${CHANNEL}"
+          } > "${NOTES}"
+
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/*.whl dist/*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sig \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file "${NOTES}"

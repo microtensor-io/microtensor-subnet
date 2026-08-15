@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+        continue-on-error: true
+      - run: mypy microtensor
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install ".[validator,dev]"
+      - name: Run the suite with the sandbox enforced
+        run: pytest tests -q
+      - name: Confirm the jail refuses to run unsandboxed on a POSIX host
+        run: python -c "from microtensor.harness.limits import sandbox_available; assert sandbox_available()"
+
+  mechanism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install ".[validator,dev]"
+      - name: Emission shares must sum to one
+        run: python -c "from microtensor.core.tracks import validate_registry; validate_registry()"
+      - name: A round must settle end to end with no chain
+        run: pytest tests/test_end_to_end.py -q
+      - name: The package must build and carry both neuron entrypoints
+        run: |
+          pip install build
+          python -m build --wheel
+          python - <<'PY'
+          import zipfile, glob, sys
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          entry = next(n for n in names if n.endswith("entry_points.txt"))
+          text = zipfile.ZipFile(whl).read(entry).decode()
+          for script in ("mt =", "mt-validator =", "mt-miner ="):
+              assert script in text, f"{script} missing from {entry}"
+          assert any(n.startswith("neurons/") for n in names), "neurons package not packaged"
+          print(text)
+          PY
+
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validator image builds
+        run: docker build -f deploy/Dockerfile.validator -t microtensor/validator:ci .
+      - name: Miner image builds
+        run: docker build -f deploy/Dockerfile.miner -t microtensor/miner:ci .

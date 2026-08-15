@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Runtime state — never commit a validator's scores, EMA or round records
+state/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Artifacts pulled during evaluation. These are GB-scale and belong in the
+# registry cache, never in the repo.
+artifacts/
+cache/
+work/
+*.sqlite-wal
+*.sqlite-shm
+
+# Corpora. The fixed partition is the anchor of the published series and the
+# rotating pool must stay out of public reach — a corpus in git is a corpus a
+# miner can train against.
+corpus/
+*.jsonl
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Wallets — never, under any circumstance
+wallets/
+*.json.key

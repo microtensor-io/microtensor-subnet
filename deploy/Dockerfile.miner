@@ -1,0 +1,28 @@
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    MT_HOME=/var/lib/microtensor
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/microtensor
+
+COPY pyproject.toml README.md ./
+COPY microtensor ./microtensor
+COPY neurons ./neurons
+
+RUN pip install --upgrade pip \
+ && pip install "."
+
+RUN useradd --system --create-home --uid 10002 miner \
+ && mkdir -p ${MT_HOME} \
+ && chown -R miner:miner ${MT_HOME}
+
+USER miner
+VOLUME ["/var/lib/microtensor", "/artifact"]
+
+ENTRYPOINT ["mt", "miner", "run"]

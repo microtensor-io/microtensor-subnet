@@ -1,0 +1,31 @@
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    MT_HOME=/var/lib/microtensor
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/microtensor
+
+COPY pyproject.toml README.md ./
+COPY microtensor ./microtensor
+COPY neurons ./neurons
+
+RUN pip install --upgrade pip \
+ && pip install ".[validator,huggingface,s3]"
+
+RUN useradd --system --create-home --uid 10001 validator \
+ && mkdir -p ${MT_HOME}/state ${MT_HOME}/cache ${MT_HOME}/work ${MT_HOME}/corpus \
+ && chown -R validator:validator ${MT_HOME}
+
+USER validator
+VOLUME ["/var/lib/microtensor"]
+
+HEALTHCHECK --interval=5m --timeout=30s --start-period=2m --retries=3 \
+    CMD mt inspect engines || exit 1
+
+ENTRYPOINT ["mt", "validator", "run"]

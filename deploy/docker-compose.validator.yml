@@ -1,0 +1,41 @@
+services:
+  # Microtensor is netuid 70 on finney. Override MT_NETUID only for testnet.
+  validator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.validator
+    image: microtensor/validator:0.1.0
+    container_name: microtensor-validator
+    restart: unless-stopped
+    stop_grace_period: 30m
+    environment:
+      MT_NETUID: "${MT_NETUID:-70}"
+      MT_NETWORK: "${MT_NETWORK:-finney}"
+      MT_WALLET_NAME: "${MT_WALLET_NAME:?set the coldkey wallet name}"
+      MT_WALLET_HOTKEY: "${MT_WALLET_HOTKEY:?set the hotkey name}"
+      MT_WALLET_PATH: /wallets
+      MT_HOME: /var/lib/microtensor
+    volumes:
+      - state:/var/lib/microtensor
+      - ${MT_WALLET_DIR:-~/.bittensor/wallets}:/wallets:ro
+      - ${MT_CORPUS_DIR:-./corpus}:/var/lib/microtensor/corpus:ro
+    command:
+      - --cpu-seconds
+      - "900"
+      - --profile-seconds
+      - "60"
+      # Add --auto-update --signing-key <pubkey> to take signed releases
+      # automatically. Exit 75 asks for a restart; restart:unless-stopped obliges.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: ${MT_MEMORY_LIMIT:-24g}
+          cpus: "${MT_CPU_LIMIT:-8}"
+
+volumes:
+  state:
