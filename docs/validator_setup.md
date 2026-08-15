@@ -66,7 +66,7 @@ genuinely matches `server-cpu` should not also claim `embedded`.
 ## 3 · Install
 
 ```bash
-git clone https://github.com/microtensor/microtensor-subnet
+git clone https://github.com/microtensor-io/microtensor-subnet
 cd microtensor-subnet
 
 python -m venv .venv && source .venv/bin/activate

@@ -69,7 +69,7 @@ Miners need almost nothing — no runtime, no profiler dependencies for the base
 install:
 
 ```bash
-git clone https://github.com/microtensor/microtensor-subnet
+git clone https://github.com/microtensor-io/microtensor-subnet
 cd microtensor-subnet
 python -m venv .venv && source .venv/bin/activate
 pip install .
