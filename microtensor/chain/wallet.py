@@ -64,7 +64,7 @@ def sign_payload(wallet: Any, payload: Mapping[str, Any]) -> str:
         signature = wallet.hotkey.sign(message)
     except Exception as exc:
         raise WalletError("hotkey refused to sign the payload") from exc
-    return signature.hex()
+    return str(bytes(signature).hex())
 
 
 def verify_payload(hotkey: str, payload: Mapping[str, Any], signature: str) -> bool:

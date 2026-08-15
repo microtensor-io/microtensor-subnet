@@ -11,11 +11,13 @@ from microtensor.harness.contract import (
 )
 from microtensor.harness.jail import JailResult, run_jailed
 from microtensor.harness.limits import (
+    DETERMINISTIC_ENV,
     Limits,
     UnsupportedPlatform,
     cpu_seconds_used,
     maxrss_to_bytes,
     peak_rss_bytes,
+    pin_threads,
     sandbox_available,
 )
 from microtensor.harness.registry import (
@@ -32,6 +34,7 @@ from microtensor.harness.registry import (
 )
 
 __all__ = [
+    "DETERMINISTIC_ENV",
     "Engine",
     "EngineError",
     "EngineFactory",
@@ -55,6 +58,7 @@ __all__ = [
     "load_builtin",
     "maxrss_to_bytes",
     "peak_rss_bytes",
+    "pin_threads",
     "register",
     "run_jailed",
     "sandbox_available",

@@ -43,12 +43,19 @@ def _total_memory_bytes() -> int:
     try:
         import psutil
     except ImportError:
-        pages = getattr(os, "sysconf_names", {}).get("SC_PHYS_PAGES")
-        size = getattr(os, "sysconf_names", {}).get("SC_PAGE_SIZE")
-        if pages is None or size is None:
-            return 0
-        return int(os.sysconf(pages)) * int(os.sysconf(size))
+        return _sysconf_memory_bytes()
     return int(psutil.virtual_memory().total)
+
+
+def _sysconf_memory_bytes() -> int:
+    names = getattr(os, "sysconf_names", {})
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None or "SC_PHYS_PAGES" not in names or "SC_PAGE_SIZE" not in names:
+        return 0
+    try:
+        return int(sysconf("SC_PHYS_PAGES")) * int(sysconf("SC_PAGE_SIZE"))
+    except (OSError, ValueError):
+        return 0
 
 
 def _accelerator() -> tuple[str, int]:

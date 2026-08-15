@@ -43,21 +43,17 @@ class Version:
         return cls(major, minor, patch)
 
     @property
-    def tuple(self) -> tuple[int, int, int]:
+    def parts(self) -> tuple[int, int, int]:
         return self.major, self.minor, self.patch
 
     def __str__(self) -> str:
         return f"{self.major}.{self.minor}.{self.patch}"
 
     def __lt__(self, other: Version) -> bool:
-        return self.tuple < other.tuple
+        return self.parts < other.parts
 
     def __le__(self, other: Version) -> bool:
-        return self.tuple <= other.tuple
-
-    @property
-    def line(self) -> tuple[int, int]:
-        return self.major, self.minor
+        return self.parts <= other.parts
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +175,7 @@ def fetch_releases(
         release = parse_release(entry)
         if release is not None and release.channel == channel:
             found.append(release)
-    return sorted(found, key=lambda r: r.version.tuple, reverse=True)
+    return sorted(found, key=lambda r: r.version.parts, reverse=True)
 
 
 def latest(

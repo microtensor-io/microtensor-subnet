@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from microtensor.core.constants import WALL_BACKSTOP_FACTOR
 from microtensor.core.tracks import HardwareClass
@@ -31,7 +31,7 @@ class Limits:
     wall_seconds: int
     rss_bytes: int
     open_files: int = 256
-    processes: int = 1
+    processes: int = 0
     core_dumps: bool = False
 
     def __post_init__(self) -> None:
@@ -62,13 +62,29 @@ def maxrss_to_bytes(maxrss: int) -> int:
     return int(maxrss) if sys.platform == "darwin" else int(maxrss) * 1024
 
 
+DETERMINISTIC_ENV: Final[dict[str, str]] = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "PYTHONHASHSEED": "0",
+}
+
+
+def pin_threads() -> None:
+    os.environ.update(DETERMINISTIC_ENV)
+
+
 def apply(limits: Limits) -> None:
     resource = _resource()
 
     resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
     resource.setrlimit(resource.RLIMIT_AS, (limits.rss_bytes, limits.rss_bytes))
     resource.setrlimit(resource.RLIMIT_NOFILE, (limits.open_files, limits.open_files))
-    resource.setrlimit(resource.RLIMIT_NPROC, (limits.processes, limits.processes))
+
+    if limits.processes > 0:
+        resource.setrlimit(resource.RLIMIT_NPROC, (limits.processes, limits.processes))
 
     if not limits.core_dumps:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))

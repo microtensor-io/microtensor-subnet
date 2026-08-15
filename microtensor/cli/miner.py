@@ -31,7 +31,7 @@ from microtensor.miner.upload import UploadError, plan_upload, upload
 log = logging.getLogger("microtensor.cli.miner")
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:
+def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("miner", help="package, check and publish a submission")
     inner = parser.add_subparsers(dest="action", required=True)
 

@@ -13,6 +13,7 @@ from microtensor.harness.limits import (
     apply,
     cpu_seconds_used,
     peak_rss_bytes,
+    pin_threads,
     sandbox_available,
 )
 
@@ -48,6 +49,7 @@ def _entry(
     conn: Any, target: Callable[..., Any], args: tuple[Any, ...], limits: Limits | None
 ) -> None:
     try:
+        pin_threads()
         if limits is not None:
             apply(limits)
     except BaseException as exc:
@@ -101,7 +103,7 @@ def run_jailed(
             "run the validator on Linux or pass allow_unsandboxed for local development"
         )
 
-    context = mp.get_context(start_method)
+    context: Any = mp.get_context(start_method)
     parent, child = context.Pipe(duplex=False)
     process = context.Process(
         target=_entry,

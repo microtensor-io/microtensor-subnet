@@ -64,6 +64,24 @@ strict = true
 warn_unreachable = true
 disallow_untyped_defs = true
 
+# Third-party packages that ship no stubs and no py.typed marker. The boundary
+# to each of these is narrow and wrapped in our own typed functions.
+[[tool.mypy.overrides]]
+module = [
+    "bittensor.*",
+    "bittensor_wallet.*",
+    "substrateinterface.*",
+    "boto3.*",
+    "botocore.*",
+    "huggingface_hub.*",
+    "onnx.*",
+    "onnxruntime.*",
+    "tokenizers.*",
+    "psutil.*",
+    "numpy.*",
+]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"

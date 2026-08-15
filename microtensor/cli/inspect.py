@@ -11,7 +11,7 @@ from microtensor.harness.registry import available, describe, load_builtin
 from microtensor.store.state import ValidatorState
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:
+def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("inspect", help="inspect the mechanism and local state")
     inner = parser.add_subparsers(dest="action", required=True)
 

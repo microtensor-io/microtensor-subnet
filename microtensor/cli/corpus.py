@@ -15,7 +15,7 @@ SEED_ROTATING = 240
 SEED_FIXED = 100
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:
+def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("corpus", help="check, describe and seed task corpora")
     inner = parser.add_subparsers(dest="action", required=True)
 

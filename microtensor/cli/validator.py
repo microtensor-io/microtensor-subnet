@@ -35,7 +35,7 @@ from microtensor.validator.round import current_round, run_round
 log = logging.getLogger("microtensor.cli.validator")
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:
+def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("validator", help="run or inspect a validator")
     inner = parser.add_subparsers(dest="action", required=True)
 

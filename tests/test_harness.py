@@ -141,6 +141,49 @@ def test_limits_demand_a_wall_backstop_above_the_cpu_budget() -> None:
         Limits(cpu_seconds=10, wall_seconds=10, rss_bytes=1024)
 
 
+def import_numpy_and_spawn_a_thread() -> str:
+    import threading
+
+    import numpy
+
+    seen: list[int] = []
+    worker = threading.Thread(target=lambda: seen.append(int(numpy.array([1, 2]).sum())))
+    worker.start()
+    worker.join(10)
+    return f"numpy {numpy.__version__} summed {seen}"
+
+
+def read_thread_env() -> dict[str, str]:
+    import os
+
+    return {k: os.environ.get(k, "") for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS")}
+
+
+def test_a_jailed_worker_can_import_numpy_and_use_a_thread() -> None:
+    result = run_jailed(
+        import_numpy_and_spawn_a_thread,
+        limits=Limits(cpu_seconds=30, wall_seconds=120, rss_bytes=2 << 30),
+        allow_unsandboxed=True,
+    )
+    assert result.ok, result.error
+    assert "summed [3]" in result.value
+
+
+def test_the_jail_pins_blas_threads_for_determinism() -> None:
+    result = run_jailed(
+        read_thread_env,
+        limits=Limits(cpu_seconds=20, wall_seconds=60, rss_bytes=1 << 30),
+        allow_unsandboxed=True,
+    )
+    assert result.ok, result.error
+    assert result.value["OMP_NUM_THREADS"] == "1"
+    assert result.value["OPENBLAS_NUM_THREADS"] == "1"
+
+
+def test_the_process_ceiling_is_off_by_default() -> None:
+    assert Limits(cpu_seconds=10, wall_seconds=30, rss_bytes=1 << 20).processes == 0
+
+
 def test_limits_for_a_class_leave_headroom_over_the_ceiling() -> None:
     hardware = get_class("laptop")
     limits = Limits.for_class(hardware, cpu_seconds=30)

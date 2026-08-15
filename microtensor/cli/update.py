@@ -23,7 +23,7 @@ from microtensor.update.policy import Action, decide
 from microtensor.update.release import ReleaseError, fetch_releases, latest
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:
+def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("update", help="check and apply signed releases")
     inner = parser.add_subparsers(dest="action", required=True)
 

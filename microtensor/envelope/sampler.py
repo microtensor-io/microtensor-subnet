@@ -4,11 +4,12 @@ import os
 import threading
 import time
 from types import TracebackType
+from typing import Any
 
 from microtensor.core.constants import PROFILE_SAMPLE_INTERVAL_MS
 
 
-def _psutil_reader() -> object | None:
+def _psutil_reader() -> Any:
     try:
         import psutil
     except ImportError:
@@ -17,12 +18,15 @@ def _psutil_reader() -> object | None:
 
 
 def _statm_rss() -> int:
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return 0
     try:
         with open("/proc/self/statm", encoding="ascii") as fh:
             resident = int(fh.read().split()[1])
+        return resident * int(sysconf("SC_PAGE_SIZE"))
     except (OSError, IndexError, ValueError):
         return 0
-    return resident * os.sysconf("SC_PAGE_SIZE")
 
 
 def read_rss_bytes() -> int:
