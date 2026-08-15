@@ -38,7 +38,7 @@ class UpdateChecker:
     fetch: Callable[..., Release | None] = latest
     apply: Callable[..., Applied] = apply_release
     now: Callable[[], float] = time.monotonic
-    last_checked: float = field(default=0.0)
+    last_checked: float | None = field(default=None)
     last_decision: Decision | None = field(default=None)
     held: str = field(default="")
 
@@ -46,6 +46,8 @@ class UpdateChecker:
     def due(self) -> bool:
         if not self.settings.enabled:
             return False
+        if self.last_checked is None:
+            return True
         return self.now() - self.last_checked >= self.settings.poll_seconds
 
     def check(self, round_: Round, block: int) -> Decision:

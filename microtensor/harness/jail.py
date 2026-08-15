@@ -37,6 +37,10 @@ class JailResult:
         return self.completed and not self.error
 
     @property
+    def killed(self) -> bool:
+        return self.timed_out or (self.exit_code is not None and self.exit_code < 0)
+
+    @property
     def fault(self) -> Fault | None:
         if self.ok:
             return None

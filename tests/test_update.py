@@ -259,6 +259,15 @@ def test_the_checker_respects_its_poll_interval() -> None:
     assert checker.due
 
 
+def test_the_first_check_is_due_on_a_freshly_booted_host() -> None:
+    checker = UpdateChecker(
+        UpdateSettings(enabled=True, poll_seconds=900),
+        fetch=lambda *a, **k: None,
+        now=lambda: 3.0,
+    )
+    assert checker.due
+
+
 def test_a_failing_release_check_does_not_stop_the_validator() -> None:
     def broken(*_: object, **__: object) -> Release:
         raise ReleaseError("github is down")

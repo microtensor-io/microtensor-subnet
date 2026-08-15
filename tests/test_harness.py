@@ -238,8 +238,19 @@ def test_a_hung_artifact_is_killed_and_blamed() -> None:
         allow_unsandboxed=True,
     )
     assert not result.ok
-    assert result.timed_out
+    assert result.killed
     assert result.fault is Fault.ARTIFACT
+
+
+def test_a_cpu_budget_stops_a_spinner_before_the_wall_backstop() -> None:
+    if not sandbox_available():
+        pytest.skip("this host cannot enforce a cpu budget")
+    result = run_jailed(
+        spin, limits=Limits(cpu_seconds=1, wall_seconds=30, rss_bytes=1 << 30)
+    )
+    assert result.killed
+    assert result.wall_seconds < 30
+    assert not result.timed_out
 
 
 def test_infrastructure_failure_abstains_rather_than_scoring_zero() -> None:
