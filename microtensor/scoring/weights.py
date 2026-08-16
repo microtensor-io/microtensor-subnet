@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from microtensor.core.constants import (
+    CLASS_WEIGHTS,
     CONCENTRATION_CAP_FRACTION,
     DECAY_RATE,
     RECOVERY_RATE,
@@ -19,11 +20,8 @@ def normalise(weights: Mapping[str, float]) -> dict[str, float]:
     return {k: v / total for k, v in positive.items()}
 
 
-def origin_group(address: str) -> str:
-    parts = address.split(".")
-    if len(parts) >= 2 and all(p.isdigit() for p in parts[:2]):
-        return f"{parts[0]}.{parts[1]}"
-    return ""
+def origin_group(coldkey: str) -> str:
+    return coldkey.strip()
 
 
 def apply_concentration_cap(
@@ -84,20 +82,30 @@ def competition_weights(
     return allocate(candidates, previous, **kwargs)  # type: ignore[arg-type]
 
 
+def class_weight(class_id: str, siblings: Sequence[str]) -> float:
+    if not siblings:
+        return 0.0
+    if all(s in CLASS_WEIGHTS for s in siblings):
+        total = sum(CLASS_WEIGHTS[s] for s in siblings)
+        if total > 0.0:
+            return CLASS_WEIGHTS[class_id] / total
+    return 1.0 / len(siblings)
+
+
 def combine_competitions(
     per_competition: Mapping[tuple[str, str], Mapping[str, float]],
 ) -> dict[str, float]:
     combined: dict[str, float] = {}
-    classes_per_track: dict[str, int] = {}
+    siblings: dict[str, list[str]] = {}
 
-    for track, _cls in per_competition:
-        classes_per_track[track] = classes_per_track.get(track, 0) + 1
+    for track, cls in per_competition:
+        siblings.setdefault(track, []).append(cls)
 
-    for (track, _cls), allocation in per_competition.items():
+    for (track, cls), allocation in per_competition.items():
         if not allocation:
             continue
         track_share = get_track(track).emission_share
-        class_share = track_share / classes_per_track[track]
+        class_share = track_share * class_weight(cls, siblings[track])
         for hotkey, fraction in allocation.items():
             combined[hotkey] = combined.get(hotkey, 0.0) + class_share * fraction
 

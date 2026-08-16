@@ -25,7 +25,7 @@ aggregation and a measurement taken without limits is not evidence at all.
 | **GPU** | **none** |
 | **Network** | 1 Gbps, 500 GB to 1 TB monthly transfer |
 | **Uptime** | continuous, runs a neuron, one round every `ROUND_BLOCKS` (7200 blocks ≈ 24 h) |
-| **Bench** | one reference device per hardware class you serve |
+| **Bench** | one reference device per class served; at launch that is `laptop` and `edge-gpu` only |
 | **Fails** | closed, so an unenforceable sandbox refuses to run rather than guess |
 
 **No GPU, deliberately.** The engine runs on `CPUExecutionProvider`, so
@@ -163,6 +163,26 @@ mt inspect tracks
 ---
 
 ## 6 · Run
+
+Certify the host for each class you serve. This runs a fixed, versioned
+workload, pins your declared thermal and power policy into the device
+profile hash, and records the measurements:
+
+```bash
+mt validator certify laptop --cooling-mode active --power-mode performance
+mt validator certify edge-gpu
+```
+
+A policy change is a different profile, so changing cooling or power modes
+after certifying means re-certifying. Until tolerance bands are published
+for the launch classes, certify records your numbers for calibration.
+
+At startup the validator also probes whether the CPU limit actually binds by
+running a spinner under a one-second budget. If the kernel never kills it,
+budgets cannot be enforced and slow infrastructure would be misattributed as
+artifact fault, so the validator refuses to start; pass `--allow-degraded`
+to run abstain-only instead (it discovers, fetches and logs, but sets no
+weights).
 
 Prove the machinery works before you touch a chain at all. Loopback stands up a
 synthetic chain, a seeded corpus and several fake miners, then runs real rounds

@@ -23,7 +23,7 @@ def test_no_command_is_an_error() -> None:
 def test_inspect_tracks_reports_the_open_competitions(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["inspect", "tracks"]) == 0
     out = capsys.readouterr().out
-    assert "16 competitions" in out
+    assert "2 competitions" in out
     assert "registered, not scored" in out
 
 
@@ -54,7 +54,7 @@ def test_a_string_exit_becomes_an_error_code(
             "--hardware-class",
             "laptop",
             "--source",
-            "hf:acme/model@v1",
+            "hf:acme/model@a1b2c3d",
         ]
     )
     assert code == 1
@@ -75,7 +75,7 @@ def test_miner_rejects_a_closed_competition(
             "--hardware-class",
             "laptop",
             "--source",
-            "hf:acme/model@v1",
+            "hf:acme/model@a1b2c3d",
         ]
     )
     assert code == 1

@@ -128,10 +128,19 @@ def test_concentration_cap_is_inert_when_origins_are_spread() -> None:
     assert apply_concentration_cap(weights, origins) == pytest.approx(normalise(weights))
 
 
-def test_origin_group_is_the_first_two_octets() -> None:
-    assert origin_group("192.168.1.100") == "192.168"
+def test_origin_group_is_the_coldkey_itself() -> None:
+    assert origin_group("5ColdkeyAAAA") == "5ColdkeyAAAA"
+    assert origin_group("  5ColdkeyAAAA ") == "5ColdkeyAAAA"
     assert origin_group("") == ""
-    assert origin_group("not-an-ip") == ""
+
+
+def test_three_hotkeys_under_one_coldkey_keep_exactly_two() -> None:
+    weights = {f"m{i}": (8 - i) / 36 for i in range(8)}
+    origins = {f"m{i}": ("ck-one" if i in (0, 3, 5) else f"ck-{i}") for i in range(8)}
+    capped = apply_concentration_cap(weights, origins, fraction=0.25)
+    survivors = [h for h in ("m0", "m3", "m5") if capped.get(h, 0.0) > 0.0]
+    assert survivors == ["m0", "m3"]
+    assert capped.get("m5", 0.0) == 0.0
 
 
 def test_blend_falls_faster_than_it_rises() -> None:
@@ -149,23 +158,34 @@ def test_blend_drops_vanishing_holders() -> None:
     assert "gone" not in blend({}, {"gone": 1e-12})
 
 
-def test_combine_competitions_respects_track_shares() -> None:
+def test_combine_competitions_honours_the_class_weights() -> None:
     per = {
-        ("code", "edge-gpu"): {"a": 1.0},
-        ("analytics", "edge-gpu"): {"b": 1.0},
+        ("code", "laptop"): {"a": 1.0},
+        ("code", "edge-gpu"): {"b": 1.0},
     }
     combined = combine_competitions(per)
-    assert combined["a"] > combined["b"]
+    assert combined["a"] == pytest.approx(0.60)
+    assert combined["b"] == pytest.approx(0.40)
     assert sum(combined.values()) == pytest.approx(1.0)
 
 
-def test_combine_competitions_splits_a_track_across_its_classes() -> None:
+def test_combine_competitions_falls_back_to_even_for_unweighted_classes() -> None:
     per = {
-        ("code", "edge-gpu"): {"a": 1.0},
-        ("code", "laptop"): {"b": 1.0},
+        ("code", "server-cpu"): {"a": 1.0},
+        ("code", "embedded"): {"b": 1.0},
     }
     combined = combine_competitions(per)
     assert combined["a"] == pytest.approx(combined["b"])
+
+
+def test_a_disabled_track_contributes_no_emission() -> None:
+    per = {
+        ("code", "laptop"): {"a": 1.0},
+        ("document", "laptop"): {"b": 1.0},
+    }
+    combined = combine_competitions(per)
+    assert combined["a"] == pytest.approx(1.0)
+    assert "b" not in combined
 
 
 def test_to_uid_weights_reports_unmatched_hotkeys() -> None:

@@ -63,6 +63,13 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
     except Abstain as exc:
         return abstain(str(exc))
 
+    if context.config.degraded:
+        return abstain(
+            "degraded host: the cpu limit does not bind, so budgets cannot be "
+            "enforced; abstain-only until the host is fixed",
+            roster,
+        )
+
     if not roster.participants:
         return abstain("no admissible submission this round", roster)
 

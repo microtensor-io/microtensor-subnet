@@ -8,6 +8,7 @@ from pathlib import Path
 from microtensor.cli.common import fail
 from microtensor.core.constants import CORPUS_VERSION, TASKS_PER_ROUND
 from microtensor.core.tracks import enabled_tracks, get_track
+from microtensor.tasks import generator
 from microtensor.tasks.corpus import FIXED, ROTATING, Corpus, CorpusError, load_all, load_corpus
 from microtensor.tasks.selection import partition_sizes
 
@@ -16,8 +17,18 @@ SEED_FIXED = 100
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser("corpus", help="check, describe and seed task corpora")
+    parser = subparsers.add_parser("corpus", help="generate, check and seed task corpora")
     inner = parser.add_subparsers(dest="action", required=True)
+
+    gen = inner.add_parser("generate", help="generate a corpus with hidden tests")
+    gen.add_argument("track")
+    gen.add_argument("--rotating", type=int, default=2000)
+    gen.add_argument("--fixed", type=int, default=300)
+    gen.add_argument("--train", type=int, default=1000)
+    gen.add_argument("--seed", required=True, help="hex or phrase; recorded in the manifest")
+    gen.add_argument("--out", type=Path, required=True)
+    gen.add_argument("--force", action="store_true")
+    gen.set_defaults(handler=_generate)
 
     check = inner.add_parser("check", help="verify every corpus a validator would load")
     check.add_argument("directory", type=Path)
@@ -41,6 +52,39 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 def _digest(corpus: Corpus) -> str:
     material = "\n".join(sorted(f"{t.ref}:{t.partition}" for t in corpus))
     return hashlib.sha256(material.encode()).hexdigest()[:16]
+
+
+def _generate(args: argparse.Namespace) -> int:
+    if args.track != "code":
+        return fail(f"only the code track has a generator today, not {args.track!r}")
+
+    try:
+        bundle = generator.generate(
+            rotating=args.rotating, fixed=args.fixed, train=args.train, seed=args.seed
+        )
+        digests = generator.write_bundle(bundle, args.out, force=args.force)
+    except generator.GenerationError as exc:
+        return fail(str(exc))
+
+    for name, digest in sorted(digests.items()):
+        print(f"{name:<22} {digest}")
+    print(
+        f"\nwrote {len(bundle.tasks)} evaluation tasks and {len(bundle.train)} train tasks "
+        f"to {args.out}"
+    )
+    print(
+        "code.jsonl + code.tests.jsonl are the validator bundle and must never be "
+        "published.\ncode.train.jsonl is the public split; run "
+        "scripts/generate_reference_completions.py against it before release."
+    )
+
+    problems = generator.verify_bundle(args.out)
+    if problems:
+        for problem in problems[:10]:
+            print(f"  PROBLEM {problem}")
+        return 1
+    print("bundle verifies: every ref has tests, digests match, no hidden input leaks")
+    return 0
 
 
 def _check(args: argparse.Namespace) -> int:
@@ -70,6 +114,13 @@ def _check(args: argparse.Namespace) -> int:
             f"{name:<14}{len(corpus):>8}{len(corpus.rotating):>10}"
             f"{len(corpus.fixed):>8}  {_digest(corpus):<18}{status}"
         )
+
+    for name in sorted(corpora):
+        if (args.directory / f"{name}.tests.jsonl").is_file():
+            bundle_problems = generator.verify_bundle(args.directory, name)
+            problems.extend(bundle_problems)
+            for problem in bundle_problems[:5]:
+                print(f"  PROBLEM {problem}")
 
     missing = sorted(open_tracks - set(corpora))
     if missing:

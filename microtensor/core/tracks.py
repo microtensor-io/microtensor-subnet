@@ -28,12 +28,17 @@ class Track:
     emission_share: float
     work_unit: str
     enabled: bool = False
+    classes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.enabled and self.emission_share <= 0.0:
             raise ValueError(f"track {self.id!r} is enabled but earns nothing")
         if not self.enabled and self.emission_share != 0.0:
             raise ValueError(f"track {self.id!r} is disabled but holds an emission share")
+
+    @property
+    def live_classes(self) -> tuple[str, ...]:
+        return self.classes or tuple(CLASSES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,36 +67,38 @@ TRACKS: Final[dict[str, Track]] = {
             modality=Modality.TEXT,
             metric="execution_pass_rate",
             decoding=Decoding.GREEDY,
-            emission_share=0.30,
+            emission_share=1.0,
             work_unit="generated_tokens",
             enabled=True,
+            classes=("laptop", "edge-gpu"),
         ),
         Track(
             id="document",
             modality=Modality.TEXT,
             metric="extraction_f1",
             decoding=Decoding.GREEDY,
-            emission_share=0.30,
+            emission_share=0.0,
             work_unit="generated_tokens",
-            enabled=True,
         ),
         Track(
             id="analytics",
             modality=Modality.TEXT,
             metric="exact_match_numeric",
             decoding=Decoding.GREEDY,
-            emission_share=0.20,
+            emission_share=0.0,
             work_unit="generated_tokens",
-            enabled=True,
         ),
+        # BLOCKED: rubric_f1_tool_calls is a judged metric wearing a computed
+        # name. Before this track is re-enabled, either the rubric becomes fully
+        # mechanical (a checklist reducible to string/structure matching) or the
+        # metric is renamed to what it actually computes.
         Track(
             id="support",
             modality=Modality.TEXT,
             metric="rubric_f1_tool_calls",
             decoding=Decoding.GREEDY,
-            emission_share=0.20,
+            emission_share=0.0,
             work_unit="generated_tokens",
-            enabled=True,
         ),
         Track(
             id="detect",
@@ -191,14 +198,21 @@ def get_class(class_id: str) -> HardwareClass:
 
 
 def is_competable(track_id: str, class_id: str) -> bool:
-    return track_id in TRACKS and TRACKS[track_id].enabled and class_id in CLASSES
+    if track_id not in TRACKS or not TRACKS[track_id].enabled:
+        return False
+    return class_id in TRACKS[track_id].live_classes and class_id in CLASSES
 
 
 def competitions() -> list[tuple[str, str]]:
-    return [(t.id, c.id) for t in enabled_tracks() for c in CLASSES.values()]
+    out: list[tuple[str, str]] = []
+    for track in enabled_tracks():
+        out.extend((track.id, c) for c in track.live_classes if c in CLASSES)
+    return out
 
 
 def validate_registry() -> None:
+    from microtensor.core.constants import CLASS_WEIGHTS
+
     live = enabled_tracks()
     if not live:
         raise ValueError("no track is enabled; the subnet would emit nothing")
@@ -209,6 +223,23 @@ def validate_registry() -> None:
             f"enabled emission shares sum to {total!r}, not 1.0 — "
             "emissions would be silently redistributed"
         )
+
+    for track in TRACKS.values():
+        unknown = [c for c in track.classes if c not in CLASSES]
+        if unknown:
+            raise ValueError(f"track {track.id!r} names unknown classes {unknown}")
+
+    for track in live:
+        if not track.live_classes:
+            raise ValueError(f"track {track.id!r} is enabled but yields no competition")
+        weighted = [c for c in track.live_classes if c in CLASS_WEIGHTS]
+        if len(weighted) == len(track.live_classes):
+            weight_total = sum(CLASS_WEIGHTS[c] for c in track.live_classes)
+            if abs(weight_total - 1.0) > 1e-9:
+                raise ValueError(
+                    f"class weights over {track.id!r}'s live classes sum to "
+                    f"{weight_total!r}, not 1.0"
+                )
 
     for cls in CLASSES.values():
         if not 0 < cls.max_size_bytes < cls.max_rss_bytes:

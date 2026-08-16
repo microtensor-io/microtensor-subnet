@@ -96,6 +96,15 @@ def cpu_seconds_used() -> float:
     return float(usage.ru_utime + usage.ru_stime)
 
 
+def children_cpu_seconds() -> float:
+    try:
+        resource = _resource()
+    except UnsupportedPlatform:
+        return 0.0
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return float(usage.ru_utime + usage.ru_stime)
+
+
 def peak_rss_bytes() -> int:
     if not POSIX:
         return 0

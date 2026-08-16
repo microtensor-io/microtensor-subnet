@@ -62,3 +62,15 @@ def test_an_engine_the_child_cannot_build_makes_the_validator_abstain(
     assert outcome.status != SETTLED
     assert "infrastructure" in outcome.reason or "engine" in outcome.reason
     assert not world.client.submitted
+
+
+def test_a_degraded_validator_discovers_but_never_scores(world) -> None:  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    world.context.config = replace(world.context.config, degraded=True)
+    outcome = run_round(world.context, world.round)
+    assert outcome.status != SETTLED
+    assert "degraded" in outcome.reason
+    assert outcome.participants == 3
+    assert outcome.scored == 0
+    assert not world.client.submitted

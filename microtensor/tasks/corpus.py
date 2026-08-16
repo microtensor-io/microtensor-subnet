@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -114,10 +114,63 @@ def load_corpus(path: Path, track: str, version: str = CORPUS_VERSION) -> Corpus
     return Corpus(track=track, version=version, tasks=tuple(tasks))
 
 
+SIDECAR_SUFFIXES = (".tests.jsonl", ".train.jsonl", ".reference.jsonl")
+
+
+def load_tests(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.is_file():
+        raise CorpusError(f"tests file {path} is missing")
+    bundle: dict[str, dict[str, Any]] = {}
+    with path.open(encoding="utf-8") as fh:
+        for number, line in enumerate(fh, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+                ref = str(row["ref"])
+                bundle[ref] = {
+                    "entry_point": str(row["entry_point"]),
+                    "tests": list(row["tests"]),
+                }
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise CorpusError(f"{path}:{number} is malformed: {exc}") from exc
+    return bundle
+
+
+def attach_tests(corpus: Corpus, bundle: dict[str, dict[str, Any]]) -> Corpus:
+    from microtensor.core.hashing import canonical_hash
+
+    attached: list[Task] = []
+    for task in corpus:
+        declared = task.inputs.get("tests_digest")
+        if not declared:
+            attached.append(task)
+            continue
+        entry = bundle.get(task.ref)
+        if entry is None:
+            raise CorpusError(f"task {task.ref!r} declares hidden tests but none were found")
+        actual = canonical_hash(
+            {"ref": task.ref, "entry_point": entry["entry_point"], "tests": entry["tests"]}
+        )
+        if actual != declared:
+            raise CorpusError(
+                f"task {task.ref!r}: the tests file does not hash to the declared digest"
+            )
+        attached.append(replace(task, gold=dict(entry)))
+    return Corpus(track=corpus.track, version=corpus.version, tasks=tuple(attached))
+
+
 def load_all(root: Path, version: str = CORPUS_VERSION) -> dict[str, Corpus]:
     corpora: dict[str, Corpus] = {}
     for path in sorted(root.glob("*.jsonl")):
-        corpora[path.stem] = load_corpus(path, path.stem, version)
+        if path.name.endswith(SIDECAR_SUFFIXES):
+            continue
+        corpus = load_corpus(path, path.stem, version)
+        tests_path = path.with_name(f"{path.stem}.tests.jsonl")
+        if tests_path.is_file():
+            corpus = attach_tests(corpus, load_tests(tests_path))
+        corpora[path.stem] = corpus
     if not corpora:
         raise CorpusError(f"no corpus files found under {root}")
     return corpora

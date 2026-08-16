@@ -274,6 +274,61 @@ def test_an_unsigned_manifest_is_rejected(world) -> None:  # type: ignore[no-unt
     assert outcome.participants == 1
 
 
+def test_the_base_model_allowlist_gates_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace as dc_replace
+
+    from microtensor.validator import discover as discover_module
+
+    allow = frozenset({"Qwen/Qwen3-4B@a1b2c3d4e5f6a7b8"})
+    monkeypatch.setattr(discover_module, "ALLOWED_BASE_MODELS", allow)
+
+    artifact = _artifact(tmp_path / "gate", b"G")
+    unlisted = build_manifest(
+        artifact,
+        hotkey=MINER,
+        round_index=1,
+        track="code",
+        hardware_class="laptop",
+        source="https:gate.example.com/mt-code",
+        load=LOAD,
+        declared=DECLARED,
+    )
+    reason = discover_module._manifest_reason(unlisted, MINER, verify=False)
+    assert reason == "base model not on the allowlist"
+
+    listed = build_manifest(
+        artifact,
+        hotkey=MINER,
+        round_index=1,
+        track="code",
+        hardware_class="laptop",
+        source="https:gate.example.com/mt-code",
+        load=dc_replace(LOAD, base_model="Qwen/Qwen3-4B@a1b2c3d4e5f6a7b8"),
+        declared=DECLARED,
+    )
+    assert discover_module._manifest_reason(listed, MINER, verify=False) == ""
+
+
+def test_an_empty_allowlist_means_the_gate_is_not_yet_frozen(tmp_path: Path) -> None:
+    from microtensor.validator import discover as discover_module
+
+    assert not discover_module.ALLOWED_BASE_MODELS
+    artifact = _artifact(tmp_path / "open", b"O")
+    manifest = build_manifest(
+        artifact,
+        hotkey=MINER,
+        round_index=1,
+        track="code",
+        hardware_class="laptop",
+        source="https:open.example.com/mt-code",
+        load=LOAD,
+        declared=DECLARED,
+    )
+    assert discover_module._manifest_reason(manifest, MINER, verify=False) == ""
+
+
 def test_a_tampered_artifact_does_not_reach_execution(world, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     context, _client, round_, _sources = world
 

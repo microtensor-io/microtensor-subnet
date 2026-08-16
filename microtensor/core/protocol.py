@@ -4,7 +4,12 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-from microtensor.core.constants import DECLARATION_TOLERANCE
+from microtensor.core.constants import (
+    DECLARATION_LATENCY_FLOOR_MS,
+    DECLARATION_TOLERANCE_LATENCY,
+    DECLARATION_TOLERANCE_RSS,
+    DECLARATION_TOLERANCE_SIZE,
+)
 from microtensor.core.tracks import HardwareClass
 
 
@@ -140,12 +145,17 @@ class Evaluation:
         return self.gate.admitted and self.score_combined > 0.0
 
 
+def latency_allowance(declared_p95_ms: int) -> float:
+    return max(
+        declared_p95_ms * (1.0 + DECLARATION_TOLERANCE_LATENCY),
+        declared_p95_ms + DECLARATION_LATENCY_FLOOR_MS,
+    )
+
+
 def evaluate_gate(
     measured: MeasuredEnvelope,
     declared: DeclaredEnvelope,
     hardware: HardwareClass,
-    *,
-    tolerance: float = DECLARATION_TOLERANCE,
 ) -> GateResult:
     failures: list[GateFailure] = []
 
@@ -157,12 +167,11 @@ def evaluate_gate(
         failures.append(GateFailure.LATENCY_CEILING)
 
     if measured.conforming:
-        slack = 1.0 + tolerance
-        if measured.size_bytes > declared.size_bytes * slack:
+        if measured.size_bytes > declared.size_bytes * (1.0 + DECLARATION_TOLERANCE_SIZE):
             failures.append(GateFailure.SIZE_OVER_DECLARED)
-        if measured.peak_rss_bytes > declared.peak_rss_bytes * slack:
+        if measured.peak_rss_bytes > declared.peak_rss_bytes * (1.0 + DECLARATION_TOLERANCE_RSS):
             failures.append(GateFailure.RSS_OVER_DECLARED)
-        if measured.ttft_p95_ms > declared.p95_latency_ms * slack:
+        if measured.ttft_p95_ms > latency_allowance(declared.p95_latency_ms):
             failures.append(GateFailure.LATENCY_OVER_DECLARED)
 
     return GateResult(admitted=not failures, failures=tuple(failures))

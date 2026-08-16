@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from microtensor.core.protocol import ArtifactFormat
 from microtensor.core.tracks import CLASSES, enabled_tracks, is_competable
 
 CONFIG_NAME = "miner.json"
+
+HF_PINNED_LOCATOR = re.compile(r"^[\w.-]+/[\w.-]+@[0-9a-f]{7,40}$")
 
 
 class MinerConfigError(ValueError):
@@ -51,6 +54,12 @@ class MinerConfig:
             )
         if not locator:
             raise MinerConfigError("source must carry a locator after the scheme")
+        if scheme == "hf" and not HF_PINNED_LOCATOR.match(locator):
+            raise MinerConfigError(
+                f"hf source {locator!r} must pin a commit as <org>/<repo>@<sha>; "
+                "a branch or tag can move after you commit the digest, so validators "
+                "would fetch a tree that no longer matches your manifest"
+            )
 
     @property
     def manifest_path(self) -> Path:

@@ -62,6 +62,12 @@ def fbeta(predicted: set[str], gold: set[str], beta: float = 2.0) -> float:
 
 
 def execution_pass_rate(output: Any, gold: Any) -> float:
+    if isinstance(gold, dict) and "tests" in gold and "entry_point" in gold:
+        from microtensor.scoring import execution
+
+        return execution.execute_pass_rate(
+            str(output), str(gold["entry_point"]), execution.parse_tests(gold["tests"])
+        )
     if isinstance(output, dict):
         cases = output.get("cases")
         if isinstance(cases, Sequence) and cases:

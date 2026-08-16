@@ -60,8 +60,37 @@ def test_size_ceiling_below_rss_ceiling() -> None:
         assert cls.max_size_bytes < cls.max_rss_bytes
 
 
-def test_competitions_are_the_emission_unit() -> None:
-    assert len(competitions()) == len(enabled_tracks()) * len(CLASSES)
+def test_the_launch_scope_is_code_on_two_classes() -> None:
+    assert competitions() == [("code", "laptop"), ("code", "edge-gpu")]
+
+
+def test_class_gating_bounds_is_competable() -> None:
+    from microtensor.core import is_competable
+
+    assert is_competable("code", "laptop")
+    assert is_competable("code", "edge-gpu")
+    assert not is_competable("code", "embedded")
+    assert not is_competable("code", "server-cpu")
+    assert not is_competable("document", "laptop")
+
+
+def test_registry_rejects_a_track_naming_an_unknown_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from microtensor.core.tracks import Decoding, Modality, Track
+
+    bogus = Track(
+        id="bogus",
+        modality=Modality.TEXT,
+        metric="extraction_f1",
+        decoding=Decoding.GREEDY,
+        emission_share=0.0,
+        work_unit="generated_tokens",
+        classes=("no-such-class",),
+    )
+    monkeypatch.setitem(TRACKS, "bogus", bogus)
+    with pytest.raises(ValueError, match="unknown classes"):
+        validate_registry()
 
 
 def test_canonical_json_is_key_order_independent() -> None:
@@ -137,6 +166,22 @@ def test_tolerance_never_applies_to_a_class_ceiling() -> None:
     result = evaluate_gate(_measured(peak_rss_bytes=over), generous, _CLASS)
     assert not result.admitted
     assert GateFailure.RSS_CEILING in result.failures
+
+
+def test_latency_declaration_gets_a_relative_and_an_absolute_floor() -> None:
+    assert evaluate_gate(_measured(ttft_p95_ms=59), _DECLARED, _CLASS).admitted
+    result = evaluate_gate(_measured(ttft_p95_ms=61), _DECLARED, _CLASS)
+    assert GateFailure.LATENCY_OVER_DECLARED in result.failures
+
+
+def test_latency_slack_never_reaches_the_class_ceiling() -> None:
+    declared = DeclaredEnvelope(
+        size_bytes=_DECLARED.size_bytes,
+        peak_rss_bytes=_DECLARED.peak_rss_bytes,
+        p95_latency_ms=_CLASS.max_p95_ms,
+    )
+    result = evaluate_gate(_measured(ttft_p95_ms=_CLASS.max_p95_ms + 5), declared, _CLASS)
+    assert GateFailure.LATENCY_CEILING in result.failures
 
 
 def test_non_conforming_host_checks_ceilings_not_declarations() -> None:

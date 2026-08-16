@@ -67,7 +67,7 @@ def settle(
     combined = combine_competitions(per_competition)
 
     origins = {
-        hotkey: origin_group(address) for hotkey, address in snapshot.addresses().items()
+        hotkey: origin_group(coldkey) for hotkey, coldkey in snapshot.coldkeys().items()
     }
     capped = apply_concentration_cap(combined, origins)
     if len(capped) < len(combined):

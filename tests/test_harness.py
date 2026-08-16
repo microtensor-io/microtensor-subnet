@@ -25,7 +25,7 @@ from microtensor.harness import (
     unregister,
 )
 from microtensor.harness.engines.reference import INFO, ReferenceEngine
-from microtensor.harness.jail import JailResult
+from microtensor.harness.jail import JailResult, cpu_limit_binds
 
 
 @pytest.fixture(autouse=True)
@@ -256,6 +256,50 @@ def test_a_cpu_budget_stops_a_spinner_before_the_wall_backstop() -> None:
 def test_infrastructure_failure_abstains_rather_than_scoring_zero() -> None:
     result = JailResult(completed=False, error="engine binary is missing")
     assert result.fault is Fault.INFRASTRUCTURE
+
+
+def test_a_wall_killed_worker_that_never_got_cpu_is_not_the_artifacts_fault() -> None:
+    starved = JailResult(
+        completed=False,
+        error="exceeded the 30s wall backstop",
+        cpu_seconds=0.1,
+        timed_out=True,
+        sandboxed=True,
+        cpu_budget=10.0,
+    )
+    assert starved.starved
+    assert starved.fault is Fault.INFRASTRUCTURE
+
+
+def test_a_wall_killed_worker_that_burned_its_budget_is_the_artifacts_fault() -> None:
+    burner = JailResult(
+        completed=False,
+        error="exceeded the 30s wall backstop",
+        cpu_seconds=9.0,
+        timed_out=True,
+        sandboxed=True,
+        cpu_budget=10.0,
+    )
+    assert not burner.starved
+    assert burner.fault is Fault.ARTIFACT
+
+
+def test_an_unsandboxed_timeout_stays_the_artifacts_fault() -> None:
+    result = JailResult(
+        completed=False,
+        error="exceeded the wall backstop",
+        cpu_seconds=0.0,
+        timed_out=True,
+        sandboxed=False,
+        cpu_budget=10.0,
+    )
+    assert result.fault is Fault.ARTIFACT
+
+
+def test_the_cpu_probe_reports_whether_the_limit_binds() -> None:
+    if not sandbox_available():
+        pytest.skip("this host cannot enforce a cpu budget")
+    assert cpu_limit_binds() is True
 
 
 def no_engine() -> None:

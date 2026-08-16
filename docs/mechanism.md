@@ -56,10 +56,10 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 
 | Track | Enabled | Metric | Emission share |
 |---|---|---|---|
-| `code` | ✅ | execution pass rate · schema conformance | 0.30 |
-| `document` | ✅ | extraction F1 · span accuracy | 0.30 |
-| `analytics` | ✅ | exact-match · numeric tolerance | 0.20 |
-| `support` | ✅ | rubric F1 · tool-call correctness | 0.20 |
+| `code` | ✅ | execution pass rate against hidden tests | 1.00 |
+| `document` | ⏸ | extraction F1 · span accuracy | none |
+| `analytics` | ⏸ | exact-match · numeric tolerance | none |
+| `support` | ⏸ | rubric F1 · tool-call correctness | none |
 | `detect` | ⏸ | mAP @ fixed IoU | none |
 | `vqa` | ⏸ | answer accuracy · grounding IoU | none |
 | `speech` | ⏸ | word / character error rate | none |
@@ -68,6 +68,13 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 
 Disabled tracks are registered but carry zero emission share and are not drawn.
 Enabling one is a mechanism version bump, not a code change.
+
+The launch scope is deliberately narrow: `code` is the only enabled track,
+competing in `laptop` and `edge-gpu` only, with the track's emission split
+60/40 between them by `CLASS_WEIGHTS`. A track may gate the classes it competes
+in; a code model under the 600 MB `embedded` ceiling would sit below the track
+threshold forever, and a dead competition still costs every validator fetch and
+profile time.
 
 **Every enabled metric is computed, not judged.** No model renders an opinion on
 another model's output. This is the admission criterion for a track: if quality
@@ -424,6 +431,11 @@ rank j is taken from the holder only if   Σ(challenger) > Σ(holder) + ε
 ```
 
 The whitepaper originally specified this for rank 1 only. That is not enough.
+The empirical basis is SN9's documented winner-take-all hoarding: a single
+dominant miner absorbing effectively the whole emission pool killed the
+incentive for anyone else to compete. The geometric schedule with a paid tail
+is the direct response.
+
 With `γ = 0.85, K = 8`, rank 2 pays ~15% of the track pool, so copying the leader
 and landing second is a **very profitable** attack that a rank-1-only margin
 never touches. Applying `ε` pairwise removes the return on appropriation
@@ -444,7 +456,10 @@ Rank is unchanged; only share moves.
 
 ### Concentration cap
 
-Miners are grouped by submission-origin `/16`. If any group holds more than
+Miners are grouped by **coldkey**. Miners serve no axon, so an IP-prefix
+grouping keys on an address that is absent or stale and misses its actual
+target, one operator running many hotkeys; the coldkey is what that operator
+cannot cheaply multiply without splitting stake. If any coldkey holds more than
 `CONCENTRATION_CAP_FRACTION` of the paid cohort, the excess is zeroed lowest-first
 and the vector renormalised. Registration is permissionless and cheap; without
 this, one operator fielding a slate takes a whole track.

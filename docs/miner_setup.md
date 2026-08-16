@@ -26,21 +26,20 @@ Two numbers decide everything, in this order:
 A more accurate model that misses the memory ceiling scores zero against a worse
 model that fits. Design for the envelope first.
 
-| class | size | peak RSS | p95 TTFT | reference |
-|---|---|---|---|---|
-| `server-cpu` | 8 GiB | 16 GiB | 400 ms | x86-64 server, no accelerator |
-| `edge-gpu` | 2.5 GiB | 4 GiB | 120 ms | consumer or embedded GPU |
-| `laptop` | 1.5 GiB | 3 GiB | 180 ms | developer workstation |
-| `embedded` | 600 MiB | 1 GiB | 300 ms | mobile SoC or NPU |
+| track | class | size | peak RSS | p95 TTFT | emission |
+|---|---|---|---|---|---|
+| `code` | `laptop` | 1.5 GiB | 3 GiB | 180 ms | 60 % |
+| `code` | `edge-gpu` | 2.5 GiB | 4 GiB | 120 ms | 40 % |
 
 ```bash
 mt inspect tracks
 ```
 
-Emission splits `code` 30 %, `document` 30 %, `analytics` 20 %, `support` 20 %,
-then evenly across the four classes within each track. Sixteen competitions, each
-paying the top 8 on a geometric curve. Rank 8 still earns about a third of rank 1,
-so the tail is worth competing for.
+These are the two live competitions at launch. `code` carries the whole
+emission, split 60/40 between `laptop` and `edge-gpu`. Each competition pays
+its top 8 on a geometric curve, and rank 8 still earns about a third of
+rank 1, so the tail is worth competing for. Further tracks and classes are
+registered as disabled stubs and open by governance.
 
 ---
 
@@ -55,8 +54,10 @@ measured > your declaration   → inadmissible
 
 **Over-declaring does not help you.** Your declaration is published in the
 Verified Model Certificate, and a deployer choosing between two admissible models
-picks the one with the tighter guarantee. **Under-declaring is fatal.** A 2 %
-tolerance is applied to your declaration only, never to the class ceiling.
+picks the one with the tighter guarantee. **Under-declaring is fatal.** A tolerance is applied to your declaration
+only, never to the class ceiling: 2 % on size and memory, and on latency the
+larger of 10 % or 15 ms, because single-digit-millisecond slack would punish
+thermal jitter rather than lies.
 
 The truthful declaration is the one that is barely above what you actually
 measured. `mt miner selfcheck` computes exactly that, with a 10 % margin.
@@ -144,11 +145,25 @@ my-model/
 ```
 
 **Constraints that will reject you at submission:**
+
+- Start from a base model on the pinned allowlist in
+  [constants.py](../microtensor/core/constants.py), and declare it in your
+  manifest as `<repo>@<revision-sha>`. The candidate list is Qwen3 (0.6B,
+  1.7B, 4B) and Llama 3.2 (1B, 3B); the exact revisions are published at
+  corpus freeze, and until the allowlist is frozen the field is unchecked.
 - ONNX opset 13 to 21, standard domains only (`""`, `ai.onnx`, `ai.onnx.ml`). Custom
   operators are rejected, because a validator will not run code it cannot audit.
 - Greedy decoding. The track fixes it; temperature is not a knob you control.
 - Size is *total*: weights, tokenizer, config, everything in the directory.
 - No `manifest.json` of your own. Packaging writes it.
+
+### Training data
+
+Each corpus release ships a public train split (`code.train.jsonl`: prompts
+and public examples only) and one vetted reference completion per train task
+(`code.reference.jsonl`). Fine-tune on those prompt/completion pairs
+directly; nobody needs to run a large model over the corpus themselves. The
+hidden tests and the rotating draw never leave the validator bundle.
 
 ---
 
@@ -258,6 +273,24 @@ before round *N*'s close block.** Anything later competes in round *N+1*.
 
 The round seed is drawn from the hash of that very close block, so no submitter
 can see the task set. Do not bother trying to time it.
+
+### The reveal deadline
+
+Your artifact must be **fetchable by validators at the close block**, because
+that is when they materialise the participant set. If your repo is private
+while you train, flip it public (or grant the validator token) BEFORE the
+close, not after. The chain also rate-limits commitments to roughly one per
+20 minutes, so the last safe commit is well before the close. Against
+`SUBMISSION_CLOSES_BEFORE_BLOCKS = 600` (the close sits about 2 hours before
+round end), a sane timeline for a 24-hour round looks like:
+
+- T-4h: artifact uploaded, `mt miner selfcheck` clean
+- T-3h: repo public / token granted, `mt miner ship`
+- T-2h: submissions close; the seed is drawn; too late for this round
+
+Prefer `hf:<org>/<repo>@<commit-sha>` over `https:` sources. The digest
+always binds the bytes, but a pinned commit also survives the host moving
+the branch under you.
 
 ---
 

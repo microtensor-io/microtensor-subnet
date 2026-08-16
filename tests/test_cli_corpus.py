@@ -68,13 +68,14 @@ def test_check_names_open_tracks_with_no_corpus(
         {"ref": "a", "prompt": "x", "partition": ROTATING},
         {"ref": "b", "prompt": "y", "partition": FIXED},
     ]
-    (tmp_path / "code.jsonl").write_text(
+    (tmp_path / "document.jsonl").write_text(
         "\n".join(json.dumps(r) for r in rows), encoding="utf-8"
     )
     main(["corpus", "check", str(tmp_path), "--tasks-per-round", "2"])
     out = capsys.readouterr().out
     assert "will not be scored" in out
-    assert "document" in out
+    assert "code" in out
+    assert "track not open" in out
 
 
 def test_check_reports_an_empty_directory_cleanly(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 from dataclasses import asdict, dataclass
@@ -12,6 +13,9 @@ from microtensor.core.tracks import HardwareClass
 PROFILE_PREFIX = "dev:"
 
 
+POLICY_ENV = "MT_DEVICE_POLICY"
+
+
 @dataclass(frozen=True, slots=True)
 class DeviceProfile:
     machine: str
@@ -20,6 +24,10 @@ class DeviceProfile:
     total_memory_bytes: int
     accelerator: str = ""
     accelerator_memory_bytes: int = 0
+    cooling_mode: str = ""
+    power_mode: str = ""
+    warmup_policy: str = ""
+    idle_seconds: int = 0
 
     @property
     def digest(self) -> str:
@@ -88,8 +96,20 @@ def _accelerator() -> tuple[str, int]:
         return name.strip(), 0
 
 
+def _declared_policy() -> dict[str, Any]:
+    raw = os.environ.get(POLICY_ENV, "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def detect() -> DeviceProfile:
     accelerator, accelerator_memory = _accelerator()
+    policy = _declared_policy()
     return DeviceProfile(
         machine=platform.machine().lower(),
         system=platform.system().lower(),
@@ -97,6 +117,10 @@ def detect() -> DeviceProfile:
         total_memory_bytes=_total_memory_bytes(),
         accelerator=accelerator,
         accelerator_memory_bytes=accelerator_memory,
+        cooling_mode=str(policy.get("cooling_mode", "")),
+        power_mode=str(policy.get("power_mode", "")),
+        warmup_policy=str(policy.get("warmup_policy", "")),
+        idle_seconds=int(policy.get("idle_seconds", 0) or 0),
     )
 
 

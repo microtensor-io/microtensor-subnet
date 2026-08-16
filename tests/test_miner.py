@@ -27,7 +27,7 @@ def _config(home: Path, artifact: Path, **kw: object) -> MinerConfig:
         "artifact_dir": artifact,
         "track": "code",
         "hardware_class": "laptop",
-        "source": "hf:acme/mt-code-3b@v1",
+        "source": "hf:acme/mt-code-3b@a1b2c3d",
     }
     fields.update(kw)
     return MinerConfig.build(home, CHAIN, **fields)
@@ -89,7 +89,7 @@ def test_build_names_every_missing_setting(tmp_path: Path) -> None:
 def test_config_exposes_the_scheme_and_locator(tmp_path: Path, artifact: Path) -> None:
     config = _config(tmp_path, artifact)
     assert config.scheme == "hf"
-    assert config.locator == "acme/mt-code-3b@v1"
+    assert config.locator == "acme/mt-code-3b@a1b2c3d"
 
 
 def test_saved_config_never_holds_a_secret(tmp_path: Path, artifact: Path) -> None:
@@ -100,14 +100,14 @@ def test_saved_config_never_holds_a_secret(tmp_path: Path, artifact: Path) -> No
 
 
 def test_upload_plan_totals_the_files(artifact: Path) -> None:
-    plan = plan_upload(artifact, "hf", "acme/m@v1", ["model.onnx", "tokenizer.json"])
+    plan = plan_upload(artifact, "hf", "acme/m@a1b2c3d", ["model.onnx", "tokenizer.json"])
     assert plan.total_bytes == 500 + 12
-    assert plan.targets[0] == "hf:acme/m@v1/model.onnx"
+    assert plan.targets[0] == "hf:acme/m@a1b2c3d/model.onnx"
 
 
 def test_upload_plan_refuses_a_file_that_is_not_there(artifact: Path) -> None:
     with pytest.raises(UploadError):
-        plan_upload(artifact, "hf", "acme/m@v1", ["absent.bin"])
+        plan_upload(artifact, "hf", "acme/m@a1b2c3d", ["absent.bin"])
 
 
 def test_a_plain_web_host_cannot_be_uploaded_to(artifact: Path) -> None:
@@ -138,7 +138,7 @@ def test_init_writes_a_config_the_other_commands_read(
             "--hardware-class",
             "laptop",
             "--source",
-            "hf:acme/m@v1",
+            "hf:acme/m@a1b2c3d",
         ]
     )
     assert code == 0
@@ -165,7 +165,7 @@ def test_init_refuses_a_closed_competition(
             "--hardware-class",
             "laptop",
             "--source",
-            "hf:acme/m@v1",
+            "hf:acme/m@a1b2c3d",
         ]
     )
     assert code == 1
@@ -188,7 +188,7 @@ def test_commands_without_init_still_accept_explicit_flags(
             "--hardware-class",
             "laptop",
             "--source",
-            "hf:acme/m@v1",
+            "hf:acme/m@a1b2c3d",
         ]
     )
     assert code == 1

@@ -7,6 +7,7 @@ from microtensor.chain.commitment import Commitment, decode_all
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round
 from microtensor.chain.wallet import verify_payload
+from microtensor.core.constants import ALLOWED_BASE_MODELS
 from microtensor.registry.fetch import ArtifactMismatch, FetchError, fetch_manifest
 from microtensor.registry.manifest import ArtifactManifest
 from microtensor.validator.context import ValidatorContext
@@ -140,6 +141,9 @@ def _manifest_reason(manifest: ArtifactManifest, hotkey: str, verify: bool = Tru
         ok, reason = _signature_ok(manifest)
         if not ok:
             return reason
+
+    if ALLOWED_BASE_MODELS and manifest.load.base_model not in ALLOWED_BASE_MODELS:
+        return "base model not on the allowlist"
 
     fits, reason = manifest.fits_class()
     if not fits:

@@ -16,6 +16,7 @@ from microtensor.core.constants import (
 )
 from microtensor.core.tracks import competitions, validate_registry
 from microtensor.registry.cache import ArtifactCache
+from microtensor.scoring import execution
 from microtensor.store.state import ValidatorState
 from microtensor.tasks.corpus import Corpus, load_all
 
@@ -37,6 +38,7 @@ class ValidatorConfig:
     allow_unsandboxed: bool = False
     dry_run: bool = False
     verify_signatures: bool = True
+    degraded: bool = False
 
     @property
     def state_path(self) -> Path:
@@ -61,6 +63,7 @@ class ValidatorContext:
     hotkey: str = ""
     wallet: Any = None
     competitions: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    certifications: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def build(
@@ -72,6 +75,7 @@ class ValidatorContext:
         hotkey: str = "",
     ) -> ValidatorContext:
         validate_registry()
+        execution.configure(allow_unsandboxed=config.allow_unsandboxed)
         config.work_dir.mkdir(parents=True, exist_ok=True)
 
         corpora = load_all(config.corpus_dir, config.corpus_version)
@@ -88,6 +92,8 @@ class ValidatorContext:
         if missing:
             log.warning("no corpus for enabled tracks %s; they will not be scored", sorted(missing))
 
+        from microtensor.envelope.certify import load_policies
+
         return cls(
             config=config,
             client=client,
@@ -97,6 +103,7 @@ class ValidatorContext:
             hotkey=hotkey,
             wallet=wallet,
             competitions=open_competitions,
+            certifications=load_policies(config.home),
         )
 
     @property

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -25,6 +26,15 @@ from microtensor.core.constants import (
     TASKS_PER_ROUND,
     UPDATE_POLL_SECONDS,
 )
+from microtensor.envelope.certify import (
+    DEFAULT_REPETITIONS,
+    LAUNCH_CLASSES,
+    CertificationError,
+    band_verdict,
+)
+from microtensor.envelope.certify import certify as certification_run
+from microtensor.envelope.certify import save as certify_save
+from microtensor.harness.jail import cpu_limit_binds
 from microtensor.harness.limits import sandbox_available
 from microtensor.update.loop import UpdateChecker, UpdateSettings
 from microtensor.validator import loopback
@@ -61,6 +71,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     loop.add_argument("--tasks", type=int, default=12)
     loop.set_defaults(handler=_loopback)
 
+    cert = inner.add_parser(
+        "certify", help="benchmark this host as a reference device for a class"
+    )
+    add_common_arguments(cert)
+    cert.add_argument("hardware_class", choices=list(LAUNCH_CLASSES))
+    cert.add_argument("--cooling-mode", default=None)
+    cert.add_argument("--power-mode", default=None)
+    cert.add_argument("--warmup-policy", default=None)
+    cert.add_argument("--idle-seconds", type=int, default=None)
+    cert.add_argument("--repetitions", type=int, default=None)
+    cert.set_defaults(handler=_certify)
+
 
 def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
     add_chain_arguments(parser)
@@ -79,6 +101,11 @@ def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
         help="run artifacts without resource limits (development only)",
     )
     parser.add_argument(
+        "--allow-degraded",
+        action="store_true",
+        help="if the cpu limit does not bind, run abstain-only instead of exiting",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="compute weights but do not submit them"
     )
     parser.add_argument(
@@ -94,7 +121,22 @@ def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--allow-mechanism-change", action="store_true")
 
 
-def _build(args: argparse.Namespace) -> ValidatorContext:
+def _degraded(args: argparse.Namespace, *, probe: bool) -> bool:
+    if not probe or args.allow_unsandboxed or not sandbox_available():
+        return False
+    if cpu_limit_binds():
+        return False
+    if not args.allow_degraded:
+        raise SystemExit(
+            "the cpu limit does not bind on this host, so budgets cannot be enforced "
+            "and slow infrastructure would be misattributed as artifact fault; fix the "
+            "host, or pass --allow-degraded to run abstain-only"
+        )
+    log.error("cpu limit does not bind; running degraded, no weights will be set")
+    return True
+
+
+def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext:
     chain = chain_config(args)
     home = Path(args.home)
     corpus = args.corpus or home / "corpus"
@@ -104,6 +146,8 @@ def _build(args: argparse.Namespace) -> ValidatorContext:
             "this host cannot enforce cpu and memory limits; run the validator on Linux, "
             "or pass --allow-unsandboxed for local development"
         )
+
+    degraded = _degraded(args, probe=probe)
 
     config = ValidatorConfig(
         chain=chain,
@@ -118,6 +162,7 @@ def _build(args: argparse.Namespace) -> ValidatorContext:
         profile_seconds=args.profile_seconds,
         allow_unsandboxed=args.allow_unsandboxed,
         dry_run=args.dry_run,
+        degraded=degraded,
     )
 
     wallet = open_wallet(chain, required=not args.dry_run)
@@ -147,16 +192,17 @@ def _updater(args: argparse.Namespace) -> UpdateChecker | None:
         allow_mechanism_change=args.allow_mechanism_change,
     )
     if not settings.signing_key and settings.require_signature:
-        raise SystemExit(
-            "auto-update needs a release signing key; pass --signing-key, or "
-            "--allow-unsigned-updates to accept unverified releases"
+        log.warning(
+            "auto-update disabled: no signing key is pinned in this build; pass "
+            "--signing-key, or --allow-unsigned-updates to accept unverified releases"
         )
+        return None
     log.info("auto-update armed on the %s channel", settings.channel)
     return UpdateChecker(settings)
 
 
 def _run(args: argparse.Namespace) -> int:
-    context = _build(args)
+    context = _build(args, probe=True)
     loop = RoundLoop(context, updater=_updater(args))
     loop.install_signal_handlers()
     try:
@@ -167,7 +213,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _once(args: argparse.Namespace) -> int:
-    context = _build(args)
+    context = _build(args, probe=True)
     try:
         outcome = run_round(context, current_round(context))
         print(f"round {outcome.round_index}: {outcome.status}")
@@ -216,6 +262,41 @@ def _loopback(args: argparse.Namespace) -> int:
         return 0 if settled == len(outcomes) else 2
     finally:
         world.context.close()
+
+
+def _certify(args: argparse.Namespace) -> int:
+    policy = {
+        key: value
+        for key, value in {
+            "cooling_mode": args.cooling_mode,
+            "power_mode": args.power_mode,
+            "warmup_policy": args.warmup_policy,
+            "idle_seconds": args.idle_seconds,
+        }.items()
+        if value is not None
+    }
+
+    try:
+        certification = certification_run(
+            args.hardware_class,
+            policy,
+            repetitions=args.repetitions or DEFAULT_REPETITIONS,
+        )
+    except CertificationError as exc:
+        return fail(str(exc))
+
+    path = certify_save(certification, Path(args.home))
+    passed, verdict = band_verdict(certification)
+
+    print(f"class            {certification.class_id}")
+    print(f"workload         v{certification.workload_version}")
+    print(f"p50 / p95        {certification.latency.p50:.1f} / {certification.latency.p95:.1f} ms")
+    print(f"peak rss         {certification.peak_rss_bytes / 1024**2:.0f} MiB")
+    print(f"device profile   {certification.digest}")
+    print(f"policy           {json.dumps(certification.policy, sort_keys=True)}")
+    print(f"band             {verdict}")
+    print(f"\nsaved to {path}; envelope measurements will carry this profile")
+    return 0 if passed is not False else 2
 
 
 def _status(args: argparse.Namespace) -> int:

@@ -320,6 +320,55 @@ def test_a_failed_install_does_not_request_a_restart() -> None:
     assert not result.restart_required
 
 
+def _keypair(seed_byte: str):  # type: ignore[no-untyped-def]
+    substrate = pytest.importorskip("substrateinterface")
+    return substrate.Keypair.create_from_seed(
+        "0x" + seed_byte * 32, crypto_type=substrate.KeypairType.ED25519
+    )
+
+
+def test_a_correctly_signed_release_verifies(tmp_path: Path) -> None:
+    keypair = _keypair("11")
+    wheel = tmp_path / "mt.whl"
+    wheel.write_bytes(b"payload")
+    sums = f"{sha256_file(wheel)}  mt.whl"
+    signature = keypair.sign(sums.encode("utf-8"))
+    result = verify_artifact(
+        wheel, sums, signature, "0x" + keypair.public_key.hex(), require_signature=True
+    )
+    assert result.trusted
+    assert result.signed
+
+
+def test_a_release_signed_by_the_wrong_key_is_refused(tmp_path: Path) -> None:
+    signer = _keypair("22")
+    pinned = _keypair("33")
+    wheel = tmp_path / "mt.whl"
+    wheel.write_bytes(b"payload")
+    sums = f"{sha256_file(wheel)}  mt.whl"
+    signature = signer.sign(sums.encode("utf-8"))
+    result = verify_artifact(
+        wheel, sums, signature, "0x" + pinned.public_key.hex(), require_signature=True
+    )
+    assert not result.trusted
+    assert "does not verify" in result.reason
+
+
+def test_a_tampered_wheel_fails_even_with_a_valid_signature(tmp_path: Path) -> None:
+    keypair = _keypair("44")
+    wheel = tmp_path / "mt.whl"
+    wheel.write_bytes(b"payload")
+    sums = f"{sha256_file(wheel)}  mt.whl"
+    signature = keypair.sign(sums.encode("utf-8"))
+    wheel.write_bytes(b"swapped")
+    result = verify_artifact(
+        wheel, sums, signature, "0x" + keypair.public_key.hex(), require_signature=True
+    )
+    assert result.signature_ok
+    assert not result.digest_ok
+    assert not result.trusted
+
+
 def test_sha256_file_matches_hashlib(tmp_path: Path) -> None:
     path = tmp_path / "blob"
     path.write_bytes(b"x" * 5_000_000)

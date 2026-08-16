@@ -87,7 +87,9 @@ def _add_settings_arguments(parser: argparse.ArgumentParser, *, required: bool =
     add_common_arguments(parser)
     parser.add_argument("--artifact", type=Path, required=required, help="artifact directory")
     parser.add_argument("--track", required=required)
-    parser.add_argument("--hardware-class", required=required)
+    parser.add_argument(
+        "--hardware-class", "--class", dest="hardware_class", required=required
+    )
     parser.add_argument("--source", required=required, help="scheme:locator validators fetch from")
     parser.add_argument("--entrypoint")
     parser.add_argument("--format", dest="artifact_format")
@@ -141,6 +143,14 @@ def _config(args: argparse.Namespace) -> MinerConfig:
         if settings.get(key) is None:
             settings[key] = value
     return MinerConfig.build(home, chain, **settings)
+
+
+def _warn_weak_source(config: MinerConfig) -> None:
+    if config.scheme == "https":
+        log.warning(
+            "https source: the digest is your only binding and the host can vanish; "
+            "prefer hf:<org>/<repo>@<commit-sha> or ipfs:"
+        )
 
 
 def _load_manifest_spec(config: MinerConfig) -> LoadManifest:
@@ -233,6 +243,7 @@ def _do_package(args: argparse.Namespace, config: MinerConfig, round_index: int 
 def _package(args: argparse.Namespace) -> int:
     try:
         config = _config(args)
+        _warn_weak_source(config)
         manifest, client = _do_package(args, config, args.round)
     except (MinerConfigError, PackageError, ValueError) as exc:
         return fail(str(exc))
@@ -268,6 +279,7 @@ def _upload(args: argparse.Namespace) -> int:
 def _publish(args: argparse.Namespace) -> int:
     try:
         config = _config(args)
+        _warn_weak_source(config)
         wallet = open_wallet(config.chain)
         client = open_client(config.chain, wallet)
         hotkey = hotkey_address(wallet)
@@ -299,6 +311,7 @@ def _ship(args: argparse.Namespace) -> int:
         config = _config(args)
     except MinerConfigError as exc:
         return fail(str(exc))
+    _warn_weak_source(config)
 
     if not args.no_selfcheck and not config.selfcheck_path.is_file():
         code = _selfcheck(args)

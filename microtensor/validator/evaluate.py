@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from microtensor.core.protocol import (
     evaluate_gate,
 )
 from microtensor.core.tracks import HardwareClass, get_class, get_track
+from microtensor.envelope.device import POLICY_ENV
 from microtensor.envelope.probe import max_input_prompt
 from microtensor.envelope.profiler import ProfilePlan, run_profile
 from microtensor.harness.contract import Response
@@ -22,6 +25,7 @@ from microtensor.harness.limits import Limits
 from microtensor.harness.registry import EngineUnavailable, available, load_builtin
 from microtensor.registry.fetch import ArtifactMismatch, Unfetchable
 from microtensor.registry.fetch import materialise as fetch_artifact
+from microtensor.scoring.execution import ExecutionUnavailable
 from microtensor.scoring.metrics import combine_partitions, partition_scores, score_task
 from microtensor.tasks.corpus import Task
 from microtensor.tasks.selection import RoundTasks, to_requests
@@ -100,6 +104,12 @@ def profile(
     hardware: HardwareClass,
     seed: str,
 ) -> tuple[MeasuredEnvelope | None, str]:
+    policy = context.certifications.get(hardware.id)
+    if policy:
+        os.environ[POLICY_ENV] = json.dumps(policy, sort_keys=True)
+    else:
+        os.environ.pop(POLICY_ENV, None)
+
     max_input = dict(participant.manifest.load.max_input)
     plan = ProfilePlan(
         prompt=max_input_prompt(seed, max_input),
@@ -176,15 +186,20 @@ def score(
 
     by_ref: dict[str, Response] = {r.task_ref: r for r in result.value}
     rotating = {t.ref for t in tasks.rotating}
-    outcomes = tuple(
-        _outcome(
-            task,
-            by_ref.get(task.ref),
-            metric,
-            "rotating" if task.ref in rotating else "fixed",
+    try:
+        outcomes = tuple(
+            _outcome(
+                task,
+                by_ref.get(task.ref),
+                metric,
+                "rotating" if task.ref in rotating else "fixed",
+            )
+            for task in tasks.all
         )
-        for task in tasks.all
-    )
+    except ExecutionUnavailable as exc:
+        raise Abstain(
+            f"{participant.hotkey}: the execution sandbox is unavailable — {exc}"
+        ) from exc
     return outcomes, ""
 
 

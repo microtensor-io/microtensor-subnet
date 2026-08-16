@@ -22,11 +22,16 @@ FIXED_FRACTION: Final[float] = 0.30
 TASKS_PER_ROUND: Final[int] = 200
 CORPUS_VERSION: Final[str] = "2026.1"
 
+CLASS_WEIGHTS: Final[dict[str, float]] = {"laptop": 0.60, "edge-gpu": 0.40}
+
 PROFILE_DURATION_SECONDS: Final[int] = 60
 PROFILE_SAMPLE_INTERVAL_MS: Final[int] = 50
 LATENCY_SAMPLE_COUNT: Final[int] = 200
 WALL_BACKSTOP_FACTOR: Final[int] = 3
-DECLARATION_TOLERANCE: Final[float] = 0.02
+DECLARATION_TOLERANCE_SIZE: Final[float] = 0.02
+DECLARATION_TOLERANCE_RSS: Final[float] = 0.02
+DECLARATION_TOLERANCE_LATENCY: Final[float] = 0.10
+DECLARATION_LATENCY_FLOOR_MS: Final[int] = 15
 
 ACCURACY_DECIMALS: Final[int] = 4
 TRACK_THRESHOLD: Final[float] = 0.20
@@ -46,6 +51,12 @@ CONCENTRATION_CAP_FRACTION: Final[float] = 0.25
 PARAM_DISTANCE_THRESHOLD: Final[float] = 0.02
 BEHAVIOUR_DISTANCE_THRESHOLD: Final[float] = 0.05
 PROBE_SET_SIZE: Final[int] = 256
+
+ALLOWED_BASE_MODELS: Final[frozenset[str]] = frozenset()
+
+EXEC_CPU_SECONDS: Final[int] = 2
+EXEC_WALL_SECONDS: Final[int] = 6
+EXEC_RSS_BYTES: Final[int] = 256 * 1024**2
 
 SLOTS_PER_TRACK_CLASS: Final[int] = 40
 SUBMISSION_COOLDOWN_SECONDS: Final[int] = 6 * 3600

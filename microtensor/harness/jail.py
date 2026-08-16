@@ -11,6 +11,7 @@ from microtensor.harness.limits import (
     Limits,
     UnsupportedPlatform,
     apply,
+    children_cpu_seconds,
     cpu_seconds_used,
     peak_rss_bytes,
     pin_threads,
@@ -18,6 +19,9 @@ from microtensor.harness.limits import (
 )
 
 TERMINATE_GRACE_SECONDS = 2.0
+
+
+STARVED_CPU_FRACTION = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +35,7 @@ class JailResult:
     timed_out: bool = False
     exit_code: int | None = None
     sandboxed: bool = True
+    cpu_budget: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -41,9 +46,20 @@ class JailResult:
         return self.timed_out or (self.exit_code is not None and self.exit_code < 0)
 
     @property
+    def starved(self) -> bool:
+        return (
+            self.timed_out
+            and self.sandboxed
+            and self.cpu_budget > 0.0
+            and self.cpu_seconds < STARVED_CPU_FRACTION * self.cpu_budget
+        )
+
+    @property
     def fault(self) -> Fault | None:
         if self.ok:
             return None
+        if self.starved:
+            return Fault.INFRASTRUCTURE
         if self.timed_out or self.exit_code is not None:
             return Fault.ARTIFACT
         return Fault.INFRASTRUCTURE
@@ -115,6 +131,7 @@ def run_jailed(
         daemon=True,
     )
 
+    cpu_before = children_cpu_seconds()
     started = time.monotonic()
     process.start()
     child.close()
@@ -131,6 +148,7 @@ def run_jailed(
     elapsed = time.monotonic() - started
     exit_code = process.exitcode
     parent.close()
+    consumed = max(0.0, children_cpu_seconds() - cpu_before)
 
     if payload is None:
         return JailResult(
@@ -140,10 +158,12 @@ def run_jailed(
                 if timed_out
                 else f"worker died without a result (exit {exit_code})"
             ),
+            cpu_seconds=consumed,
             wall_seconds=elapsed,
             timed_out=timed_out,
             exit_code=None if timed_out else exit_code,
             sandboxed=sandboxed,
+            cpu_budget=float(limits.cpu_seconds),
         )
 
     kind, value, cpu, rss = payload
@@ -156,16 +176,45 @@ def run_jailed(
             peak_rss_bytes=rss,
             exit_code=exit_code,
             sandboxed=sandboxed,
+            cpu_budget=float(limits.cpu_seconds),
         )
 
     return JailResult(
         completed=False,
         error=str(value),
-        cpu_seconds=cpu,
+        cpu_seconds=max(float(cpu), consumed),
         wall_seconds=elapsed,
         peak_rss_bytes=rss,
         exit_code=exit_code if kind == "artifact" else None,
         sandboxed=sandboxed,
+        cpu_budget=float(limits.cpu_seconds),
+    )
+
+
+def _burn() -> None:
+    value = 0
+    while True:
+        value = (value + 1) % 1_000_003
+
+
+SPAWN_ALLOWANCE_SECONDS = 5.0
+
+
+def cpu_limit_binds(probe_seconds: int = 1, slack: float = 2.0) -> bool:
+    if not sandbox_available():
+        return False
+    result = run_jailed(
+        _burn,
+        limits=Limits(
+            cpu_seconds=probe_seconds,
+            wall_seconds=probe_seconds * 10,
+            rss_bytes=1 << 30,
+        ),
+    )
+    return (
+        result.killed
+        and not result.timed_out
+        and result.wall_seconds <= probe_seconds * slack + SPAWN_ALLOWANCE_SECONDS
     )
 
 

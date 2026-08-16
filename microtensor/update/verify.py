@@ -74,6 +74,7 @@ def _keypair(public_key_hex: str) -> Any:
     return Keypair(
         public_key=bytes.fromhex(public_key_hex.removeprefix("0x")),
         crypto_type=KeypairType.ED25519,
+        ss58_format=42,
     )
 
 

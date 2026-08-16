@@ -97,26 +97,18 @@ validator:
   # Envelope measurement happens on the published reference device for each
   # class. A validator whose device does not conform may still score accuracy,
   # which is hardware-independent, but its envelope numbers are excluded.
+  # Certify each device with `mt validator certify <class>`; the declared
+  # thermal and power policy hashes into the device profile.
   reference_bench:
-    required: "one device per hardware class served"
+    required: "one device per class served; the launch classes are laptop and edge-gpu"
     classes:
-      - id: "server-cpu"
-        max_size_gb: 8
-        max_rss_gb: 16
-        max_p95_ms: 400
-        reference: "x86-64 server, no accelerator"
-      - id: "edge-gpu"
-        max_size_gb: 2.5
-        max_rss_gb: 4
-        max_p95_ms: 120
-        reference: "consumer or embedded GPU"
       - id: "laptop"
         max_size_gb: 1.5
         max_rss_gb: 3
         max_p95_ms: 180
         reference: "developer workstation"
-      - id: "embedded"
-        max_size_gb: 0.6
-        max_rss_gb: 1
-        max_p95_ms: 300
-        reference: "mobile SoC or NPU"
+      - id: "edge-gpu"
+        max_size_gb: 2.5
+        max_rss_gb: 4
+        max_p95_ms: 120
+        reference: "consumer or embedded GPU"
