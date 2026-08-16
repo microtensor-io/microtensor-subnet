@@ -1,5 +1,5 @@
 services:
-  # Microtensor is netuid 70 on finney. Override MT_NETUID only for testnet.
+  # Microtensor is netuid 92 on finney. Override MT_NETUID only for testnet.
   validator:
     build:
       context: ..
@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 30m
     environment:
-      MT_NETUID: "${MT_NETUID:-70}"
+      MT_NETUID: "${MT_NETUID:-92}"
       MT_NETWORK: "${MT_NETWORK:-finney}"
       MT_WALLET_NAME: "${MT_WALLET_NAME:?set the coldkey wallet name}"
       MT_WALLET_HOTKEY: "${MT_WALLET_HOTKEY:?set the hotkey name}"

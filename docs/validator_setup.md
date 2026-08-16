@@ -92,12 +92,12 @@ schemes miners actually use; `https` needs nothing extra.
 
 ### Register the hotkey
 
-Microtensor is **netuid 70** on finney. That is the built-in default, so you only
+Microtensor is **netuid 92** on finney. That is the built-in default, so you only
 pass `--netuid` when pointing at testnet.
 
 ```bash
-btcli subnet register --netuid 70 --wallet.name <coldkey> --wallet.hotkey <hotkey>
-btcli stake add --netuid 70 --wallet.name <coldkey> --amount <alpha>
+btcli subnet register --netuid 92 --wallet.name <coldkey> --wallet.hotkey <hotkey>
+btcli stake add --netuid 92 --wallet.name <coldkey> --amount <alpha>
 ```
 
 You need a validator permit to have weights counted. `mt validator status` warns
@@ -209,7 +209,7 @@ After=network-online.target
 [Service]
 Type=simple
 User=validator
-Environment=MT_NETUID=70
+Environment=MT_NETUID=92
 Environment=MT_WALLET_NAME=<coldkey>
 Environment=MT_WALLET_HOTKEY=<hotkey>
 Environment=MT_HOME=/var/lib/microtensor

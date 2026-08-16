@@ -59,8 +59,8 @@ def _neuron(uid: int, **kw: object) -> Neuron:
 
 
 def test_the_subnet_defaults_to_its_own_netuid() -> None:
-    assert DEFAULT_NETUID == 70
-    assert ChainConfig().netuid == 70
+    assert DEFAULT_NETUID == 92
+    assert ChainConfig().netuid == 92
 
 
 def test_an_operator_can_still_point_at_testnet() -> None:

@@ -4,7 +4,7 @@
 
 **Frontier accuracy at one four-hundredth the size, with the size guaranteed.**
 
-Bittensor subnet 70
+Bittensor subnet 92
 
 [Mine](docs/miner_setup.md) · [Validate](docs/validator_setup.md) · [Mechanism](docs/mechanism.md)
 

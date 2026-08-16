@@ -13,7 +13,7 @@ from microtensor.chain.config import ChainConfig
 from microtensor.chain.metagraph import Neuron, snapshot_of
 from microtensor.chain.offline import OfflineClient
 from microtensor.chain.rounds import Round, round_at
-from microtensor.core.constants import MIN_VALIDATOR_STAKE
+from microtensor.core.constants import DEFAULT_NETUID, MIN_VALIDATOR_STAKE
 from microtensor.core.protocol import ArtifactFormat, DeclaredEnvelope, LoadManifest
 from microtensor.core.tracks import enabled_tracks
 from microtensor.harness import registry as engines
@@ -154,7 +154,7 @@ def build(
     ]
 
     client = OfflineClient(
-        snapshot_of(70, round_.close_block, neurons),
+        snapshot_of(DEFAULT_NETUID, round_.close_block, neurons),
         block=round_.close_block,
         commitments={
             m.hotkey: build_commitment(
@@ -165,7 +165,7 @@ def build(
     )
 
     config = ValidatorConfig(
-        chain=ChainConfig(netuid=70, network="local", endpoint="ws://127.0.0.1:9944"),
+        chain=ChainConfig(netuid=DEFAULT_NETUID, network="local", endpoint="ws://127.0.0.1:9944"),
         home=home,
         corpus_dir=home / "corpus",
         tasks_per_round=tasks_per_round,
@@ -210,7 +210,7 @@ def advance(loop: Loopback) -> Loopback:
 
     loop.client.advance(following.close_block - loop.client.block())
     loop.client.set_snapshot(
-        snapshot_of(70, following.close_block, list(loop.client.snapshot().neurons))
+        snapshot_of(DEFAULT_NETUID, following.close_block, list(loop.client.snapshot().neurons))
     )
     return Loopback(
         context=loop.context, client=loop.client, round=following, miners=loop.miners

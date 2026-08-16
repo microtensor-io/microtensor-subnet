@@ -10,7 +10,7 @@ from microtensor.cli.main import main
 from microtensor.miner.config import MinerConfig, MinerConfigError
 from microtensor.miner.upload import UploadError, UploadUnsupported, plan_upload, uploader_for
 
-CHAIN = ChainConfig(netuid=70, network="local", endpoint="ws://127.0.0.1:9944")
+CHAIN = ChainConfig(netuid=92, network="local", endpoint="ws://127.0.0.1:9944")
 
 
 @pytest.fixture

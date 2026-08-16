@@ -1,5 +1,5 @@
 version: "0.1.0"
-netuid: 70
+netuid: 92
 
 # Miner hardware is guidance, not policy. The subnet never sees a miner's
 # machine: miners upload an artifact and commit a pointer, so nothing here is

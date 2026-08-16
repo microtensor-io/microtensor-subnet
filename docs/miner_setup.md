@@ -118,11 +118,11 @@ pip install ".[validator]"
 
 ### Register
 
-Microtensor is **netuid 70** on finney, and that is the built-in default. You
+Microtensor is **netuid 92** on finney, and that is the built-in default. You
 only pass `--netuid` when pointing at testnet.
 
 ```bash
-btcli subnet register --netuid 70 --wallet.name <coldkey> --wallet.hotkey <hotkey>
+btcli subnet register --netuid 92 --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
 ```bash
@@ -194,7 +194,7 @@ If it prints `INADMISSIBLE`, fix the model. Do not declare around it.
 Everything above is one-time. Mining is four commands total:
 
 ```bash
-btcli subnet register --netuid 70 --wallet.name <coldkey> --wallet.hotkey <hotkey>
+btcli subnet register --netuid 92 --wallet.name <coldkey> --wallet.hotkey <hotkey>
 
 mt miner init --artifact ./my-model --track code --hardware-class laptop \
               --source hf:youracct/mt-code-3b@v1
