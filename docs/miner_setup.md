@@ -119,8 +119,7 @@ pip install ".[validator]"
 
 ### Register
 
-Microtensor is **netuid 92** on finney, and that is the built-in default. You
-only pass `--netuid` when pointing at testnet.
+Microtensor is **netuid 92** on finney, and that is the built-in default.
 
 ```bash
 btcli subnet register --netuid 92 --wallet.name <coldkey> --wallet.hotkey <hotkey>

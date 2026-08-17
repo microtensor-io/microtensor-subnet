@@ -38,10 +38,10 @@ def _release(
     mechanism: str = MECHANISM_VERSION,
     activation: int | None = None,
     signed: bool = True,
-    channel: str = "mainnet",
+    channel: str = "stable",
 ) -> Release:
     return Release(
-        tag=f"v{version}" if channel == "mainnet" else f"{channel}-v{version}",
+        tag=f"v{version}" if channel == "stable" else f"{channel}-v{version}",
         channel=channel,
         version=Version.parse(version),
         wheel_url=f"https://example.com/microtensor-{version}.whl",
@@ -62,9 +62,9 @@ def test_a_malformed_tag_is_not_a_release() -> None:
         Version.parse("latest")
 
 
-def test_channel_defaults_to_mainnet() -> None:
-    assert channel_of("v1.2.3") == "mainnet"
-    assert channel_of("testnet-v1.2.3") == "testnet"
+def test_an_unprefixed_tag_is_the_stable_channel() -> None:
+    assert channel_of("v1.2.3") == "stable"
+    assert channel_of("prerelease-v1.2.3") == "prerelease"
 
 
 def test_drafts_and_prereleases_are_ignored() -> None:

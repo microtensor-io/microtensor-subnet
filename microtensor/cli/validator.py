@@ -113,7 +113,7 @@ def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="install signed releases between rounds and exit for the supervisor to restart",
     )
-    parser.add_argument("--update-channel", default="mainnet", choices=list(RELEASE_CHANNELS))
+    parser.add_argument("--update-channel", default="stable", choices=list(RELEASE_CHANNELS))
     parser.add_argument("--update-repo", default=RELEASE_REPO)
     parser.add_argument("--update-poll-seconds", type=int, default=UPDATE_POLL_SECONDS)
     parser.add_argument("--signing-key", default=RELEASE_SIGNING_KEY)

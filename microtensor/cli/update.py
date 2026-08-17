@@ -49,7 +49,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 def _add_update_arguments(parser: argparse.ArgumentParser) -> None:
     add_common_arguments(parser)
     parser.add_argument("--repo", default=RELEASE_REPO)
-    parser.add_argument("--channel", default="mainnet", choices=list(RELEASE_CHANNELS))
+    parser.add_argument("--channel", default="stable", choices=list(RELEASE_CHANNELS))
     parser.add_argument("--signing-key", default=RELEASE_SIGNING_KEY)
     parser.add_argument(
         "--allow-unsigned",

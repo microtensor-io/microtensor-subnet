@@ -22,7 +22,7 @@ log = logging.getLogger("microtensor.update.loop")
 @dataclass(frozen=True, slots=True)
 class UpdateSettings:
     enabled: bool = False
-    channel: str = "mainnet"
+    channel: str = "stable"
     repo: str = RELEASE_REPO
     poll_seconds: int = UPDATE_POLL_SECONDS
     signing_key: str = RELEASE_SIGNING_KEY

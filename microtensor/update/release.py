@@ -83,7 +83,7 @@ def channel_of(tag: str) -> str:
     match = TAG_PATTERN.match(tag.strip())
     if match is None:
         raise ReleaseError(f"{tag!r} is not a release tag")
-    return match.group("channel") or "mainnet"
+    return match.group("channel") or "stable"
 
 
 def _get_json(url: str, timeout: int) -> Any:
@@ -155,7 +155,7 @@ def parse_release(payload: dict[str, Any]) -> Release | None:
 def fetch_releases(
     repo: str = RELEASE_REPO,
     *,
-    channel: str = "mainnet",
+    channel: str = "stable",
     timeout: int = UPDATE_HTTP_TIMEOUT_SECONDS,
     limit: int = 30,
 ) -> list[Release]:
@@ -181,7 +181,7 @@ def fetch_releases(
 def latest(
     repo: str = RELEASE_REPO,
     *,
-    channel: str = "mainnet",
+    channel: str = "stable",
     timeout: int = UPDATE_HTTP_TIMEOUT_SECONDS,
 ) -> Release | None:
     releases = fetch_releases(repo, channel=channel, timeout=timeout)

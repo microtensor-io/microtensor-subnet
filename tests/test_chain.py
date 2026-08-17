@@ -63,10 +63,11 @@ def test_the_subnet_defaults_to_its_own_netuid() -> None:
     assert ChainConfig().netuid == 92
 
 
-def test_an_operator_can_still_point_at_testnet() -> None:
-    config = ChainConfig(netuid=310, network="test")
+def test_an_operator_can_still_override_the_network() -> None:
+    config = ChainConfig(netuid=310, network="local")
     assert config.netuid == 310
-    assert config.resolved_endpoint == NETWORKS["test"]
+    assert config.resolved_endpoint == NETWORKS["local"]
+    assert config.is_local
 
 
 def test_config_falls_back_to_the_named_network() -> None:

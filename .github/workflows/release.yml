@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - "v*.*.*"
-      - "testnet-v*.*.*"
+      - "prerelease-v*.*.*"
 
 permissions:
   contents: write
@@ -66,8 +66,8 @@ jobs:
           set -euo pipefail
           MECHANISM=$(python -c 'from microtensor.core.constants import MECHANISM_VERSION; print(MECHANISM_VERSION)')
           case "${GITHUB_REF_NAME}" in
-            testnet-*) CHANNEL=testnet ;;
-            *)         CHANNEL=mainnet ;;
+            prerelease-*) CHANNEL=prerelease ;;
+            *)              CHANNEL=stable ;;
           esac
 
           NOTES=$(mktemp)

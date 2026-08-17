@@ -67,7 +67,7 @@ ARTIFACT_FETCH_TIMEOUT_SECONDS: Final[int] = 900
 ARTIFACT_CACHE_CAP_BYTES: Final[int] = 200 * 1024**3
 
 RELEASE_REPO: Final[str] = "microtensor-io/microtensor-subnet"
-RELEASE_CHANNELS: Final[tuple[str, ...]] = ("mainnet", "testnet")
+RELEASE_CHANNELS: Final[tuple[str, ...]] = ("stable", "prerelease")
 RELEASE_SIGNING_KEY: Final[str] = ""
 UPDATE_POLL_SECONDS: Final[int] = 900
 UPDATE_HTTP_TIMEOUT_SECONDS: Final[int] = 60

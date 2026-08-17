@@ -92,8 +92,7 @@ schemes miners actually use; `https` needs nothing extra.
 
 ### Register the hotkey
 
-Microtensor is **netuid 92** on finney. That is the built-in default, so you only
-pass `--netuid` when pointing at testnet.
+Microtensor is **netuid 92** on finney, and that is the built-in default.
 
 ```bash
 btcli subnet register --netuid 92 --wallet.name <coldkey> --wallet.hotkey <hotkey>
@@ -146,12 +145,7 @@ export MT_WALLET_HOTKEY=<hotkey>
 export MT_HOME=~/.microtensor
 ```
 
-`MT_NETUID` defaults to 70. Set it only to run against testnet:
-
-```bash
-export MT_NETUID=<testnet-netuid>
-export MT_NETWORK=test
-```
+`MT_NETUID` defaults to 92, so you do not normally set it.
 
 Verify before running for real:
 

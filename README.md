@@ -87,6 +87,8 @@ what is tunable, and why every rule exists — is
 
 ## Status
 
-Testnet. The corpus version, baseline score, and reference device profiles
-for the two launch classes are published in
-[releases](../../releases); mainnet follows the first clean testnet rounds.
+Subnet 92 on finney. The corpus version, the baseline score to beat, the
+pinned base-model revisions, and the reference device profiles for both launch
+classes are published in [releases](../../releases). Everything in this
+repository runs today: `mt validator loopback` settles rounds end to end on
+your own machine with no chain and no network.

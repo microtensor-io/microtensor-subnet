@@ -1,5 +1,5 @@
 services:
-  # Microtensor is netuid 92 on finney. Override MT_NETUID only for testnet.
+  # Microtensor is netuid 92 on finney.
   validator:
     build:
       context: ..
