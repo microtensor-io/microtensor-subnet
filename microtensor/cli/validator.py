@@ -31,6 +31,7 @@ from microtensor.envelope.certify import (
     LAUNCH_CLASSES,
     CertificationError,
     band_verdict,
+    fit_band,
 )
 from microtensor.envelope.certify import certify as certification_run
 from microtensor.envelope.certify import save as certify_save
@@ -81,6 +82,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     cert.add_argument("--warmup-policy", default=None)
     cert.add_argument("--idle-seconds", type=int, default=None)
     cert.add_argument("--repetitions", type=int, default=None)
+    cert.add_argument(
+        "--fit-band",
+        type=int,
+        metavar="RUNS",
+        default=None,
+        help="run the workload RUNS times and print a CERT_BANDS entry from the spread",
+    )
     cert.set_defaults(handler=_certify)
 
 
@@ -275,6 +283,41 @@ def _certify(args: argparse.Namespace) -> int:
         }.items()
         if value is not None
     }
+
+    if args.fit_band:
+        try:
+            fitted, results = fit_band(
+                args.hardware_class,
+                policy,
+                runs=args.fit_band,
+                repetitions=args.repetitions or DEFAULT_REPETITIONS,
+            )
+        except CertificationError as exc:
+            return fail(str(exc))
+
+        certify_save(results[-1], Path(args.home))
+        print(f"class            {fitted.class_id}")
+        print(f"runs             {fitted.runs}")
+        print(
+            f"p50 observed     {fitted.p50_observed[0]:.1f} to {fitted.p50_observed[1]:.1f} ms"
+            f"  (spread {fitted.p50_spread:.1%})"
+        )
+        print(
+            f"p95 observed     {fitted.p95_observed[0]:.1f} to {fitted.p95_observed[1]:.1f} ms"
+            f"  (spread {fitted.p95_spread:.1%})"
+        )
+        print(f"peak rss         {fitted.rss_observed / 1024**2:.0f} MiB")
+        print(f"device profile   {results[-1].digest}")
+        print("\npaste into CERT_BANDS in microtensor/envelope/certify.py:\n")
+        print(fitted.as_constant())
+        print(f"\nand set device_profile on the {fitted.class_id} class to:")
+        print(f"    {results[-1].digest}")
+        if fitted.p95_spread > 0.5:
+            print(
+                "\nWARNING: p95 varied by more than half across runs. Settle the host "
+                "(cooling, background load) before trusting this band."
+            )
+        return 0
 
     try:
         certification = certification_run(

@@ -14,6 +14,7 @@ from microtensor.core.constants import (
     ROUND_BLOCKS,
     TASKS_PER_ROUND,
 )
+from microtensor.core.readiness import unenforced
 from microtensor.core.tracks import competitions, validate_registry
 from microtensor.registry.cache import ArtifactCache
 from microtensor.scoring import execution
@@ -77,6 +78,9 @@ class ValidatorContext:
         validate_registry()
         execution.configure(allow_unsandboxed=config.allow_unsandboxed)
         config.work_dir.mkdir(parents=True, exist_ok=True)
+
+        for gate in unenforced():
+            log.warning("%s is UNENFORCED: %s", gate.name, gate.detail)
 
         corpora = load_all(config.corpus_dir, config.corpus_version)
         open_competitions = tuple(

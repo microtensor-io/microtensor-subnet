@@ -5,6 +5,7 @@ from pathlib import Path
 
 from microtensor.cli.common import add_common_arguments, fail
 from microtensor.core.constants import MECHANISM_VERSION
+from microtensor.core.readiness import audit, summary
 from microtensor.core.tracks import CLASSES, TRACKS, competitions, enabled_tracks
 from microtensor.harness.limits import sandbox_available
 from microtensor.harness.registry import available, describe, load_builtin
@@ -20,6 +21,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     engines = inner.add_parser("engines", help="show which engines this host can run")
     engines.set_defaults(handler=_engines)
+
+    ready = inner.add_parser(
+        "readiness", help="which launch values are still unset, and which gates that leaves open"
+    )
+    ready.set_defaults(handler=_readiness)
 
     rounds = inner.add_parser("rounds", help="show recent rounds from local state")
     add_common_arguments(rounds)
@@ -68,6 +74,32 @@ def _engines(args: argparse.Namespace) -> int:
         f"\nsandbox     {'enforced' if sandbox_available() else 'UNAVAILABLE on this host'}"
     )
     return 0 if formats else 1
+
+
+def _readiness(args: argparse.Namespace) -> int:
+    gates = audit()
+    print(summary())
+    print()
+    width = max(len(gate.name) for gate in gates) + 2
+    print(f"{'gate':<{width}}{'state':<10}detail")
+    for gate in gates:
+        state = "ready" if gate.ready else gate.posture.upper()
+        print(f"{gate.name:<{width}}{state:<10}{gate.detail}")
+
+    outstanding = [gate for gate in gates if not gate.ready]
+    if outstanding:
+        print("\nto close:")
+        for gate in outstanding:
+            print(f"  {gate.name}\n    {gate.fix}")
+
+    open_gates = [gate for gate in gates if gate.unenforced]
+    if open_gates:
+        print(
+            f"\n{len(open_gates)} gate(s) currently accept anything. A round will still "
+            "settle, but the guarantee those gates exist to make is not being made."
+        )
+        return 2
+    return 0
 
 
 def _state(args: argparse.Namespace) -> ValidatorState:

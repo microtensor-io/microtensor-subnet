@@ -116,6 +116,79 @@ def certify(
     )
 
 
+BAND_SLACK: Final[float] = 0.20
+BAND_RSS_SLACK: Final[float] = 0.15
+
+
+@dataclass(frozen=True, slots=True)
+class FittedBand:
+    class_id: str
+    runs: int
+    p50_observed: tuple[float, float]
+    p95_observed: tuple[float, float]
+    rss_observed: int
+    band: dict[str, float]
+
+    @property
+    def p50_spread(self) -> float:
+        lo, hi = self.p50_observed
+        return (hi - lo) / lo if lo > 0 else 0.0
+
+    @property
+    def p95_spread(self) -> float:
+        lo, hi = self.p95_observed
+        return (hi - lo) / lo if lo > 0 else 0.0
+
+    def as_constant(self) -> str:
+        rows = ", ".join(f'"{k}": {v:.6g}' for k, v in self.band.items())
+        return f'    "{self.class_id}": {{{rows}}},'
+
+
+def fit_band(
+    class_id: str,
+    policy: dict[str, Any] | None = None,
+    *,
+    runs: int = 10,
+    repetitions: int = DEFAULT_REPETITIONS,
+    slack: float = BAND_SLACK,
+    rss_slack: float = BAND_RSS_SLACK,
+) -> tuple[FittedBand, list[Certification]]:
+    if runs < 3:
+        raise CertificationError("fitting a band needs at least three runs")
+
+    results = [certify(class_id, policy, repetitions=repetitions) for _ in range(runs)]
+    profiles = {c.digest for c in results}
+    if len(profiles) != 1:
+        raise CertificationError(
+            f"the device profile changed across runs ({sorted(profiles)}); the declared "
+            "policy is not stable, so a band fitted here would not mean anything"
+        )
+
+    p50s = [c.latency.p50 for c in results]
+    p95s = [c.latency.p95 for c in results]
+    rss = max(c.peak_rss_bytes for c in results)
+
+    band = {
+        "p50_lo": min(p50s) * (1.0 - slack),
+        "p50_hi": max(p50s) * (1.0 + slack),
+        "p95_lo": min(p95s) * (1.0 - slack),
+        "p95_hi": max(p95s) * (1.0 + slack),
+        "rss_max": float(int(rss * (1.0 + rss_slack))),
+    }
+
+    return (
+        FittedBand(
+            class_id=class_id,
+            runs=runs,
+            p50_observed=(min(p50s), max(p50s)),
+            p95_observed=(min(p95s), max(p95s)),
+            rss_observed=rss,
+            band=band,
+        ),
+        results,
+    )
+
+
 def band_verdict(certification: Certification) -> tuple[bool | None, str]:
     band = CERT_BANDS.get(certification.class_id)
     if band is None:
