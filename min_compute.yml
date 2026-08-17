@@ -48,10 +48,10 @@ miner:
   # `mt miner selfcheck` loads and runs your artifact locally, so it needs
   # headroom above the ceiling of whichever class you target.
   selfcheck_ram_gb_by_class:
-    server-cpu: 20
-    edge-gpu: 6
-    laptop: 5
-    embedded: 3
+    mt-16g: 20
+    mt-4g: 6
+    mt-3g: 5
+    mt-1g: 3
 
   uptime:
     required: false
@@ -100,14 +100,14 @@ validator:
   # Certify each device with `mt validator certify <class>`; the declared
   # thermal and power policy hashes into the device profile.
   reference_bench:
-    required: "one device per class served; the launch classes are laptop and edge-gpu"
+    required: "one device for the launch class, mt-3g"
     classes:
-      - id: "laptop"
+      - id: "mt-3g"
         max_size_gb: 1.5
         max_rss_gb: 3
         max_p95_ms: 180
         reference: "developer workstation"
-      - id: "edge-gpu"
+      - id: "mt-4g"
         max_size_gb: 2.5
         max_rss_gb: 4
         max_p95_ms: 120

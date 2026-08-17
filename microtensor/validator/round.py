@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from microtensor.chain.rounds import Round, round_for_block
 from microtensor.core.constants import MIN_SCORED_FRACTION
+from microtensor.provenance.record import ProvenanceUnavailable
 from microtensor.store.state import ABSTAINED, SETTLED
 from microtensor.tasks.selection import competition_seed, select
 from microtensor.validator.context import ValidatorContext
@@ -62,6 +63,11 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
         roster = discover(context, snapshot, round_)
     except Abstain as exc:
         return abstain(str(exc))
+    except ProvenanceUnavailable as exc:
+        return abstain(
+            f"the training run store is unreachable, so the participant set cannot be "
+            f"agreed with other validators: {exc}"
+        )
 
     if context.config.degraded:
         return abstain(

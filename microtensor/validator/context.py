@@ -16,6 +16,7 @@ from microtensor.core.constants import (
 )
 from microtensor.core.readiness import unenforced
 from microtensor.core.tracks import competitions, validate_registry
+from microtensor.provenance.record import CachedStore
 from microtensor.registry.cache import ArtifactCache
 from microtensor.scoring import execution
 from microtensor.store.state import ValidatorState
@@ -65,6 +66,7 @@ class ValidatorContext:
     wallet: Any = None
     competitions: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     certifications: dict[str, dict[str, Any]] = field(default_factory=dict)
+    runs: CachedStore | None = None
 
     @classmethod
     def build(
@@ -74,6 +76,7 @@ class ValidatorContext:
         *,
         wallet: Any = None,
         hotkey: str = "",
+        runs: CachedStore | None = None,
     ) -> ValidatorContext:
         validate_registry()
         execution.configure(allow_unsandboxed=config.allow_unsandboxed)
@@ -108,6 +111,7 @@ class ValidatorContext:
             wallet=wallet,
             competitions=open_competitions,
             certifications=load_policies(config.home),
+            runs=runs,
         )
 
     @property

@@ -22,7 +22,7 @@ FIXED_FRACTION: Final[float] = 0.30
 TASKS_PER_ROUND: Final[int] = 200
 CORPUS_VERSION: Final[str] = "2026.1"
 
-CLASS_WEIGHTS: Final[dict[str, float]] = {"laptop": 0.60, "edge-gpu": 0.40}
+CLASS_WEIGHTS: Final[dict[str, float]] = {"mt-3g": 1.0}
 
 PROFILE_DURATION_SECONDS: Final[int] = 60
 PROFILE_SAMPLE_INTERVAL_MS: Final[int] = 50
@@ -53,6 +53,12 @@ BEHAVIOUR_DISTANCE_THRESHOLD: Final[float] = 0.05
 PROBE_SET_SIZE: Final[int] = 256
 
 ALLOWED_BASE_MODELS: Final[frozenset[str]] = frozenset()
+
+PROVENANCE_ENTITY: Final[str] = "microtensor"
+PROVENANCE_PROJECT: Final[str] = "training-runs"
+PROVENANCE_REQUIRED: Final[bool] = True
+PROVENANCE_RETRIES: Final[int] = 3
+PROVENANCE_BACKOFF_SECONDS: Final[float] = 3.0
 
 EXEC_CPU_SECONDS: Final[int] = 2
 EXEC_WALL_SECONDS: Final[int] = 6

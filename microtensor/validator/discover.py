@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from microtensor.chain.commitment import Commitment, decode_all
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round
 from microtensor.chain.wallet import verify_payload
-from microtensor.core.constants import ALLOWED_BASE_MODELS
+from microtensor.core.constants import (
+    ALLOWED_BASE_MODELS,
+    BLOCK_TIME_SECONDS,
+    PROVENANCE_REQUIRED,
+)
+from microtensor.provenance.record import Verdict
+from microtensor.provenance.record import check as provenance_check
 from microtensor.registry.fetch import ArtifactMismatch, FetchError, fetch_manifest
 from microtensor.registry.manifest import ArtifactManifest
 from microtensor.validator.context import ValidatorContext
@@ -32,6 +38,7 @@ class Roster:
     round_index: int
     participants: tuple[Participant, ...]
     rejected: tuple[tuple[str, str], ...]
+    provenance: dict[str, Verdict] = field(default_factory=dict)
 
     def for_competition(self, track: str, hardware_class: str) -> tuple[Participant, ...]:
         return tuple(p for p in self.participants if p.competition == (track, hardware_class))
@@ -48,6 +55,27 @@ def _signature_ok(manifest: ArtifactManifest) -> tuple[bool, str]:
     return True, ""
 
 
+def _provenance_reason(
+    context: ValidatorContext,
+    hotkey: str,
+    manifest: ArtifactManifest,
+    commitment: Commitment,
+    commit_time: int,
+) -> tuple[str, Verdict | None]:
+    if not PROVENANCE_REQUIRED or context.runs is None:
+        return "", None
+
+    verdict = provenance_check(
+        context.runs.fetch(hotkey),
+        hotkey=hotkey,
+        artifact_digest=manifest.artifact_digest,
+        track=commitment.track,
+        hardware_class=commitment.hardware_class,
+        commit_time=commit_time,
+    )
+    return ("" if verdict.admissible else verdict.reason), verdict
+
+
 def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Round) -> Roster:
     raw = context.client.commitments(list(snapshot.hotkeys))
     commitments = decode_all(raw)
@@ -57,6 +85,8 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
     open_competitions = set(context.competitions)
     accepted: list[Participant] = []
     rejected: list[tuple[str, str]] = []
+    provenance: dict[str, Verdict] = {}
+    commit_time = round_.close_block * BLOCK_TIME_SECONDS
 
     for hotkey, commitment in sorted(commitments.items()):
         reason = _reject_reason(commitment, round_, open_competitions)
@@ -81,6 +111,12 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
             reason = f"manifest unfetchable: {exc}"
         else:
             reason = _manifest_reason(manifest, hotkey, context.config.verify_signatures)
+            if not reason:
+                reason, verdict = _provenance_reason(
+                    context, hotkey, manifest, commitment, commit_time
+                )
+                if verdict is not None and verdict.admissible:
+                    provenance[hotkey] = verdict
 
         if reason:
             rejected.append((hotkey, reason))
@@ -120,7 +156,7 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
         len(accepted),
         len(rejected),
     )
-    return Roster(round_.index, tuple(accepted), tuple(rejected))
+    return Roster(round_.index, tuple(accepted), tuple(rejected), provenance)
 
 
 def _reject_reason(

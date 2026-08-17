@@ -14,8 +14,9 @@ from microtensor.cli.common import (
     open_client,
     open_wallet,
 )
-from microtensor.core.constants import GENESIS_BLOCK, ROUND_BLOCKS
+from microtensor.core.constants import GENESIS_BLOCK, PROVENANCE_REQUIRED, ROUND_BLOCKS
 from microtensor.core.protocol import ArtifactFormat, DeclaredEnvelope, LoadManifest
+from microtensor.miner import provenance
 from microtensor.miner.config import MinerConfig, MinerConfigError
 from microtensor.miner.package import (
     PackageError,
@@ -24,9 +25,11 @@ from microtensor.miner.package import (
     publishable_files,
     upload_checklist,
 )
+from microtensor.miner.provenance import ProvenanceMissing
 from microtensor.miner.publish import PublishError, PublishLoop, current_round, publish
 from microtensor.miner.selfcheck import SelfCheckError, selfcheck
 from microtensor.miner.upload import UploadError, plan_upload, upload
+from microtensor.provenance.record import ProvenanceUnavailable, RunStore
 
 log = logging.getLogger("microtensor.cli.miner")
 
@@ -80,6 +83,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     status = inner.add_parser("status", help="show what this miner would publish")
     _add_settings_arguments(status)
     status.set_defaults(handler=_status)
+
+    prov = inner.add_parser(
+        "provenance", help="check your training run resolves and binds to the artifact"
+    )
+    _add_settings_arguments(prov)
+    prov.set_defaults(handler=_provenance)
 
 
 def _add_settings_arguments(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
@@ -253,10 +262,44 @@ def _package(args: argparse.Namespace) -> int:
     print(f"round       {manifest.round_index}")
     print(f"digest      {manifest.digest()}")
     print(f"files       {len(manifest.files)}  ({manifest.total_bytes / 1024**3:.2f} GiB)")
+
+    if PROVENANCE_REQUIRED:
+        print(f"\nartifact digest  {manifest.artifact_digest}")
+        print("log this to your training run before shipping:\n")
+        for line in provenance.digest_snippet(manifest.artifact_digest).splitlines():
+            print(f"  {line}")
+
     print("\nnext:  mt miner upload   (or `mt miner publish --upload`)")
     for target in upload_checklist(config, manifest):
         print(f"  {target}")
     return 0
+
+
+def _store() -> RunStore:
+    from microtensor.provenance.wandb_store import WandbStore
+
+    return WandbStore()
+
+
+def _require_provenance(config: MinerConfig, hotkey: str, artifact_digest: str) -> None:
+    if not PROVENANCE_REQUIRED:
+        return
+    provenance.require(_store(), config, hotkey, artifact_digest)
+
+
+def _provenance(args: argparse.Namespace) -> int:
+    try:
+        config = _config(args)
+        manifest = load_packaged(config)
+        wallet = open_wallet(config.chain)
+        report = provenance.verify(
+            _store(), config, hotkey_address(wallet), manifest.artifact_digest
+        )
+    except (MinerConfigError, PackageError, ProvenanceUnavailable) as exc:
+        return fail(str(exc))
+
+    print(report.render())
+    return 0 if report.verdict.admissible else 2
 
 
 def _do_upload(config: MinerConfig) -> int:
@@ -297,8 +340,15 @@ def _publish(args: argparse.Namespace) -> int:
         if args.upload:
             _do_upload(config)
 
+        _require_provenance(config, hotkey, load_packaged(config).artifact_digest)
         published = publish(config, client, round_.index)
-    except (MinerConfigError, PackageError, PublishError, UploadError) as exc:
+    except (
+        MinerConfigError,
+        PackageError,
+        PublishError,
+        UploadError,
+        ProvenanceMissing,
+    ) as exc:
         return fail(str(exc))
 
     print(f"committed {published.bytes_used} bytes for round {published.round_index}")
@@ -334,8 +384,15 @@ def _ship(args: argparse.Namespace) -> int:
         print(f"packaged   {len(manifest.files)} files, {manifest.total_bytes / 1024**3:.2f} GiB")
 
         _do_upload(config)
+        _require_provenance(config, hotkey_address(wallet), manifest.artifact_digest)
         published = publish(config, client, round_.index, manifest)
-    except (MinerConfigError, PackageError, PublishError, UploadError) as exc:
+    except (
+        MinerConfigError,
+        PackageError,
+        PublishError,
+        UploadError,
+        ProvenanceMissing,
+    ) as exc:
         return fail(str(exc))
 
     print(f"published  round {published.round_index}: {published.payload}")

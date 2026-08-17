@@ -28,18 +28,21 @@ model that fits. Design for the envelope first.
 
 | track | class | size | peak RSS | p95 TTFT | emission |
 |---|---|---|---|---|---|
-| `code` | `laptop` | 1.5 GiB | 3 GiB | 180 ms | 60 % |
-| `code` | `edge-gpu` | 2.5 GiB | 4 GiB | 120 ms | 40 % |
+| `code` | `mt-3g` | 1.5 GiB | 3 GiB | 180 ms | 100 % |
 
 ```bash
 mt inspect tracks
 ```
 
-These are the two live competitions at launch. `code` carries the whole
-emission, split 60/40 between `laptop` and `edge-gpu`. Each competition pays
-its top 8 on a geometric curve, and rank 8 still earns about a third of
-rank 1, so the tail is worth competing for. Further tracks and classes are
-registered as disabled stubs and open by governance.
+One live competition at launch, so every entrant is in the same contest rather
+than split across thin ones. **A class is a memory envelope, not a device.**
+`mt-3g` means 3 GiB peak resident memory at your declared maximum input, 1.5 GiB
+on disk, and 180 ms p95 first output; it says nothing about what hardware you
+train on. The competition pays its top 8 on a geometric curve, and rank 8 still
+earns about a third of rank 1, so the tail is worth competing for.
+
+`mt-4g`, `mt-16g` and `mt-1g` are registered and open by governance once real
+submissions exist, in the same shape as the disabled track stubs.
 
 ---
 
@@ -92,8 +95,8 @@ Two smaller numbers, which people conflate with the above:
 - **Running the microtensor CLI**: 2 cores, 4 GB RAM, no GPU. That is all
   `init`, `package`, `upload`, `publish` and `run` ever need.
 - **Running `mt miner selfcheck`**: RAM above the ceiling of the class you
-  target, so roughly 20 GB for `server-cpu`, 6 GB for `edge-gpu`, 5 GB for
-  `laptop`, 3 GB for `embedded`. Still no GPU, since the engine is CPU-only.
+  target, so roughly 20 GB for `mt-16g`, 6 GB for `mt-4g`, 5 GB for
+  `mt-3g`, 3 GB for `mt-1g`. Still no GPU, since the engine is CPU-only.
 
 Full breakdown in [min_compute.yml](../min_compute.yml).
 
@@ -166,14 +169,76 @@ hidden tests and the rotating draw never leave the validator bundle.
 
 ---
 
-## 6 · Self-check before you declare
+## 6 · Publish a training run
+
+**This is required for admission.** A submission without a resolvable run is
+rejected at discovery, in the same class as an unsigned manifest, and never
+enters the round.
+
+Log to the subnet's project, named for your hotkey:
+
+```python
+import time, wandb
+
+wandb.init(
+    entity="microtensor",
+    project="training-runs",
+    name="<your-hotkey-ss58>",
+    config={
+        "mt_track": "code",
+        "mt_class": "mt-3g",
+        "mt_base_model": "<repo>@<sha>",
+        "mt_corpus_version": "<corpus digest>",
+    },
+)
+
+# during training, whatever your run actually produced
+wandb.log({"step": n, "loss": ..., "eval_pass_rate": ...})
+```
+
+The binding field is the artifact digest, which does not exist until you
+package. So the order is **package, then log the digest, then ship**.
+`mt miner package` prints the exact lines:
+
+```python
+wandb.run.summary["mt_artifact_digest"] = "sha256:3f9a1c04…c21b"
+wandb.run.summary["mt_finished_at"] = int(time.time())
+wandb.finish()
+```
+
+Check it before committing anything:
+
+```bash
+mt miner provenance
+```
+
+```
+run          microtensor/training-runs/5F3sa2TJ…
+status       resolvable
+digest       matches submitted artifact
+base model   Qwen/Qwen3-1.7B@a1b2c3d  (on allowlist)
+finished     2026-08-17 04:12:09 UTC
+verdict      ADMISSIBLE
+```
+
+`mt miner ship` and `mt miner publish` refuse to commit when this fails, so you
+find out locally rather than being dropped silently at discovery.
+
+A run is a record, not a proof. What it establishes is that you published a
+training history bound to this artifact before you submitted it. What proves
+the model is the network running it on its own hardware, plus the divergence
+and uplift the validator measures from your weights directly.
+
+---
+
+## 7 · Self-check before you declare
 
 ```bash
 mt miner selfcheck \
   --artifact ./my-model \
   --track code \
-  --hardware-class laptop \
-  --source hf:youracct/mt-code-3b@v1 \
+  --hardware-class mt-3g \
+  --source hf:youracct/mt-code-3b@a1b2c3d \
   --profile-seconds 60
 ```
 
@@ -182,7 +247,7 @@ sustained stream at your declared maximum input, sampling RSS throughout and
 keeping the maximum. Output:
 
 ```
-class            laptop  (developer workstation)
+class            mt-3g  (developer workstation)
 size             1.31 GiB   ceiling 1.50 GiB
 peak rss         2.48 GiB   ceiling 3.00 GiB
 ttft p50 / p95   96 / 142 ms   ceiling 180 ms
@@ -203,16 +268,18 @@ If it prints `INADMISSIBLE`, fix the model. Do not declare around it.
 
 ---
 
-## 7 · Ship it
+## 8 · Ship it
 
-Everything above is one-time. Mining is four commands total:
+Everything above is one-time. Mining is five commands total:
 
 ```bash
 btcli subnet register --netuid 92 --wallet.name <coldkey> --wallet.hotkey <hotkey>
 
-mt miner init --artifact ./my-model --track code --hardware-class laptop \
-              --source hf:youracct/mt-code-3b@v1
+mt miner init --artifact ./my-model --track code --hardware-class mt-3g \
+              --source hf:youracct/mt-code-3b@a1b2c3d
 
+mt miner package        # prints the artifact digest to log to your training run
+mt miner provenance     # confirm the run resolves and binds to that digest
 mt miner ship
 
 pm2 start "mt miner run" --name microtensor-miner --kill-timeout 3000
@@ -231,7 +298,7 @@ a plain `https` host publish the files with your own tooling and use
 The commit is about 84 bytes:
 
 ```
-mt1|41|code|laptop|3f9a…c21b|hf:youracct/mt-code-3b@v1
+mt1|41|code|mt-3g|3f9a…c21b|hf:youracct/mt-code-3b@a1b2c3d
 ```
 
 `mt miner run` then re-commits before every round closes, so you stay in the
@@ -259,7 +326,7 @@ Supported schemes: `hf`, `https`, `s3`, `r2`, `ipfs`.
 
 ---
 
-## 8 · Timing
+## 9 · Timing
 
 ```
 [start ─────────────────── close) [close ──────── deadline]
@@ -293,10 +360,14 @@ the branch under you.
 
 ---
 
-## 9 · What gets you zeroed
+## 10 · What gets you zeroed
 
 | | |
 |---|---|
+| no training run for your hotkey | rejected at discovery |
+| training run digest does not match the artifact | rejected at discovery |
+| training run declares a different track, class or base model | rejected at discovery |
+| training run finished after you committed | rejected at discovery |
 | unsigned manifest, or signed by a different hotkey | rejected at discovery |
 | manifest does not hash to the committed digest | rejected at discovery |
 | commitment names the wrong round or a closed competition | rejected at discovery |
@@ -315,7 +386,7 @@ you and why.
 
 ---
 
-## 10 · Where the wins are
+## 11 · Where the wins are
 
 - **Quantise past where it looks safe.** The gate is on the envelope, not on
   parameter count. int8 or int4 that holds accuracy beats fp16 that misses RSS.

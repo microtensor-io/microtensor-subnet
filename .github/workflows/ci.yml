@@ -64,7 +64,7 @@ jobs:
         run: |
           python - <<'PY'
           from microtensor.core.tracks import competitions
-          expected = [("code", "laptop"), ("code", "edge-gpu")]
+          expected = [("code", "mt-3g"), ("code", "mt-4g")]
           assert competitions() == expected, competitions()
           print(competitions())
           PY

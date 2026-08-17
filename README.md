@@ -30,8 +30,7 @@ no GPU, and one reference device per class they certify.
 
 | Track | Class | Size | Peak RSS | p95 first output | Emission |
 |---|---|---|---|---|---|
-| `code` | `laptop` | 1.5 GiB | 3 GiB | 180 ms | 60 % |
-| `code` | `edge-gpu` | 2.5 GiB | 4 GiB | 120 ms | 40 % |
+| `code` | `mt-3g` | 1.5 GiB | 3 GiB | 180 ms | 100 % |
 
 **Metric:** pass@1 (greedy), executed against hidden tests. Generated code runs
 in a sandbox and the score is the fraction of hidden tests that pass. One
@@ -50,6 +49,8 @@ benches come online.
 | Corpus | Public train split + prompts published per version; hidden tests and the rotating draw are validator-side |
 | Reference completions | One vetted completion per train-split task ships with each corpus release, so miners train on prompt/completion pairs without running a large model |
 | Baseline | `mt-code-baseline` and its score are published in [releases](../../releases); that is the number to beat |
+| Training provenance | Public W&B run in `microtensor/training-runs`, bound to the artifact digest, required for admission |
+| Hardware class | A memory envelope, not a device. `mt-3g` means 3 GiB peak resident memory at your declared maximum input, 1.5 GiB on disk, 180 ms p95 first output. |
 | Formats | safetensors, GGUF, ONNX |
 | Submission | One per competition per round; chain rate-limits commits to one per 20 minutes |
 | Artifact hosting | `hf:` (repo@commit-sha), `ipfs:`, `s3:`, `r2:`, `https:`. All digest-verified after fetch |
@@ -70,14 +71,15 @@ mt inspect tracks          # live competitions, ceilings, emission shares
 mt inspect engines         # what this host can execute; whether the jail binds
 
 # Miner: four commands, no uptime
-mt miner init --track code --class laptop --artifact ./my-model --source hf:you/mt-code@<sha>
+mt miner init --track code --class mt-3g --artifact ./my-model --source hf:you/mt-code@<sha>
 mt miner selfcheck         # measure your own envelope before declaring it
-mt miner package
+mt miner package           # prints the digest to log to your training run
+mt miner provenance        # confirm the run resolves and binds
 mt miner ship              # upload + commit on chain
 
 # Validator: prove the machinery before touching a chain
 mt validator loopback --rounds 3 --miners 4
-mt validator certify laptop
+mt validator certify mt-3g
 mt validator run
 ```
 

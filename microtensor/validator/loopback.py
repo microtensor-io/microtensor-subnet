@@ -123,7 +123,7 @@ def build(
     round_index: int = 3,
     miners: int = 3,
     tasks_per_round: int = 12,
-    hardware_class: str = "laptop",
+    hardware_class: str = "mt-3g",
 ) -> Loopback:
     track = enabled_tracks()[0].id
     round_ = round_at(round_index)
@@ -195,7 +195,7 @@ def advance(loop: Loopback) -> Loopback:
             hotkey=miner.hotkey,
             round_index=following.index,
             track=track,
-            hardware_class="laptop",
+            hardware_class="mt-3g",
             source=miner.source,
             load=LOAD,
             declared=DECLARED,
@@ -204,7 +204,7 @@ def advance(loop: Loopback) -> Loopback:
         loop.client.set_commitment(
             miner.hotkey,
             build_commitment(
-                following.index, track, "laptop", manifest.digest(), miner.source
+                following.index, track, "mt-3g", manifest.digest(), miner.source
             ).encode(),
         )
 

@@ -70,9 +70,9 @@ Disabled tracks are registered but carry zero emission share and are not drawn.
 Enabling one is a mechanism version bump, not a code change.
 
 The launch scope is deliberately narrow: `code` is the only enabled track,
-competing in `laptop` and `edge-gpu` only, with the track's emission split
+competing in `mt-3g` and `mt-4g` only, with the track's emission split
 60/40 between them by `CLASS_WEIGHTS`. A track may gate the classes it competes
-in; a code model under the 600 MB `embedded` ceiling would sit below the track
+in; a code model under the 600 MB `mt-1g` ceiling would sit below the track
 threshold forever, and a dead competition still costs every validator fetch and
 profile time.
 
@@ -86,10 +86,10 @@ disabled until its reference-extractor exemption is written down.
 
 | Class | Max size `Sₖ` | Max sustained RSS `Rₖ` | Max p95 `Lₖ` | Reference device |
 |---|---|---|---|---|
-| `server-cpu` | 8 GB | 16 GB | 400 ms | x86-64 server, no accelerator |
-| `edge-gpu` | 2.5 GB | 4 GB | 120 ms | consumer / embedded GPU |
-| `laptop` | 1.5 GB | 3 GB | 180 ms | developer workstation |
-| `embedded` | 600 MB | 1 GB | 300 ms | mobile SoC / NPU |
+| `mt-16g` | 8 GB | 16 GB | 400 ms | x86-64 server, no accelerator |
+| `mt-4g` | 2.5 GB | 4 GB | 120 ms | consumer / embedded GPU |
+| `mt-3g` | 1.5 GB | 3 GB | 180 ms | developer workstation |
+| `mt-1g` | 600 MB | 1 GB | 300 ms | mobile SoC / NPU |
 
 Classes rotate across rounds within a track. The architecture that maximises
 accuracy at 8 GB is not the one that maximises it at 600 MB, so a frontier point
@@ -378,6 +378,41 @@ my hardware, and how good is it.**
 
 Under these conditions inference is a deterministic function, so for validators
 `v, v'` on the same artifact and task set: `A_v(a) = A_v'(a)`.
+
+### What a training run does and does not establish
+
+Every submission must carry a public run in `microtensor/training-runs`, named
+for the miner hotkey and carrying the artifact digest in its summary. A
+submission without one is rejected at discovery, in the same class as an
+unsigned manifest. This is an admission requirement; among admitted artifacts
+ranking is unchanged and remains gate-then-rank on accuracy alone.
+
+**A run is a timestamped record, not a proof of computation.** Entries are
+written by the miner through an API, and a determined actor can fabricate
+plausible curves. What the requirement establishes is that anyone claiming an
+artifact must also have published a training history bound to that artifact's
+digest before submitting it, which raises the cost of appropriation from a
+download to a fabrication and leaves an auditable public trail.
+
+**It is not what makes the score trustworthy.** That remains the fact that the
+network holds the weights and runs them itself, on its own certified hardware,
+against tasks seeded from a block hash that did not exist when the artifact was
+submitted. Provenance is an audit trail layered on top of that, never a
+replacement for it.
+
+**The artifact-derived signals are the ones the miner cannot author.**
+`base_divergence` and `uplift` are computed by validators from the weights
+themselves. Together the three answer the question completely: a public record
+of how the model was produced, and two independent measurements confirming it
+genuinely moved from its base and genuinely improved on it.
+
+**A validator that cannot reach the run store abstains.** It does not skip the
+check, and it does not score only the miners it managed to verify. Two
+validators with different reachability would otherwise materialise different
+participant sets and diverge by construction, which is precisely the property
+the rest of this document exists to protect.
+
+---
 
 ### The metric is pass@1, and that is forced rather than chosen
 

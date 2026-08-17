@@ -19,6 +19,7 @@ from microtensor.core.constants import (
     ARTIFACT_CACHE_CAP_BYTES,
     CORPUS_VERSION,
     GENESIS_BLOCK,
+    PROVENANCE_REQUIRED,
     RELEASE_CHANNELS,
     RELEASE_REPO,
     RELEASE_SIGNING_KEY,
@@ -37,6 +38,8 @@ from microtensor.envelope.certify import certify as certification_run
 from microtensor.envelope.certify import save as certify_save
 from microtensor.harness.jail import cpu_limit_binds
 from microtensor.harness.limits import sandbox_available
+from microtensor.provenance.record import CachedStore
+from microtensor.provenance.wandb_store import WandbStore
 from microtensor.update.loop import UpdateChecker, UpdateSettings
 from microtensor.validator import loopback
 from microtensor.validator.context import ValidatorConfig, ValidatorContext
@@ -144,6 +147,24 @@ def _degraded(args: argparse.Namespace, *, probe: bool) -> bool:
     return True
 
 
+def _run_store(args: argparse.Namespace, *, probe: bool) -> CachedStore | None:
+    if not PROVENANCE_REQUIRED:
+        log.warning("provenance is not required; submissions need no training run")
+        return None
+
+    store = WandbStore()
+    if probe:
+        reachable, reason = store.reachable()
+        if not reachable:
+            raise SystemExit(
+                f"the training run store is unreachable, and a validator that cannot "
+                f"check provenance would materialise a different participant set to its "
+                f"peers and abstain every round: {reason}"
+            )
+        log.info("training run store reachable at %s/%s", store.entity, store.project)
+    return CachedStore(store)
+
+
 def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext:
     chain = chain_config(args)
     home = Path(args.home)
@@ -156,6 +177,7 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
         )
 
     degraded = _degraded(args, probe=probe)
+    runs = _run_store(args, probe=probe)
 
     config = ValidatorConfig(
         chain=chain,
@@ -183,7 +205,7 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
     if hotkey and not snapshot.has_permit(hotkey):
         log.warning("hotkey %s holds no validator permit; weights may be ignored", hotkey)
 
-    return ValidatorContext.build(config, client, wallet=wallet, hotkey=hotkey)
+    return ValidatorContext.build(config, client, wallet=wallet, hotkey=hotkey, runs=runs)
 
 
 def _updater(args: argparse.Namespace) -> UpdateChecker | None:

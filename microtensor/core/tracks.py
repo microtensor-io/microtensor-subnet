@@ -76,7 +76,7 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=1.0,
             work_unit="generated_tokens",
             enabled=True,
-            classes=("laptop", "edge-gpu"),
+            classes=("mt-3g",),
         ),
         Track(
             id="document",
@@ -154,28 +154,28 @@ CLASSES: Final[dict[str, HardwareClass]] = {
     c.id: c
     for c in (
         HardwareClass(
-            id="server-cpu",
+            id="mt-16g",
             max_size_bytes=8 * _GB,
             max_rss_bytes=16 * _GB,
             max_p95_ms=400,
             reference="x86-64 server, no accelerator",
         ),
         HardwareClass(
-            id="edge-gpu",
+            id="mt-4g",
             max_size_bytes=(5 * _GB) // 2,
             max_rss_bytes=4 * _GB,
             max_p95_ms=120,
             reference="consumer or embedded GPU",
         ),
         HardwareClass(
-            id="laptop",
+            id="mt-3g",
             max_size_bytes=(3 * _GB) // 2,
             max_rss_bytes=3 * _GB,
             max_p95_ms=180,
             reference="developer workstation",
         ),
         HardwareClass(
-            id="embedded",
+            id="mt-1g",
             max_size_bytes=600 * _MB,
             max_rss_bytes=1 * _GB,
             max_p95_ms=300,

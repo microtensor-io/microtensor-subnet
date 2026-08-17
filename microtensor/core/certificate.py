@@ -40,6 +40,7 @@ class Certificate:
     accuracy: dict[str, Any]
     runtime: dict[str, Any]
     work_evidence: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
     attestation: Attestation | None = None
 
     def body(self) -> dict[str, Any]:
@@ -52,6 +53,7 @@ class Certificate:
             "accuracy": self.accuracy,
             "runtime": self.runtime,
             "work_evidence": self.work_evidence,
+            "provenance": self.provenance,
         }
 
     def digest(self) -> bytes:
@@ -68,6 +70,7 @@ class Certificate:
             accuracy=self.accuracy,
             runtime=self.runtime,
             work_evidence=self.work_evidence,
+            provenance=self.provenance,
             attestation=Attestation(
                 miner_hotkey=miner_hotkey,
                 validator_hotkey=signer.ss58_address,
@@ -119,6 +122,7 @@ def build_certificate(
     decoding: str,
     seed: int = 0,
     work_evidence: dict[str, Any] | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> Certificate:
     track = get_track(submission.track)
     return Certificate(
@@ -161,4 +165,5 @@ def build_certificate(
             "quantization": submission.manifest.quantization,
         },
         work_evidence=dict(work_evidence or {}),
+        provenance=dict(provenance or {}),
     )

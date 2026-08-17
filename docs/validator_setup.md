@@ -25,7 +25,8 @@ aggregation and a measurement taken without limits is not evidence at all.
 | **GPU** | **none** |
 | **Network** | 1 Gbps, 500 GB to 1 TB monthly transfer |
 | **Uptime** | continuous, runs a neuron, one round every `ROUND_BLOCKS` (7200 blocks ≈ 24 h) |
-| **Bench** | one reference device per class served; at launch that is `laptop` and `edge-gpu` only |
+| **Bench** | one reference device for the launch class, `mt-3g` |
+| **Credentials** | a W&B read key for `microtensor/training-runs` |
 | **Fails** | closed, so an unenforceable sandbox refuses to run rather than guess |
 
 **No GPU, deliberately.** The engine runs on `CPUExecutionProvider`, so
@@ -61,10 +62,10 @@ aggregate by median.
 
 | class | size ceiling | RSS ceiling | p95 TTFT | reference |
 |---|---|---|---|---|
-| `server-cpu` | 8 GiB | 16 GiB | 400 ms | x86-64 server, no accelerator |
-| `edge-gpu` | 2.5 GiB | 4 GiB | 120 ms | consumer or embedded GPU |
-| `laptop` | 1.5 GiB | 3 GiB | 180 ms | developer workstation |
-| `embedded` | 600 MiB | 1 GiB | 300 ms | mobile SoC or NPU |
+| `mt-16g` | 8 GiB | 16 GiB | 400 ms | x86-64 server, no accelerator |
+| `mt-4g` | 2.5 GiB | 4 GiB | 120 ms | consumer or embedded GPU |
+| `mt-3g` | 1.5 GiB | 3 GiB | 180 ms | developer workstation |
+| `mt-1g` | 600 MiB | 1 GiB | 300 ms | mobile SoC or NPU |
 
 Check what your host reports:
 
@@ -73,7 +74,7 @@ python -c "from microtensor.envelope.device import detect; print(detect().digest
 ```
 
 Run one validator process per class you can certify. A single host that
-genuinely matches `server-cpu` should not also claim `embedded`.
+genuinely matches `mt-16g` should not also claim `mt-1g`.
 
 ---
 
@@ -163,8 +164,8 @@ workload, pins your declared thermal and power policy into the device
 profile hash, and records the measurements:
 
 ```bash
-mt validator certify laptop --cooling-mode active --power-mode performance
-mt validator certify edge-gpu
+mt validator certify mt-3g --cooling-mode active --power-mode performance
+mt validator certify mt-4g
 ```
 
 A policy change is a different profile, so changing cooling or power modes

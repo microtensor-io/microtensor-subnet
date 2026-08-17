@@ -124,12 +124,46 @@ def _signing_gate() -> Gate:
     )
 
 
+def _provenance_gate() -> Gate:
+    from microtensor.core.constants import (
+        PROVENANCE_ENTITY,
+        PROVENANCE_PROJECT,
+        PROVENANCE_REQUIRED,
+    )
+    from microtensor.provenance.wandb_store import credentials_present
+
+    where = f"{PROVENANCE_ENTITY}/{PROVENANCE_PROJECT}"
+    if not PROVENANCE_REQUIRED:
+        return Gate(
+            name="training provenance",
+            ready=False,
+            posture=OPEN,
+            detail="PROVENANCE_REQUIRED is off, so submissions need no training run",
+            fix="set PROVENANCE_REQUIRED once the run store is live",
+        )
+    if not credentials_present():
+        return Gate(
+            name="training provenance",
+            ready=False,
+            posture=CLOSED,
+            detail=f"required against {where}, but WANDB_API_KEY is unset so rounds abstain",
+            fix="export WANDB_API_KEY with read access to the project",
+        )
+    return Gate(
+        name="training provenance",
+        ready=True,
+        posture=CLOSED,
+        detail=f"required against {where}, credentials present",
+    )
+
+
 def audit() -> list[Gate]:
     return [
         _base_model_gate(),
         *_conformance_gates(),
         *_band_gates(),
         _signing_gate(),
+        _provenance_gate(),
     ]
 
 

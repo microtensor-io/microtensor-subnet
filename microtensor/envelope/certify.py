@@ -16,11 +16,13 @@ WORKLOAD_VERSION: Final[str] = "1"
 DEFAULT_REPETITIONS: Final[int] = 15
 HASH_ROUNDS: Final[int] = 60_000
 
-LAUNCH_CLASSES: Final[tuple[str, ...]] = ("laptop", "edge-gpu")
+LAUNCH_CLASSES: Final[tuple[str, ...]] = ("mt-3g",)
 
 BUFFER_BYTES: Final[dict[str, int]] = {
-    "laptop": 192 * 1024**2,
-    "edge-gpu": 256 * 1024**2,
+    "mt-16g": 384 * 1024**2,
+    "mt-4g": 256 * 1024**2,
+    "mt-3g": 192 * 1024**2,
+    "mt-1g": 96 * 1024**2,
 }
 
 CERT_BANDS: Final[dict[str, dict[str, float]]] = {}
