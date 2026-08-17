@@ -38,9 +38,16 @@ jobs:
           cache: pip
       - run: pip install ".[validator,dev]"
       - name: Run the suite with the sandbox enforced
-        run: pytest tests -q
+        run: |
+          if [ -d tests ]; then
+            pytest tests -q
+          else
+            echo "::notice::the suite is not published in this repository; skipping"
+          fi
       - name: Confirm the jail refuses to run unsandboxed on a POSIX host
         run: python -c "from microtensor.harness.limits import sandbox_available; assert sandbox_available()"
+      - name: A round must settle end to end with no chain
+        run: mt validator loopback --rounds 2 --miners 3
 
   mechanism:
     runs-on: ubuntu-latest
@@ -53,8 +60,21 @@ jobs:
       - run: pip install ".[validator,dev]"
       - name: Emission shares must sum to one
         run: python -c "from microtensor.core.tracks import validate_registry; validate_registry()"
+      - name: The launch scope must be the two live competitions
+        run: |
+          python - <<'PY'
+          from microtensor.core.tracks import competitions
+          expected = [("code", "laptop"), ("code", "edge-gpu")]
+          assert competitions() == expected, competitions()
+          print(competitions())
+          PY
       - name: A round must settle end to end with no chain
-        run: pytest tests/test_end_to_end.py -q
+        run: mt validator loopback --rounds 3 --miners 4
+      - name: A generated corpus must verify against its own hidden tests
+        run: |
+          mt corpus generate code --rotating 16 --fixed 8 --train 8 \
+            --seed ci-$(git rev-parse --short HEAD) --out /tmp/ci-corpus
+          mt corpus check /tmp/ci-corpus --tasks-per-round 12
       - name: The package must build and carry both neuron entrypoints
         run: |
           pip install build

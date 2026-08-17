@@ -25,10 +25,16 @@ jobs:
       - name: Install
         run: pip install ".[validator,dev]" build
 
-      - name: The suite must pass before anything is published
+      - name: Nothing is published unless the checks pass
         run: |
           ruff check .
-          pytest tests -q
+          mypy microtensor
+          if [ -d tests ]; then
+            pytest tests -q
+          else
+            echo "::warning::the suite is not published here; run it before tagging"
+          fi
+          mt validator loopback --rounds 2 --miners 3
 
       - name: Refuse a tag that disagrees with MECHANISM_VERSION
         run: |

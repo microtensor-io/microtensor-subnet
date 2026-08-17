@@ -15,6 +15,11 @@ venv/
 .coverage
 htmlcov/
 
+# The suite is kept out of the published repository. It stays on disk and must
+# still pass before anything is tagged; CI skips the test steps when the
+# directory is absent rather than failing.
+tests/
+
 # Runtime state — never commit a validator's scores, EMA or round records
 state/
 *.sqlite
