@@ -4,9 +4,15 @@ import argparse
 from pathlib import Path
 
 from microtensor.cli.common import add_common_arguments, fail
-from microtensor.core.constants import MECHANISM_VERSION
+from microtensor.core.constants import CLASS_WEIGHTS, MECHANISM_VERSION
 from microtensor.core.readiness import audit, summary
-from microtensor.core.tracks import CLASSES, TRACKS, competitions, enabled_tracks
+from microtensor.core.tracks import (
+    CLASSES,
+    TRACKS,
+    competitions,
+    enabled_tracks,
+    get_track,
+)
 from microtensor.harness.limits import sandbox_available
 from microtensor.harness.registry import available, describe, load_builtin
 from microtensor.store.state import ValidatorState
@@ -49,15 +55,23 @@ def _tracks(args: argparse.Namespace) -> int:
             f"{track.emission_share:>6.0%}  {status}"
         )
 
-    print(f"\n{'class':<14}{'size':>10}{'rss':>10}{'p95':>8}  reference")
+    live = competitions()
+    weighted = {hardware for _, hardware in live}
+
+    print(f"\n{'class':<14}{'size':>10}{'rss':>10}{'p95':>8}  {'share':>6}  reference")
     for hardware in CLASSES.values():
+        share = CLASS_WEIGHTS.get(hardware.id, 0.0) if hardware.id in weighted else 0.0
         print(
             f"{hardware.id:<14}{hardware.max_size_bytes / 1024**3:>9.1f}G"
             f"{hardware.max_rss_bytes / 1024**3:>9.1f}G{hardware.max_p95_ms:>7}ms"
-            f"  {hardware.reference}"
+            f"  {share:>5.0%}  {hardware.reference}"
         )
 
-    print(f"\n{len(enabled_tracks())} tracks open, {len(competitions())} competitions")
+    print(f"\n{'competition':<24}{'metric':<24}status")
+    for track_id, class_id in live:
+        print(f"{f'{track_id}/{class_id}':<24}{get_track(track_id).published_metric:<24}scored")
+
+    print(f"\n{len(enabled_tracks())} tracks open, {len(live)} competitions")
     return 0
 
 

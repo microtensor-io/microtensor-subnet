@@ -69,12 +69,19 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 Disabled tracks are registered but carry zero emission share and are not drawn.
 Enabling one is a mechanism version bump, not a code change.
 
-The launch scope is deliberately narrow: `code` is the only enabled track,
-competing in `mt-3g` and `mt-4g` only, with the track's emission split
-60/40 between them by `CLASS_WEIGHTS`. A track may gate the classes it competes
-in; a code model under the 600 MB `mt-1g` ceiling would sit below the track
-threshold forever, and a dead competition still costs every validator fetch and
-profile time.
+The launch scope is deliberately narrow: `code` is the only enabled track and
+`mt-3g` its only enabled class, so `CLASS_WEIGHTS` gives that one competition
+the whole emission share. One competition means every entrant is measured
+against every other entrant under one ceiling, which is the sharpest signal the
+mechanism can produce and the fairest starting point for a network with no
+history yet. A track may gate the classes it competes in; a code model under the
+600 MB `mt-1g` ceiling would sit below the track threshold forever, and a dead
+competition still costs every validator fetch and profile time.
+
+Opening a second class is a governance decision, not a code change. It needs a
+published `device_profile` and tolerance band for that class first, since
+without them envelope conformance cannot be judged and the ceiling would not
+actually bind.
 
 **Every enabled metric is computed, not judged.** No model renders an opinion on
 another model's output. This is the admission criterion for a track: if quality
@@ -90,6 +97,10 @@ disabled until its reference-extractor exemption is written down.
 | `mt-4g` | 2.5 GB | 4 GB | 120 ms | consumer / embedded GPU |
 | `mt-3g` | 1.5 GB | 3 GB | 180 ms | developer workstation |
 | `mt-1g` | 600 MB | 1 GB | 300 ms | mobile SoC / NPU |
+
+A class names a memory envelope, not a device. The reference column is the kind
+of machine that envelope is meant to fit on, but nothing about it is enforced:
+what binds is the ceiling triple, measured on certified validator hardware.
 
 Classes rotate across rounds within a track. The architecture that maximises
 accuracy at 8 GB is not the one that maximises it at 600 MB, so a frontier point

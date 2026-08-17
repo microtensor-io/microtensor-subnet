@@ -107,8 +107,3 @@ validator:
         max_rss_gb: 3
         max_p95_ms: 180
         reference: "developer workstation"
-      - id: "mt-4g"
-        max_size_gb: 2.5
-        max_rss_gb: 4
-        max_p95_ms: 120
-        reference: "consumer or embedded GPU"

@@ -67,6 +67,10 @@ aggregate by median.
 | `mt-3g` | 1.5 GiB | 3 GiB | 180 ms | developer workstation |
 | `mt-1g` | 600 MiB | 1 GiB | 300 ms | mobile SoC or NPU |
 
+At launch only `mt-3g` is live, so one certified device is all you need. The
+other three are registered and carry no emission share until governance opens
+them.
+
 Check what your host reports:
 
 ```bash
@@ -144,9 +148,15 @@ export MT_NETWORK=finney
 export MT_WALLET_NAME=<coldkey>
 export MT_WALLET_HOTKEY=<hotkey>
 export MT_HOME=~/.microtensor
+export WANDB_API_KEY=<read key>
 ```
 
-`MT_NETUID` defaults to 92, so you do not normally set it.
+`MT_NETUID` defaults to 92, so you do not normally set it. `WANDB_API_KEY` is
+not optional: every submission must carry a public training run in
+`microtensor/training-runs` bound to its artifact digest, and a validator that
+cannot read that project cannot admit anyone. A read key is enough, and the
+project is public, so the key identifies you to the API rather than granting
+you anything private.
 
 Verify before running for real:
 
@@ -165,12 +175,16 @@ profile hash, and records the measurements:
 
 ```bash
 mt validator certify mt-3g --cooling-mode active --power-mode performance
-mt validator certify mt-4g
 ```
 
 A policy change is a different profile, so changing cooling or power modes
 after certifying means re-certifying. Until tolerance bands are published
-for the launch classes, certify records your numbers for calibration.
+for the launch class, certify records your numbers for calibration.
+
+At startup the validator resolves the run store and fails fast if it cannot.
+A missing `WANDB_API_KEY`, a bad key or an unreachable API all stop the boot
+with the reason named, rather than letting you discover it mid-round when
+every miner is suddenly unverifiable.
 
 At startup the validator also probes whether the CPU limit actually binds by
 running a spinner under a one-second budget. If the kernel never kills it,
@@ -284,7 +298,14 @@ MT_WALLET_NAME=<coldkey> MT_WALLET_HOTKEY=<hotkey> \
 | task times out, produces nothing, or the worker dies | that task scores 0 |
 | artifact unfetchable after retries | **abstain** |
 | no engine available | **abstain** |
+| run store unreachable after retries | **abstain** |
 | fewer than 50 % of submissions scored | **abstain** |
+
+A run store outage is the clearest case of the rule. The check is never
+skipped and the round is never scored on whoever happened to verify before
+the API went down, because two validators with different reachability would
+admit different participant sets and diverge by construction. Each retries
+with backoff first, and only a sustained outage abstains.
 
 Abstaining sets no weights that round. EMA state is untouched and you resume
 next round. A partial vector is never submitted: since every validator scores
