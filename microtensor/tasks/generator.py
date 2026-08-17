@@ -10,6 +10,7 @@ from typing import Any, Final
 
 from microtensor.core.constants import CORPUS_VERSION
 from microtensor.core.hashing import canonical_hash, digest_file
+from microtensor.tasks import contamination
 from microtensor.tasks.corpus import FIXED, ROTATING
 
 GENERATOR_VERSION: Final[str] = "1"
@@ -74,6 +75,12 @@ class GeneratedTask:
         return canonical_hash(
             {"ref": self.ref, "entry_point": self.entry_point, "tests": self._tests_json()}
         )
+
+    def instance_key(self) -> str:
+        cases = [
+            f"{args!r}->{expected!r}" for args, expected in (*self.hidden, *self.public)
+        ]
+        return f"{self.family}|{self.entry_point}|" + "|".join(sorted(cases))
 
 
 @dataclass(frozen=True, slots=True)
@@ -579,6 +586,49 @@ class Bundle:
     version: str = CORPUS_VERSION
 
 
+REDRAW_ATTEMPTS: Final[int] = 24
+REDRAW_STRIDE: Final[int] = 7919
+
+
+def _as_sample(task: GeneratedTask) -> contamination.Sample:
+    return contamination.Sample(
+        ref=task.ref,
+        prompt=task.prompt,
+        solution=task.solution,
+        instance=task.instance_key(),
+    )
+
+
+def _redraw_collisions(
+    rotating_tasks: list[GeneratedTask],
+    fixed_tasks: list[GeneratedTask],
+    seed: str,
+    names: list[str],
+) -> list[GeneratedTask]:
+    anchors = [_as_sample(t) for t in fixed_tasks]
+    by_ref = {t.ref: index for index, t in enumerate(rotating_tasks)}
+    flagged: list[contamination.Overlap] = []
+
+    for attempt in range(1, REDRAW_ATTEMPTS + 1):
+        flagged = contamination.scan_partitions(
+            [_as_sample(t) for t in rotating_tasks], anchors
+        )
+        if not flagged:
+            return rotating_tasks
+        for overlap in flagged:
+            position = by_ref[overlap.ref]
+            original = rotating_tasks[position]
+            index = int(original.ref.rsplit("-", 1)[1]) + attempt * REDRAW_STRIDE
+            rotating_tasks[position] = build_task(
+                original.ref, ROTATING, names[index % len(names)], seed, index
+            )
+
+    raise GenerationError(
+        f"{len(flagged)} rotating tasks still instantiate the same cases as the fixed "
+        f"partition after {REDRAW_ATTEMPTS} redraws; widen the template parameter space"
+    )
+
+
 def generate(
     *,
     rotating: int,
@@ -600,9 +650,18 @@ def generate(
             for i in range(count)
         ]
 
-    tasks = batch("r", ROTATING, rotating) + batch("f", FIXED, fixed)
+    fixed_tasks = batch("f", FIXED, fixed)
+    rotating_tasks = _redraw_collisions(
+        batch("r", ROTATING, rotating), fixed_tasks, seed, names
+    )
+
     training = batch("t", ROTATING, train) if train else []
-    return Bundle(tasks=tuple(tasks), train=tuple(training), seed=seed, version=version)
+    return Bundle(
+        tasks=tuple(rotating_tasks + fixed_tasks),
+        train=tuple(training),
+        seed=seed,
+        version=version,
+    )
 
 
 def _write_jsonl(path: Path, rows: Sequence[dict[str, Any]]) -> None:

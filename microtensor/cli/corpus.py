@@ -8,7 +8,7 @@ from pathlib import Path
 from microtensor.cli.common import fail
 from microtensor.core.constants import CORPUS_VERSION, TASKS_PER_ROUND
 from microtensor.core.tracks import enabled_tracks, get_track
-from microtensor.tasks import generator
+from microtensor.tasks import contamination, generator
 from microtensor.tasks.corpus import FIXED, ROTATING, Corpus, CorpusError, load_all, load_corpus
 from microtensor.tasks.selection import partition_sizes
 
@@ -33,6 +33,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     check = inner.add_parser("check", help="verify every corpus a validator would load")
     check.add_argument("directory", type=Path)
     check.add_argument("--tasks-per-round", type=int, default=TASKS_PER_ROUND)
+    check.add_argument(
+        "--skip-contamination",
+        action="store_true",
+        help="smoke-test path only; skips the public-benchmark and partition scans",
+    )
     check.set_defaults(handler=_check)
 
     stats = inner.add_parser("stats", help="counts and digests per track")
@@ -122,6 +127,9 @@ def _check(args: argparse.Namespace) -> int:
             for problem in bundle_problems[:5]:
                 print(f"  PROBLEM {problem}")
 
+    if not args.skip_contamination:
+        problems.extend(_contamination(corpora))
+
     missing = sorted(open_tracks - set(corpora))
     if missing:
         print(f"\nno corpus for open tracks: {', '.join(missing)} — they will not be scored")
@@ -131,6 +139,68 @@ def _check(args: argparse.Namespace) -> int:
         return 1
     print("\nevery corpus can fill a round")
     return 0
+
+
+def _samples(corpus: Corpus, partition: str | None = None) -> list[contamination.Sample]:
+    samples: list[contamination.Sample] = []
+    for task in corpus:
+        if partition is not None and task.partition != partition:
+            continue
+        gold = task.gold if isinstance(task.gold, dict) else {}
+        tests = gold.get("tests") or []
+        samples.append(
+            contamination.Sample(
+                ref=task.ref,
+                prompt=task.prompt,
+                solution=str(gold.get("solution", "")),
+                instance=(
+                    json.dumps([str(gold.get("entry_point", "")), tests], sort_keys=True)
+                    if tests
+                    else ""
+                ),
+            )
+        )
+    return samples
+
+
+def _report(label: str, flagged: list[contamination.Overlap]) -> list[str]:
+    print(f"  {label:<28}{len(flagged)} flagged")
+    for overlap in flagged[:5]:
+        print(f"    {overlap.describe()}")
+    return [f"contamination/{label}: {o.describe()}" for o in flagged]
+
+
+def _contamination(corpora: dict[str, Corpus]) -> list[str]:
+    print("\ncontamination")
+    references = contamination.load_reference_fingerprints()
+    problems: list[str] = []
+
+    if not references:
+        print(
+            "  public benchmark overlap    SKIPPED, no fingerprints shipped; build them "
+            "with scripts/build_reference_fingerprints.py"
+        )
+    for name in sorted(corpora):
+        corpus = corpora[name]
+        if references:
+            problems.extend(
+                _report(
+                    "public benchmark overlap",
+                    contamination.scan_overlap(_samples(corpus), references),
+                )
+            )
+        problems.extend(
+            _report(
+                "fixed/rotating overlap",
+                contamination.scan_partitions(
+                    _samples(corpus, ROTATING), _samples(corpus, FIXED)
+                ),
+            )
+        )
+        problems.extend(
+            _report("duplicate prompts", contamination.duplicate_prompts(_samples(corpus)))
+        )
+    return problems
 
 
 def _stats(args: argparse.Namespace) -> int:

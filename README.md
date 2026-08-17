@@ -33,8 +33,9 @@ no GPU, and one reference device per class they certify.
 | `code` | `laptop` | 1.5 GiB | 3 GiB | 180 ms | 60 % |
 | `code` | `edge-gpu` | 2.5 GiB | 4 GiB | 120 ms | 40 % |
 
-**Metric:** execution pass rate. Generated code runs against hidden tests in
-a sandbox; the score is the fraction that pass. Computed, never judged.
+**Metric:** pass@1 (greedy), executed against hidden tests. Generated code runs
+in a sandbox and the score is the fraction of hidden tests that pass. One
+generation, decoded greedily at temperature 0. Computed, never judged.
 
 **Next track:** `detect` (vision). The registry in
 [`tracks.py`](microtensor/core/tracks.py) carries the full multimodal set as
@@ -45,13 +46,13 @@ benches come online.
 
 | | |
 |---|---|
-| Base models | Pinned allowlist (Qwen3 / Llama 3.2, 0.6B–4B) in [`constants.py`](microtensor/core/constants.py) — exact HF revisions, published at corpus freeze |
+| Base models | Pinned allowlist (Qwen3 / Llama 3.2, 0.6B to 4B) in [`constants.py`](microtensor/core/constants.py). Exact HF revisions, published at corpus freeze |
 | Corpus | Public train split + prompts published per version; hidden tests and the rotating draw are validator-side |
-| Reference completions | One vetted completion per train-split task ships with each corpus release — miners train on prompt/completion pairs without running a large model |
+| Reference completions | One vetted completion per train-split task ships with each corpus release, so miners train on prompt/completion pairs without running a large model |
 | Baseline | `mt-code-baseline` and its score are published in [releases](../../releases); that is the number to beat |
 | Formats | safetensors, GGUF, ONNX |
 | Submission | One per competition per round; chain rate-limits commits to one per 20 minutes |
-| Artifact hosting | `hf:` (repo@commit-sha), `ipfs:`, `s3:`, `r2:`, `https:` — digest-verified after fetch |
+| Artifact hosting | `hf:` (repo@commit-sha), `ipfs:`, `s3:`, `r2:`, `https:`. All digest-verified after fetch |
 
 ## Rounds
 
@@ -81,8 +82,8 @@ mt validator run
 ```
 
 Hardware guidance for miners and the enforced validator floor are in
-[`min_compute.yml`](min_compute.yml). The full mechanism — what is frozen,
-what is tunable, and why every rule exists — is
+[`min_compute.yml`](min_compute.yml). The full mechanism, covering what is
+frozen, what is tunable and why every rule exists, is
 [`docs/mechanism.md`](docs/mechanism.md).
 
 ## Status

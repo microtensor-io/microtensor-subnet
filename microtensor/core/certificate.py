@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from microtensor.core.constants import ACCURACY_DECIMALS, MECHANISM_VERSION
 from microtensor.core.hashing import DIGEST_PREFIX, canonical_digest, canonical_hash
 from microtensor.core.protocol import Evaluation, MeasuredEnvelope, Submission
+from microtensor.core.tracks import get_track
 
 SIGNATURE_PREFIX = "ed25519:"
 
@@ -38,6 +39,7 @@ class Certificate:
     envelope: dict[str, Any]
     accuracy: dict[str, Any]
     runtime: dict[str, Any]
+    work_evidence: dict[str, Any] = field(default_factory=dict)
     attestation: Attestation | None = None
 
     def body(self) -> dict[str, Any]:
@@ -49,6 +51,7 @@ class Certificate:
             "envelope": self.envelope,
             "accuracy": self.accuracy,
             "runtime": self.runtime,
+            "work_evidence": self.work_evidence,
         }
 
     def digest(self) -> bytes:
@@ -64,6 +67,7 @@ class Certificate:
             envelope=self.envelope,
             accuracy=self.accuracy,
             runtime=self.runtime,
+            work_evidence=self.work_evidence,
             attestation=Attestation(
                 miner_hotkey=miner_hotkey,
                 validator_hotkey=signer.ss58_address,
@@ -114,7 +118,9 @@ def build_certificate(
     engine_version: str,
     decoding: str,
     seed: int = 0,
+    work_evidence: dict[str, Any] | None = None,
 ) -> Certificate:
+    track = get_track(submission.track)
     return Certificate(
         mechanism_version=MECHANISM_VERSION,
         track=submission.track,
@@ -144,7 +150,8 @@ def build_certificate(
             "n_fixed": evaluation.n_fixed,
             "n_rotating": evaluation.n_rotating,
             "corpus_version": evaluation.corpus_version,
-            "metric": evaluation.track,
+            "metric": track.metric,
+            "metric_display": track.published_metric,
         },
         runtime={
             "decode": decoding,
@@ -153,4 +160,5 @@ def build_certificate(
             "engine_version": engine_version,
             "quantization": submission.manifest.quantization,
         },
+        work_evidence=dict(work_evidence or {}),
     )

@@ -29,6 +29,7 @@ class Track:
     work_unit: str
     enabled: bool = False
     classes: tuple[str, ...] = ()
+    metric_display: str = ""
 
     def __post_init__(self) -> None:
         if self.enabled and self.emission_share <= 0.0:
@@ -39,6 +40,10 @@ class Track:
     @property
     def live_classes(self) -> tuple[str, ...]:
         return self.classes or tuple(CLASSES)
+
+    @property
+    def published_metric(self) -> str:
+        return self.metric_display or self.metric
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +71,7 @@ TRACKS: Final[dict[str, Track]] = {
             id="code",
             modality=Modality.TEXT,
             metric="execution_pass_rate",
+            metric_display="pass@1 (greedy)",
             decoding=Decoding.GREEDY,
             emission_share=1.0,
             work_unit="generated_tokens",

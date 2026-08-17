@@ -379,6 +379,23 @@ my hardware, and how good is it.**
 Under these conditions inference is a deterministic function, so for validators
 `v, v'` on the same artifact and task set: `A_v(a) = A_v'(a)`.
 
+### The metric is pass@1, and that is forced rather than chosen
+
+`pass@k` estimates the probability that at least one of *k* sampled generations
+passes the hidden tests. Any `k > 1` requires temperature sampling, and sampling
+is non-deterministic: two validators drawing different samples from the same
+artifact would compute different scores, and the divergence would be expected
+rather than attributable. That destroys the property §7 exists to protect.
+
+So the metric is **pass@1 under greedy decoding**: one generation at temperature
+0, executed, pass or fail per hidden test. This is also the honest match to
+deployment, where a served model returns one answer rather than ten for a
+harness to choose between.
+
+The internal metric id stays `execution_pass_rate`. The certificate publishes
+both that id and `pass@1 (greedy)` as `metric_display`, so machine consumers
+keep a stable key while the number stays comparable to published results.
+
 ### Score quantisation, making that literally true
 
 Floating-point reduction order is not associative. Two conforming validators can
