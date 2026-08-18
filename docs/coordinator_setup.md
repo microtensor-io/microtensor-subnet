@@ -117,9 +117,41 @@ cross-checking possible at all. The assignment is a keyed SHA-256 shuffle per
 system, deterministic in the round seed, the system set and the worker set.
 
 ```bash
-mt coordinator assign --round 41 --seed <seed> \
-  --systems systems.json --workers workers.json
+mt coordinator open
 ```
+
+`open` reads the round from chain: it derives the round from block height, reads
+every commitment, builds the system list, assigns it, and stores the catalogue
+of who owns what. The catalogue is the record of which submissions exist this
+round and at which uid each miner sits. It is not a task list; tasks stay
+derived from the close-block seed against each worker's local corpus, unchanged.
+
+`mt coordinator assign` remains, for replaying an assignment from files:
+
+```bash
+mt coordinator assign --round 41 --seed <seed>   --systems systems.json --workers workers.json
+```
+
+### An unassigned round is not an idle one
+
+Until a round has been assigned, `/v1/assignment/{hotkey}` returns **no
+`systems` key at all**, and a worker reads that as a fault rather than as having
+nothing to do.
+
+Worth knowing before you debug a quiet fleet. Had the endpoint returned an empty
+list instead, every worker would have concluded it was legitimately unassigned,
+none would have measured, quorum would never have been reached, and the whole
+fleet would have abstained while logging that everything was fine. Absence and
+emptiness must not share an encoding across a network boundary.
+
+| response | the worker reads | what to do |
+|---|---|---|
+| no `systems` key | the round is not assigned yet | run `mt coordinator open` |
+| `"systems": []` | assigned nothing this round, ordinary | nothing |
+| `"systems": [...]` | measure these | nothing |
+
+A silent fleet with `mt coordinator status` reporting 0 expected reports is the
+first row, and `open` is the fix.
 
 **Publish the map.** Anyone holding the seed and the metagraph can recompute it
 and check the coordinator assigned honestly. That defence costs one hash, and
