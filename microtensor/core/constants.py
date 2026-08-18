@@ -24,6 +24,31 @@ CORPUS_VERSION: Final[str] = "2026.1"
 
 CLASS_WEIGHTS: Final[dict[str, float]] = {"mt-3g": 1.0}
 
+SYSTEMS_ENABLED: Final[bool] = False
+HOST_PROFILE: Final[str] = "mt-16g"
+
+ALLOWED_ROUTER_FEATURES: Final[frozenset[str]] = frozenset(
+    {
+        "seq_logprob",
+        "seq_logprob_norm",
+        "output_tokens",
+        "mean_entropy",
+        "max_entropy",
+        "schema_valid",
+        "input_tokens",
+    }
+)
+ROUTER_MAX_BYTES: Final[int] = 4 * 1024**2
+ROUTER_ALLOWED_OPS: Final[frozenset[str]] = frozenset(
+    {"Gemm", "MatMul", "Add", "Relu", "Sigmoid", "Tanh"}
+)
+
+ROLE_BASELINES: Final[dict[str, str]] = {
+    "front": "",
+    "router": "",
+    "specialist": "",
+}
+
 PROFILE_DURATION_SECONDS: Final[int] = 60
 PROFILE_SAMPLE_INTERVAL_MS: Final[int] = 50
 LATENCY_SAMPLE_COUNT: Final[int] = 200
@@ -42,6 +67,12 @@ RANK_DECAY: Final[float] = 0.85
 HYSTERESIS_EPSILON: Final[float] = 0.005
 INCUMBENT_DECAY: Final[float] = 0.05
 STALE_ROUNDS_BEFORE_EVICTION: Final[int] = 6
+
+HV_QUANT_Q: Final[int] = 10_000
+HV_QUANT_C: Final[int] = 10_000
+EPS_QUALITY: Final[float] = 0.005
+EPS_COST: Final[float] = 0.01
+REFERENCE_COST_MS: Final[float] = 2_000.0
 
 EMA_ALPHA: Final[float] = 0.30
 DECAY_RATE: Final[float] = 0.40

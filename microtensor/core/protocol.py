@@ -19,6 +19,12 @@ class ArtifactFormat(str, Enum):
     GGUF = "gguf"
 
 
+class Role(str, Enum):
+    FRONT = "front"
+    ROUTER = "router"
+    SPECIALIST = "specialist"
+
+
 class Fault(str, Enum):
     ARTIFACT = "artifact"
     INFRASTRUCTURE = "infrastructure"
@@ -139,6 +145,11 @@ class Evaluation:
     n_rotating: int
     n_fixed: int
     corpus_version: str
+    resolve_rate: float = 1.0
+    expected_ms: float = 0.0
+    expected_j: float = 0.0
+    front_only_score: float = 0.0
+    system_digest: str = ""
 
     @property
     def earns(self) -> bool:

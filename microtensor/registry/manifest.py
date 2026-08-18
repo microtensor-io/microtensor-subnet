@@ -9,6 +9,7 @@ from microtensor.chain.commitment import Commitment, digest_matches
 from microtensor.core.constants import MAX_MANIFEST_BYTES, MECHANISM_VERSION
 from microtensor.core.hashing import canonical_hash, canonical_json, digest_entries, digest_file
 from microtensor.core.protocol import ArtifactFormat, DeclaredEnvelope, LoadManifest
+from microtensor.core.system import SystemManifest
 from microtensor.core.tracks import get_class, is_competable
 
 
@@ -41,6 +42,7 @@ class ArtifactManifest:
     files: tuple[FileEntry, ...]
     load: LoadManifest
     declared: DeclaredEnvelope
+    system: SystemManifest | None = None
     version: str = MECHANISM_VERSION
     signature: str = ""
 
@@ -76,6 +78,7 @@ class ArtifactManifest:
             "files": [asdict(f) for f in self.files],
             "load": self.load.to_dict(),
             "declared": asdict(self.declared),
+            "system": self.system.body() if self.system else None,
         }
 
     def digest(self) -> str:
@@ -101,9 +104,14 @@ class ArtifactManifest:
             files=self.files,
             load=self.load,
             declared=self.declared,
+            system=self.system,
             version=self.version,
             signature=signature,
         )
+
+    @property
+    def system_digest(self) -> str:
+        return self.system.digest() if self.system else self.artifact_digest
 
     def fits_class(self) -> tuple[bool, str]:
         hardware = get_class(self.hardware_class)
@@ -114,6 +122,10 @@ class ArtifactManifest:
             )
         if self.declared.size_bytes < self.total_bytes:
             return False, "declared size is below the sum of the listed files"
+        if self.system is not None:
+            placed, reason = self.system.fits_class(self.hardware_class)
+            if not placed:
+                return False, reason
         return True, ""
 
     def matches(self, commitment: Commitment) -> tuple[bool, str]:
@@ -167,6 +179,11 @@ class ArtifactManifest:
                     size_bytes=int(declared["size_bytes"]),
                     peak_rss_bytes=int(declared["peak_rss_bytes"]),
                     p95_latency_ms=int(declared["p95_latency_ms"]),
+                ),
+                system=(
+                    SystemManifest.from_dict(payload["system"])
+                    if payload.get("system")
+                    else None
                 ),
                 version=str(payload.get("version", MECHANISM_VERSION)),
                 signature=str(payload.get("signature", "")),

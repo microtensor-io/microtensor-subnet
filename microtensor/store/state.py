@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -22,6 +22,16 @@ COUNT_QUERIES: Final[dict[str, str]] = {
     "holders": "SELECT COUNT(*) AS n FROM holders",
     "weights": "SELECT COUNT(*) AS n FROM weights",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierRow:
+    hotkey: str
+    score: float
+    expected_ms: float
+    committed_at: int
+    rounds_observed: int
+    stale_rounds: int
 
 
 class ValidatorState:
@@ -130,9 +140,10 @@ class ValidatorState:
             INSERT INTO evaluations (
                 round_index, track, hardware_class, hotkey, artifact_digest,
                 admitted, gate_reason, score_rotating, score_fixed, score_combined,
-                n_rotating, n_fixed, corpus_version, envelope
+                n_rotating, n_fixed, corpus_version, envelope,
+                resolve_rate, expected_ms, expected_j, front_only_score, system_digest
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (round_index, track, hardware_class, hotkey) DO UPDATE SET
                 artifact_digest = excluded.artifact_digest,
                 admitted = excluded.admitted,
@@ -143,7 +154,12 @@ class ValidatorState:
                 n_rotating = excluded.n_rotating,
                 n_fixed = excluded.n_fixed,
                 corpus_version = excluded.corpus_version,
-                envelope = excluded.envelope
+                envelope = excluded.envelope,
+                resolve_rate = excluded.resolve_rate,
+                expected_ms = excluded.expected_ms,
+                expected_j = excluded.expected_j,
+                front_only_score = excluded.front_only_score,
+                system_digest = excluded.system_digest
             """,
             (
                 round_index,
@@ -160,6 +176,11 @@ class ValidatorState:
                 evaluation.n_fixed,
                 evaluation.corpus_version,
                 envelope,
+                evaluation.resolve_rate,
+                evaluation.expected_ms,
+                evaluation.expected_j,
+                evaluation.front_only_score,
+                evaluation.system_digest,
             ),
         )
 
@@ -239,6 +260,27 @@ class ValidatorState:
                 Candidate(
                     hotkey=str(row["hotkey"]),
                     score=float(row["score_combined"]),
+                    rounds_observed=observed,
+                    stale_rounds=stale,
+                )
+            )
+        return built
+
+    def frontier_candidates(
+        self, round_index: int, track: str, hardware_class: str
+    ) -> list[FrontierRow]:
+        built: list[FrontierRow] = []
+        for row in self.evaluations(round_index, track, hardware_class):
+            if not row["admitted"]:
+                continue
+            hotkey = str(row["hotkey"])
+            observed, stale = self.observation(track, hardware_class, hotkey)
+            built.append(
+                FrontierRow(
+                    hotkey=hotkey,
+                    score=float(row["score_combined"]),
+                    expected_ms=float(row["expected_ms"] or 0.0),
+                    committed_at=int(row["round_index"]),
                     rounds_observed=observed,
                     stale_rounds=stale,
                 )

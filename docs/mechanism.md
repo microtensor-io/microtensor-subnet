@@ -390,6 +390,70 @@ my hardware, and how good is it.**
 Under these conditions inference is a deterministic function, so for validators
 `v, v'` on the same artifact and task set: `A_v(a) = A_v'(a)`.
 
+### The scored object is a system, not a model
+
+A deployer does not buy a model, they buy a composition: a compact front model
+answering what it can, a router deciding, and a larger specialist taking the
+remainder. Expected cost per query and end-to-end quality are properties of that
+composition, so those are what the network measures.
+
+A system is `S = (f, r, g)`. The front is bound to the competition class and
+runs on every query. The router is bound to the front, since it is co-resident
+on the constrained device, and its bytes and memory count against the front's
+envelope. The specialist is bound to the host profile and sees only escalated
+queries, so its cost enters weighted by the escalation rate.
+
+**A router is data, never code.** It arrives as a threshold table or a small
+ONNX graph over a fixed feature list, and the validator interprets it. Features
+are computed by the validator from what the front emitted; nothing an artifact
+reports about itself reaches the routing decision. That is what makes the purity
+condition checkable rather than a promise, and it is why the new execution
+surface opens no hole in the sandbox posture.
+
+**Quality is end-to-end.** The track metric is applied to what the system
+finally answered, never to the front in isolation. The front's own score is
+recorded for diagnostics and never ranked, because a cascade is bought whole.
+
+**Cost is measured, not modelled.** The profiler still establishes the envelope
+that admits a system; execution establishes the cost that ranks it, from the
+timings of this round's actual run.
+
+**A system with no router and no specialist is a valid system.** It reduces to
+the single-artifact path exactly, which is how the network runs today.
+
+### Emission follows the frontier, not a rank
+
+Among admissible systems there is no further scalar. Systems are placed on the
+cost-quality plane, the eps-non-dominated set is the frontier, and emission is
+proportional to exclusive hypervolume: what the frontier loses if that system
+were not there.
+
+Both coordinates are quantised to an integer grid before any comparison, so
+frontier membership is bitwise identical across validators rather than
+approximately agreed. A cheaper system at lower quality is not beaten by an
+expensive better one, so discovering a genuinely new trade-off point pays
+wherever it occurs, which is what a rank ordering cannot express.
+
+Two systems sitting inside one epsilon-neighbourhood collapse to the earlier
+commitment. Epsilon-dominance alone would leave both on the frontier, and under
+leave-one-out each would then measure near-zero exclusive area, because neither
+covers much the other does not. As a competition matures and the frontier
+clusters, that would collapse total exclusive hypervolume and make emission
+noisy, letting a mediocre but isolated system out-earn two good ones standing
+together. Collapsing is also the right answer on its own terms: the later
+submission added nothing the earlier one had not already provided.
+
+Within a system, each component is priced by role-baseline ablation: the
+measured change in the system's exclusive hypervolume when that component is
+replaced by the published baseline for its role, substituted in place rather
+than added alongside. A component the system does not need measures zero and
+earns nothing. **A component whose baseline is unpublished reports null, never
+zero**, because the network could not measure it, and reporting a measurement it
+did not make would be the same error as scoring zero for an infrastructure
+fault.
+
+---
+
 ### What a training run does and does not establish
 
 Every submission must carry a public run in `microtensor/training-runs`, named

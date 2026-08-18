@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 1
+SCHEMA_VERSION: Final[int] = 2
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -89,6 +89,26 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
             """
             CREATE INDEX IF NOT EXISTS weights_by_round
                 ON weights (round_index)
+            """,
+        ),
+    ),
+    (
+        2,
+        (
+            """
+            ALTER TABLE evaluations ADD COLUMN resolve_rate REAL NOT NULL DEFAULT 1
+            """,
+            """
+            ALTER TABLE evaluations ADD COLUMN expected_ms REAL NOT NULL DEFAULT 0
+            """,
+            """
+            ALTER TABLE evaluations ADD COLUMN expected_j REAL NOT NULL DEFAULT 0
+            """,
+            """
+            ALTER TABLE evaluations ADD COLUMN front_only_score REAL NOT NULL DEFAULT 0
+            """,
+            """
+            ALTER TABLE evaluations ADD COLUMN system_digest TEXT NOT NULL DEFAULT ''
             """,
         ),
     ),

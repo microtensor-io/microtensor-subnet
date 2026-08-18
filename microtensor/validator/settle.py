@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.weights import WeightVector, quantise_weights
+from microtensor.core.constants import REFERENCE_COST_MS, SYSTEMS_ENABLED
+from microtensor.scoring import frontier
 from microtensor.scoring.schedule import allocate, held_ranks
 from microtensor.scoring.weights import (
     apply_concentration_cap,
@@ -37,6 +39,24 @@ class Settlement:
         return len(self.blended)
 
 
+def _frontier_allocation(
+    context: ValidatorContext, round_index: int, track: str, hardware_class: str
+) -> dict[str, float]:
+    """Emission by exclusive hypervolume, once systems carry a measured cost."""
+    entrants = [
+        frontier.Entrant(
+            key=row.hotkey,
+            quality=row.score,
+            cost=row.expected_ms or REFERENCE_COST_MS,
+            committed_at=row.committed_at,
+            rounds_observed=row.rounds_observed,
+            stale_rounds=row.stale_rounds,
+        )
+        for row in context.state.frontier_candidates(round_index, track, hardware_class)
+    ]
+    return frontier.allocate(entrants)
+
+
 def allocations(
     context: ValidatorContext, round_index: int
 ) -> dict[tuple[str, str], dict[str, float]]:
@@ -49,7 +69,10 @@ def allocations(
             continue
 
         previous = context.state.holders(track, hardware_class)
-        allocation = allocate(candidates, previous)
+        if SYSTEMS_ENABLED:
+            allocation = _frontier_allocation(context, round_index, track, hardware_class)
+        else:
+            allocation = allocate(candidates, previous)
         if not allocation:
             log.info("%s/%s: nobody cleared the track threshold", track, hardware_class)
             continue

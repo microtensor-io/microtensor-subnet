@@ -72,6 +72,44 @@ jobs:
           PY
       - name: A round must settle end to end with no chain
         run: mt validator loopback --rounds 3 --miners 4
+      - name: Systems must ship behind the flag
+        run: |
+          python - <<'PY'
+          from microtensor.core.constants import SYSTEMS_ENABLED
+          assert SYSTEMS_ENABLED is False, "SYSTEMS_ENABLED must be False until ablation lands"
+          print("systems gated")
+          PY
+      - name: A degenerate system must reduce to the single-artifact path
+        run: |
+          python - <<'PY'
+          from microtensor.core.system import SystemManifest
+          system = SystemManifest.single("sha256:only", "mt-3g", base_model="org/base@sha")
+          assert system.degenerate
+          assert system.components == (system.front,)
+          assert system.fits_class("mt-3g") == (True, "")
+          print("degenerate reduction holds")
+          PY
+      - name: Exclusive hypervolume must equal leave-one-out
+        run: |
+          python - <<'PY'
+          import random
+          from microtensor.core.constants import HV_QUANT_C, HV_QUANT_Q
+          from microtensor.scoring.frontier import Point, exclusive_hypervolume, hypervolume
+          rng = random.Random(7)
+          for _ in range(500):
+              n = rng.randint(1, 9)
+              cs = sorted(rng.sample(range(0, HV_QUANT_C, 37), n))
+              qs = sorted(rng.sample(range(1, HV_QUANT_Q, 41), n))
+              pts = [Point(f"s{i}", q, c) for i, (q, c) in enumerate(zip(qs, cs))]
+              total = hypervolume(pts)
+              expected = {
+                  p.key: total - hypervolume([o for o in pts if o.key != p.key]) for p in pts
+              }
+              assert exclusive_hypervolume(pts) == expected, pts
+          worked = [Point("p1", 100, 1000), Point("p2", 200, 3000), Point("p3", 300, 6000)]
+          assert exclusive_hypervolume(worked) == {"p1": 200000, "p2": 300000, "p3": 400000}
+          print("closed form agrees with leave-one-out on 500 frontiers")
+          PY
       - name: A generated corpus must verify against its own hidden tests
         run: |
           mt corpus generate code --rotating 16 --fixed 8 --train 8 \

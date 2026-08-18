@@ -10,8 +10,12 @@ from microtensor.chain.wallet import verify_payload
 from microtensor.core.constants import (
     ALLOWED_BASE_MODELS,
     BLOCK_TIME_SECONDS,
+    HOST_PROFILE,
     PROVENANCE_REQUIRED,
+    SYSTEMS_ENABLED,
 )
+from microtensor.core.protocol import Role
+from microtensor.core.system import SystemManifest
 from microtensor.provenance.record import Verdict
 from microtensor.provenance.record import check as provenance_check
 from microtensor.registry.fetch import ArtifactMismatch, FetchError, fetch_manifest
@@ -31,6 +35,16 @@ class Participant:
     @property
     def competition(self) -> tuple[str, str]:
         return self.commitment.competition
+
+    @property
+    def system(self) -> SystemManifest:
+        if self.manifest.system is not None:
+            return self.manifest.system
+        return SystemManifest.single(
+            self.manifest.artifact_digest,
+            self.competition[1],
+            base_model=self.manifest.load.base_model,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,22 +72,51 @@ def _signature_ok(manifest: ArtifactManifest) -> tuple[bool, str]:
 def _provenance_reason(
     context: ValidatorContext,
     hotkey: str,
-    manifest: ArtifactManifest,
+    system: SystemManifest,
     commitment: Commitment,
     commit_time: int,
 ) -> tuple[str, Verdict | None]:
+    """Every component needs its own run, not just the one named on chain.
+
+    Checking the submission alone would let an unprovenanced specialist ride in
+    behind a compliant front, since the submission-level digest never names it.
+    """
     if not PROVENANCE_REQUIRED or context.runs is None:
         return "", None
 
-    verdict = provenance_check(
-        context.runs.fetch(hotkey),
-        hotkey=hotkey,
-        artifact_digest=manifest.artifact_digest,
-        track=commitment.track,
-        hardware_class=commitment.hardware_class,
-        commit_time=commit_time,
-    )
-    return ("" if verdict.admissible else verdict.reason), verdict
+    runs = context.runs.fetch(hotkey)
+    verdict: Verdict | None = None
+
+    for component in system.components:
+        verdict = provenance_check(
+            runs,
+            hotkey=hotkey,
+            artifact_digest=component.artifact_digest,
+            track=commitment.track,
+            hardware_class=commitment.hardware_class,
+            commit_time=commit_time,
+        )
+        if not verdict.admissible:
+            if system.degenerate:
+                return verdict.reason, verdict
+            return f"{component.role.value}: {verdict.reason}", verdict
+
+    return "", verdict
+
+
+def _base_model_reason(system: SystemManifest) -> str:
+    """The allowlist applies to every component that carries weights."""
+    if not ALLOWED_BASE_MODELS:
+        return ""
+
+    for component in system.components:
+        if component.role is Role.ROUTER:
+            continue
+        if component.base_model not in ALLOWED_BASE_MODELS:
+            if system.degenerate:
+                return "base model not on the allowlist"
+            return f"{component.role.value} base model not on the allowlist"
+    return ""
 
 
 def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Round) -> Roster:
@@ -103,6 +146,7 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
             )
             continue
 
+        verdict = None
         try:
             manifest = fetch_manifest(commitment, workdir=context.config.work_dir)
         except ArtifactMismatch as exc:
@@ -112,9 +156,12 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
         else:
             reason = _manifest_reason(manifest, hotkey, context.config.verify_signatures)
             if not reason:
-                reason, verdict = _provenance_reason(
-                    context, hotkey, manifest, commitment, commit_time
-                )
+                system = _system_of(manifest, commitment.hardware_class)
+                reason = _base_model_reason(system)
+                if not reason:
+                    reason, verdict = _provenance_reason(
+                        context, hotkey, system, commitment, commit_time
+                    )
                 if verdict is not None and verdict.admissible:
                     provenance[hotkey] = verdict
 
@@ -169,6 +216,29 @@ def _reject_reason(
     return ""
 
 
+def _system_of(manifest: ArtifactManifest, hardware_class: str) -> SystemManifest:
+    if manifest.system is not None:
+        return manifest.system
+    return SystemManifest.single(
+        manifest.artifact_digest, hardware_class, base_model=manifest.load.base_model
+    )
+
+
+def _system_reason(manifest: ArtifactManifest, hardware_class: str) -> str:
+    system = manifest.system
+    if system is None:
+        return ""
+    if not SYSTEMS_ENABLED:
+        return "systems are not enabled on this network yet"
+
+    placed, reason = system.fits_class(hardware_class)
+    if not placed:
+        return reason
+    if system.specialist is not None and system.specialist.placement != HOST_PROFILE:
+        return "specialist placement is not the host profile"
+    return ""
+
+
 def _manifest_reason(manifest: ArtifactManifest, hotkey: str, verify: bool = True) -> str:
     if manifest.hotkey != hotkey:
         return "manifest declares a different hotkey than the one that committed it"
@@ -178,10 +248,8 @@ def _manifest_reason(manifest: ArtifactManifest, hotkey: str, verify: bool = Tru
         if not ok:
             return reason
 
-    if ALLOWED_BASE_MODELS and manifest.load.base_model not in ALLOWED_BASE_MODELS:
-        return "base model not on the allowlist"
-
     fits, reason = manifest.fits_class()
     if not fits:
         return reason
-    return ""
+
+    return _system_reason(manifest, manifest.hardware_class)

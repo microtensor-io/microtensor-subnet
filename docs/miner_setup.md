@@ -402,3 +402,62 @@ you and why.
 - **Hysteresis protects holders at every rank.** Beating an incumbent takes a
   margin of 0.005, not a tie. Copying the leader to land just behind them does
   not work.
+
+---
+
+## 12 · Submitting a system
+
+Not enabled yet. `SYSTEMS_ENABLED` ships off, a submission with a system
+manifest is rejected at discovery, and everything above describes the live path.
+This section is here so you can build against it before the switch, since the
+work it rewards is different from compressing a single model.
+
+A system is three parts. A **front** bound to the class ceiling, running on every
+query. A **router** deciding which answers to keep. A **specialist** on the host
+profile, answering only what escalates. Declare them in `system.json` beside your
+artifact:
+
+```json
+{
+  "schema_version": 1,
+  "front":      {"role": "front",      "artifact_digest": "sha256:...", "placement": "mt-3g",  "path": "front"},
+  "router":     {"role": "router",     "artifact_digest": "sha256:...", "placement": "mt-3g",  "path": "router.json"},
+  "specialist": {"role": "specialist", "artifact_digest": "sha256:...", "placement": "mt-16g", "path": "specialist"},
+  "router_features": ["seq_logprob_norm", "schema_valid"]
+}
+```
+
+A router is data, not code. It is a threshold table or a small ONNX graph over
+the published feature list, and the validator interprets it. You cannot ship a
+routing function, and features you compute yourself never reach the decision:
+the validator derives all of them from what your front emitted.
+
+Tune it locally before you submit:
+
+```bash
+mt miner simulate --corpus ./corpus --limit 200
+```
+
+That runs the whole cascade over the public training split and reports resolve
+rate, expected cost per query, end-to-end quality, and the uplift escalation
+bought you. If the uplift is zero or negative, a router that never escalates
+would score the same for less, and the frontier will price it accordingly.
+
+Three things are worth knowing before you spend a week on this:
+
+**Calibration beats accuracy.** The router can only act on what the front
+exposes. A front that is accurate but confidently wrong gives the router nothing
+to separate, so its errors pass through and end-to-end quality collapses. A
+slightly less accurate front whose confidence orders its right and wrong answers
+well escalates close to exactly what it would have failed, and wins on both
+axes. Only the ordering matters, not the absolute value, since a monotone
+transformation is absorbed by the threshold.
+
+**Escalating everything is not a strategy.** The specialist's cost enters your
+expected cost weighted by how often you escalate. Route everything and you carry
+the specialist's full cost and sit at the expensive end of the frontier.
+
+**Cheaper at lower quality still earns.** Emission follows exclusive
+hypervolume, so a system that opens a genuinely new trade-off point is paid for
+what it uniquely adds, whether that is the best quality anyone reached or the
+cheapest anyone reached at usable quality.

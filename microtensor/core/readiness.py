@@ -157,6 +157,44 @@ def _provenance_gate() -> Gate:
     )
 
 
+def _baseline_gates() -> list[Gate]:
+    from microtensor.core.constants import ROLE_BASELINES, SYSTEMS_ENABLED
+
+    if not SYSTEMS_ENABLED:
+        return [
+            Gate(
+                name="role baselines",
+                ready=False,
+                posture=OPEN,
+                detail="systems are off, so every submission is scored as a single artifact",
+                fix="publish the three role baselines, then set SYSTEMS_ENABLED",
+            )
+        ]
+
+    gates: list[Gate] = []
+    for role, digest in sorted(ROLE_BASELINES.items()):
+        if digest:
+            gates.append(
+                Gate(
+                    name=f"role baseline / {role}",
+                    ready=True,
+                    posture=CLOSED,
+                    detail=digest,
+                )
+            )
+            continue
+        gates.append(
+            Gate(
+                name=f"role baseline / {role}",
+                ready=False,
+                posture=CLOSED,
+                detail="unpublished, so this role's contribution reports null rather than zero",
+                fix=f"publish a {role} baseline with the corpus and pin its digest",
+            )
+        )
+    return gates
+
+
 def audit() -> list[Gate]:
     return [
         _base_model_gate(),
@@ -164,6 +202,7 @@ def audit() -> list[Gate]:
         *_band_gates(),
         _signing_gate(),
         _provenance_gate(),
+        *_baseline_gates(),
     ]
 
 

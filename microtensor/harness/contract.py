@@ -53,6 +53,8 @@ class Response:
     output_tokens: int = 0
     peak_rss_bytes: int = 0
     error: str = ""
+    logprobs: tuple[float, ...] = ()
+    entropies: tuple[float, ...] = ()
 
     @property
     def ok(self) -> bool:

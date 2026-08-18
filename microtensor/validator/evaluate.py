@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from microtensor.core.constants import SYSTEMS_ENABLED
 from microtensor.core.protocol import (
     Evaluation,
     Fault,
     GateResult,
     MeasuredEnvelope,
+    Role,
     TaskOutcome,
     evaluate_gate,
 )
@@ -18,6 +21,7 @@ from microtensor.core.tracks import HardwareClass, get_class, get_track
 from microtensor.envelope.device import POLICY_ENV
 from microtensor.envelope.probe import max_input_prompt
 from microtensor.envelope.profiler import ProfilePlan, run_profile
+from microtensor.harness.cascade import CascadeResult, Leg, run_cascade
 from microtensor.harness.contract import Response
 from microtensor.harness.execute import run_tasks
 from microtensor.harness.jail import run_jailed
@@ -66,6 +70,8 @@ def _evaluation(
     fixed: float = 0.0,
     n_rotating: int = 0,
     n_fixed: int = 0,
+    cascade: CascadeResult | None = None,
+    front_only: float = 0.0,
 ) -> Evaluation:
     track, hardware_class = participant.competition
     return Evaluation(
@@ -81,6 +87,10 @@ def _evaluation(
         n_rotating=n_rotating,
         n_fixed=n_fixed,
         corpus_version=tasks.corpus_version,
+        resolve_rate=cascade.resolve_rate if cascade else 1.0,
+        expected_ms=cascade.expected_ms if cascade else 0.0,
+        front_only_score=front_only,
+        system_digest=participant.manifest.system_digest,
     )
 
 
@@ -159,6 +169,72 @@ def _outcome(task: Task, response: Response | None, metric: str, partition: str)
     )
 
 
+def run_system(
+    context: ValidatorContext,
+    participant: Participant,
+    artifact: Path,
+    hardware: HardwareClass,
+    tasks: RoundTasks,
+) -> tuple[CascadeResult | None, str]:
+    """Execute the whole system, front then router then escalation."""
+    system = participant.system
+    load = participant.manifest.load.to_dict()
+    requests = to_requests(
+        tasks.all, tasks.seed, tasks.track, participant.manifest.artifact_digest
+    )
+
+    front_path = artifact / system.locate(Role.FRONT) if not system.degenerate else artifact
+    router_path = str(artifact / system.locate(Role.ROUTER)) if system.router else ""
+    specialist_path = (
+        str(artifact / system.locate(Role.SPECIALIST)) if system.specialist else ""
+    )
+
+    result = run_jailed(
+        run_cascade,
+        str(front_path),
+        load,
+        requests,
+        router_path,
+        list(system.router_features),
+        specialist_path,
+        load if specialist_path else None,
+        limits=_limits(hardware, context.config.cpu_seconds_per_artifact),
+        allow_unsandboxed=context.config.allow_unsandboxed,
+    )
+
+    if not result.ok:
+        if result.fault is Fault.INFRASTRUCTURE:
+            raise Abstain(
+                f"{participant.hotkey}: execution infrastructure failed — {result.error}"
+            )
+        return None, f"execution failed: {result.error}"
+
+    return CascadeResult(legs=tuple(result.value)), ""
+
+
+def outcomes_from(
+    legs: Sequence[Leg], tasks: RoundTasks, metric: str
+) -> tuple[tuple[TaskOutcome, ...], tuple[TaskOutcome, ...]]:
+    """End-to-end outcomes, and the front's own for diagnostics.
+
+    Only the first is ranked. A cascade is bought as a whole, so the quality
+    that decides emission is the quality of what the system finally answered.
+    """
+    by_ref = {leg.task_ref: leg for leg in legs}
+    rotating = {t.ref for t in tasks.rotating}
+
+    end_to_end: list[TaskOutcome] = []
+    front_only: list[TaskOutcome] = []
+    for task in tasks.all:
+        leg = by_ref.get(task.ref)
+        partition = "rotating" if task.ref in rotating else "fixed"
+        end_to_end.append(_outcome(task, leg.response if leg else None, metric, partition))
+        front_only.append(
+            _outcome(task, leg.front_response if leg else None, metric, partition)
+        )
+    return tuple(end_to_end), tuple(front_only)
+
+
 def score(
     context: ValidatorContext,
     participant: Participant,
@@ -219,10 +295,22 @@ def evaluate_participant(
         log.info("%s inadmissible: %s", participant.hotkey, gate.reason)
         return _evaluation(participant, tasks, gate=gate, measured=measured)
 
-    outcomes, failure = score(context, participant, artifact, hardware, tasks)
-    if failure:
-        log.info("%s scored zero: %s", participant.hotkey, failure)
-        return _evaluation(participant, tasks, gate=gate, measured=measured)
+    cascade: CascadeResult | None = None
+    front_only_score = 0.0
+
+    if SYSTEMS_ENABLED and not participant.system.degenerate:
+        cascade, failure = run_system(context, participant, artifact, hardware, tasks)
+        if failure or cascade is None:
+            log.info("%s scored zero: %s", participant.hotkey, failure)
+            return _evaluation(participant, tasks, gate=gate, measured=measured)
+        metric = get_track(tasks.track).metric
+        outcomes, front_outcomes = outcomes_from(cascade.legs, tasks, metric)
+        front_only_score = combine_partitions(*partition_scores(front_outcomes)[:2])
+    else:
+        outcomes, failure = score(context, participant, artifact, hardware, tasks)
+        if failure:
+            log.info("%s scored zero: %s", participant.hotkey, failure)
+            return _evaluation(participant, tasks, gate=gate, measured=measured)
 
     rotating, fixed, n_rotating, n_fixed = partition_scores(outcomes)
     return _evaluation(
@@ -234,6 +322,8 @@ def evaluate_participant(
         fixed=fixed,
         n_rotating=n_rotating,
         n_fixed=n_fixed,
+        cascade=cascade,
+        front_only=front_only_score,
     )
 
 

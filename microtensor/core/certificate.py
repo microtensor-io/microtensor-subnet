@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
@@ -41,6 +42,10 @@ class Certificate:
     runtime: dict[str, Any]
     work_evidence: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
+    system: dict[str, Any] = field(default_factory=dict)
+    components: tuple[dict[str, Any], ...] = ()
+    cost: dict[str, Any] = field(default_factory=dict)
+    contribution: tuple[dict[str, Any], ...] = ()
     attestation: Attestation | None = None
 
     def body(self) -> dict[str, Any]:
@@ -54,6 +59,10 @@ class Certificate:
             "runtime": self.runtime,
             "work_evidence": self.work_evidence,
             "provenance": self.provenance,
+            "system": self.system,
+            "components": list(self.components),
+            "cost": self.cost,
+            "contribution": list(self.contribution),
         }
 
     def digest(self) -> bytes:
@@ -71,6 +80,10 @@ class Certificate:
             runtime=self.runtime,
             work_evidence=self.work_evidence,
             provenance=self.provenance,
+            system=self.system,
+            components=self.components,
+            cost=self.cost,
+            contribution=self.contribution,
             attestation=Attestation(
                 miner_hotkey=miner_hotkey,
                 validator_hotkey=signer.ss58_address,
@@ -112,6 +125,32 @@ class Certificate:
         return canonical_hash(self.body())
 
 
+def system_block(
+    evaluation: Evaluation,
+    *,
+    frontier_member: bool = False,
+    exclusive_hypervolume: int | None = None,
+) -> dict[str, Any]:
+    """The VSC system block: what composition was run and how it placed."""
+    return {
+        "manifest_hash": evaluation.system_digest,
+        "resolve_rate": round(evaluation.resolve_rate, ACCURACY_DECIMALS),
+        "frontier": {
+            "member": frontier_member,
+            "exclusive_hypervolume": exclusive_hypervolume,
+        },
+    }
+
+
+def cost_block(evaluation: Evaluation, *, front_share: float | None = None) -> dict[str, Any]:
+    """Expected per-query cost, measured on this run rather than modelled."""
+    return {
+        "expected_ms": round(evaluation.expected_ms, 2),
+        "joules_per_query": round(evaluation.expected_j, 4) if evaluation.expected_j else None,
+        "front_share": front_share,
+    }
+
+
 def build_certificate(
     submission: Submission,
     evaluation: Evaluation,
@@ -123,6 +162,10 @@ def build_certificate(
     seed: int = 0,
     work_evidence: dict[str, Any] | None = None,
     provenance: dict[str, Any] | None = None,
+    system: dict[str, Any] | None = None,
+    components: Sequence[dict[str, Any]] = (),
+    cost: dict[str, Any] | None = None,
+    contribution: Sequence[dict[str, Any]] = (),
 ) -> Certificate:
     track = get_track(submission.track)
     return Certificate(
@@ -166,4 +209,8 @@ def build_certificate(
         },
         work_evidence=dict(work_evidence or {}),
         provenance=dict(provenance or {}),
+        system=dict(system or {}),
+        components=tuple(components),
+        cost=dict(cost or {}),
+        contribution=tuple(contribution),
     )

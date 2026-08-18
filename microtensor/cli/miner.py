@@ -14,8 +14,14 @@ from microtensor.cli.common import (
     open_client,
     open_wallet,
 )
-from microtensor.core.constants import GENESIS_BLOCK, PROVENANCE_REQUIRED, ROUND_BLOCKS
+from microtensor.core.constants import (
+    CORPUS_VERSION,
+    GENESIS_BLOCK,
+    PROVENANCE_REQUIRED,
+    ROUND_BLOCKS,
+)
 from microtensor.core.protocol import ArtifactFormat, DeclaredEnvelope, LoadManifest
+from microtensor.core.system import SystemManifest
 from microtensor.miner import provenance
 from microtensor.miner.config import MinerConfig, MinerConfigError
 from microtensor.miner.package import (
@@ -46,6 +52,14 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _add_settings_arguments(check)
     check.add_argument("--profile-seconds", type=int, default=60)
     check.set_defaults(handler=_selfcheck)
+
+    sim = inner.add_parser(
+        "simulate", help="run the cascade over the public training split"
+    )
+    _add_settings_arguments(sim)
+    sim.add_argument("--corpus", type=Path, required=True, help="corpus directory")
+    sim.add_argument("--limit", type=int, default=0, help="stop after this many tasks")
+    sim.set_defaults(handler=_simulate)
 
     pack = inner.add_parser("package", help="digest, sign and write manifest.json")
     _add_settings_arguments(pack)
@@ -219,6 +233,42 @@ def _selfcheck(args: argparse.Namespace) -> int:
     )
     print(f"\nsaved to {config.selfcheck_path}")
     return 0 if result.admissible else 2
+
+
+def _simulate(args: argparse.Namespace) -> int:
+    from microtensor.miner.simulate import SimulationError, simulate
+    from microtensor.tasks.corpus import load_all
+
+    try:
+        config = _config(args)
+        corpora = load_all(args.corpus, CORPUS_VERSION)
+        corpus = corpora.get(config.track)
+        if corpus is None:
+            return fail(f"no corpus for {config.track} under {args.corpus}")
+
+        system = _system_for(config)
+        result = simulate(
+            config.artifact_dir,
+            _load_manifest_spec(config),
+            system,
+            corpus.fixed,
+            config.hardware_class,
+            metric=corpus.metric,
+            track=config.track,
+            limit=args.limit,
+        )
+    except (MinerConfigError, SimulationError) as exc:
+        return fail(str(exc))
+
+    print(result.report())
+    return 0
+
+
+def _system_for(config: MinerConfig) -> SystemManifest:
+    path = config.artifact_dir / "system.json"
+    if not path.is_file():
+        return SystemManifest.single("sha256:local", config.hardware_class)
+    return SystemManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _declared(args: argparse.Namespace, config: MinerConfig) -> DeclaredEnvelope:
