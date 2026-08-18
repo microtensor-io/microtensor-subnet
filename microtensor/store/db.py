@@ -14,8 +14,23 @@ class StoreError(RuntimeError):
 
 
 class Database:
-    def __init__(self, path: Path | str) -> None:
+    """A migrated sqlite connection.
+
+    The migration set is a parameter rather than a fixed import so the
+    coordinator can carry its own schema in its own file. The two stores hold
+    unrelated rows and must never share a database: a coordinator runs no
+    measurement and a worker publishes no settlement.
+    """
+
+    def __init__(
+        self,
+        path: Path | str,
+        migrations: Sequence[tuple[int, Sequence[str]]] = MIGRATIONS,
+        schema_version: int = SCHEMA_VERSION,
+    ) -> None:
         self.path = Path(path)
+        self._migrations = migrations
+        self._schema_version = schema_version
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path), isolation_level=None)
@@ -34,12 +49,12 @@ class Database:
 
     def migrate(self) -> int:
         current = self.user_version()
-        if current > SCHEMA_VERSION:
+        if current > self._schema_version:
             raise StoreError(
-                f"state was written by a newer build (schema {current} > {SCHEMA_VERSION}); "
-                "upgrade the validator rather than downgrading its state"
+                f"state was written by a newer build (schema {current} > "
+                f"{self._schema_version}); upgrade rather than downgrading its state"
             )
-        for version, statements in MIGRATIONS:
+        for version, statements in self._migrations:
             if version <= current:
                 continue
             with self.transaction():

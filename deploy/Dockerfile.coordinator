@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+# The coordinator extra pulls the web stack and nothing else. No onnxruntime,
+# no profiler, no jail: a host that cannot import the harness cannot be
+# quietly repurposed into a worker.
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY microtensor ./microtensor
+COPY neurons ./neurons
+RUN pip install --no-cache-dir ".[coordinator]"
+
+ENV MT_ROLE=coordinator \
+    MT_HOME=/var/lib/microtensor
+RUN mkdir -p /var/lib/microtensor
+
+EXPOSE 8443
+ENTRYPOINT ["mt", "coordinator"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8443"]

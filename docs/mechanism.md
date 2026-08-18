@@ -15,6 +15,16 @@ The governing principle, from which everything else follows:
 > artifact that earns a ranking is byte for byte the artifact a customer
 > receives.
 
+Measurement is distributed. A coordinator operated by the subnet owner assigns
+each system to at least three worker validators, collects their signed reports,
+and publishes a canonical settlement computed from them. The coordinator holds
+no protocol privilege: Yuma Consensus takes the stake-weighted median of every
+validator's vector and a subnet cannot disable that, so its authority comes
+from dominant stake plus a settlement that every worker recomputes from the
+published reports before submitting. A worker that cannot reach it settles
+standalone rather than halting. See
+[coordinator_setup.md](coordinator_setup.md).
+
 ---
 
 ## 1 · Overview

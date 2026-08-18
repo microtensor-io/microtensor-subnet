@@ -48,6 +48,29 @@ ROLE_BASELINES: Final[dict[str, str]] = {
     "specialist": "",
 }
 
+# --------------------------------------------------------------------------
+# Coordinator. The owner runs one; workers measure and report to it.
+# --------------------------------------------------------------------------
+# Every system is measured by this many workers, so no single reading is ever
+# canonical and disagreement is detectable rather than invisible.
+COORDINATOR_REPLICATION: Final[int] = 3
+# A settlement is published once this fraction of assigned reports has landed.
+COORDINATOR_QUORUM: Final[float] = 0.67
+# How long a worker keeps trying before it gives up and settles standalone.
+COORDINATOR_RETRIES: Final[int] = 4
+COORDINATOR_BACKOFF_SECONDS: Final[float] = 5.0
+COORDINATOR_TIMEOUT_SECONDS: Final[int] = 30
+COORDINATOR_URL: Final[str] = ""
+COORDINATOR_PORT: Final[int] = 8443
+# Reports are signed bundles of numbers, so anything large is malformed.
+REPORT_MAX_BYTES: Final[int] = 256 * 1024
+# A worker whose agreement rate falls below this is advisory: its reports are
+# stored and served but excluded from the majority that decides a value.
+REPUTATION_FLOOR: Final[float] = 0.80
+# Recovery takes a run of agreeing rounds, never a single one.
+REPUTATION_RECOVERY_ROUNDS: Final[int] = 5
+REPUTATION_MIN_ROUNDS: Final[int] = 10
+
 PROFILE_DURATION_SECONDS: Final[int] = 60
 PROFILE_SAMPLE_INTERVAL_MS: Final[int] = 50
 LATENCY_SAMPLE_COUNT: Final[int] = 200

@@ -67,13 +67,36 @@ def sign_payload(wallet: Any, payload: Mapping[str, Any]) -> str:
     return str(bytes(signature).hex())
 
 
-def verify_payload(hotkey: str, payload: Mapping[str, Any], signature: str) -> bool:
+def sign_bytes(wallet: Any, message: bytes) -> str:
+    """Sign raw bytes rather than a canonicalised mapping.
+
+    Request authentication covers the method and path alongside the body, so
+    a signed report cannot be replayed against a different endpoint, and that
+    is not a JSON document.
+    """
+    try:
+        signature = wallet.hotkey.sign(message)
+    except Exception as exc:
+        raise WalletError("hotkey refused to sign the message") from exc
+    return str(bytes(signature).hex())
+
+
+def verify_bytes(hotkey: str, message: bytes, signature: str) -> bool:
     if not signature or not hotkey:
         return False
     try:
         keypair = _keypair_class()(ss58_address=hotkey)
-        return bool(keypair.verify(canonical_json(payload), bytes.fromhex(signature)))
+        return bool(keypair.verify(message, bytes.fromhex(signature)))
     except (WalletError, ValueError, TypeError):
         return False
     except Exception:
+        return False
+
+
+def verify_payload(hotkey: str, payload: Mapping[str, Any], signature: str) -> bool:
+    if not signature or not hotkey:
+        return False
+    try:
+        return verify_bytes(hotkey, canonical_json(payload), signature)
+    except (WalletError, ValueError, TypeError):
         return False

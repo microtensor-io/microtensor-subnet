@@ -1,0 +1,28 @@
+[Unit]
+Description=Microtensor coordinator (subnet 92)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=microtensor
+WorkingDirectory=/opt/microtensor
+Environment=MT_ROLE=coordinator
+Environment=MT_HOME=/var/lib/microtensor
+Environment=MT_NETUID=92
+Environment=MT_NETWORK=finney
+ExecStart=/opt/microtensor/.venv/bin/mt coordinator serve --host 127.0.0.1 --port 8443
+
+# on-failure rather than always. A deliberate exit, on a config-anchor
+# mismatch or a database fault, should stay down and page someone.
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/microtensor
+
+[Install]
+WantedBy=multi-user.target

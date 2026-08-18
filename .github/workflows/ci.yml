@@ -92,6 +92,86 @@ jobs:
           assert system.fits_class("mt-3g") == (True, "")
           print("degenerate reduction holds")
           PY
+      - name: A worker must settle standalone when the coordinator is unreachable
+        run: |
+          python - <<'PY'
+          from microtensor.validator.client import CoordinatorClient
+          from microtensor.validator.coordinated import FELL_BACK, plan_round
+          client = CoordinatorClient(
+              base_url="http://127.0.0.1:9", hotkey="w0", retries=2, backoff=0.0, timeout=1
+          )
+          plan = plan_round(client)
+          assert plan.standalone, "an unreachable coordinator must not halt the round"
+          assert plan.reason == FELL_BACK
+          print("coordinator outage falls back to standalone")
+          PY
+      - name: A worker must refuse a settlement it cannot recompute
+        run: |
+          python - <<'PY'
+          from microtensor.coordinator.collect import intake
+          from microtensor.coordinator.report import CostBlock, QualityBlock, Report
+          from microtensor.coordinator.settle import Entry, build
+          from microtensor.validator.client import SettlementRejected, verify_settlement
+
+          def report(w):
+              return Report(
+                  round_index=1, worker_hotkey=w, system_digest="sha256:s0",
+                  quality=QualityBlock(0.6, 0.6, 0.6), resolve_rate=1.0,
+                  cost=CostBlock(expected_ms=100.0), conforming=True,
+              )
+
+          reports = [report("w0"), report("w1"), report("w2")]
+          catalogue = {"sha256:s0": Entry("sha256:s0", "m0", 7, "code", "mt-3g", 0.0, 0.0,
+                                          rounds_observed=5)}
+          result = intake({"sha256:s0": reports})
+          settlement = build(1, config_hash="c", corpus_version="v",
+                             reconciled=result.reconciled, catalogue=catalogue,
+                             report_digests=[r.digest() for r in reports])
+          payload = settlement.body()
+          bodies = [r.body() for r in reports]
+          verify_settlement(payload, bodies, catalogue)
+
+          payload["weights"] = {"99": 1.0}
+          try:
+              verify_settlement(payload, bodies, catalogue)
+          except SettlementRejected:
+              print("forged weights refused")
+          else:
+              raise SystemExit("a worker accepted a settlement it did not recompute")
+          PY
+      - name: The coordinator must not import the measurement stack
+        run: |
+          python - <<'PY'
+          import ast, pathlib
+          banned = {"onnxruntime", "onnx", "psutil", "microtensor.harness"}
+          for path in pathlib.Path("microtensor/coordinator").rglob("*.py"):
+              tree = ast.parse(path.read_text(encoding="utf-8"))
+              for node in ast.walk(tree):
+                  names = []
+                  if isinstance(node, ast.Import):
+                      names = [a.name for a in node.names]
+                  elif isinstance(node, ast.ImportFrom) and node.module:
+                      names = [node.module]
+                  for name in names:
+                      assert not any(
+                          name == b or name.startswith(b + ".") for b in banned
+                      ), f"{path} imports {name}; the coordinator measures nothing"
+          print("coordinator carries no measurement dependency")
+          PY
+      - name: A coordinator host must refuse to run as a worker
+        run: |
+          python - <<'PY'
+          import tempfile, pathlib
+          from microtensor.core.role import COORDINATOR, WORKER, RoleConflict, claim, require
+          home = pathlib.Path(tempfile.mkdtemp())
+          claim(home, COORDINATOR)
+          try:
+              require(home, WORKER)
+          except RoleConflict:
+              print("mutual refusal holds")
+          else:
+              raise SystemExit("a coordinator home accepted a worker")
+          PY
       - name: Exclusive hypervolume must equal leave-one-out
         run: |
           python - <<'PY'

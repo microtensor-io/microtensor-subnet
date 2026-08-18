@@ -1,9 +1,13 @@
 # Running a Microtensor validator
 
-A validator does all the work in this subnet. It reads commitments, fetches every
-artifact, measures each one's deployment envelope on certified hardware, executes
-it against a chain-seeded task set inside a resource jail, ranks the survivors,
-and publishes one weight vector per round.
+A validator does the measurement in this subnet. It reads commitments, fetches
+artifacts, measures each one's deployment envelope on certified hardware,
+executes it against a chain-seeded task set inside a resource jail, and
+publishes one weight vector per round.
+
+It can run either way: standalone, measuring every submission and settling on
+its own, or as a worker under the coordinator, measuring an assigned subset and
+adopting a settlement it recomputes for itself. Section 3 covers the choice.
 
 Miners run none of this. If you are here to submit a model, read
 [miner_setup.md](miner_setup.md) instead. The two roles share almost no surface.
@@ -82,7 +86,28 @@ genuinely matches `mt-16g` should not also claim `mt-1g`.
 
 ---
 
-## 3 · Install
+## 3 · Coordinated or standalone
+
+By default a validator measures every submission and settles on its own. Point
+it at the coordinator and it measures only the subset assigned to it, then
+adopts the canonical settlement:
+
+```bash
+mt validator run --coordinator https://coordinator.microtensor.ai
+```
+
+Two things happen automatically and are worth knowing about. The worker
+recomputes the published settlement from the published reports and refuses to
+submit if it does not reproduce, so you are never relaying a number you did not
+check. And if the coordinator is unreachable at the deadline, the worker falls
+back to a standalone round and submits its own vector, so an outage costs
+coverage rather than the round.
+
+Pass `--standalone` to ignore a configured coordinator entirely.
+
+---
+
+## 4 · Install
 
 ```bash
 git clone https://github.com/microtensor-io/microtensor-subnet
@@ -109,7 +134,7 @@ if your hotkey holds none.
 
 ---
 
-## 4 · The corpus
+## 5 · The corpus
 
 **A validator without a corpus scores nothing.** Place one `<track>.jsonl` per
 track you serve under `$MT_HOME/corpus`:
@@ -139,7 +164,7 @@ from public corpora, or you are measuring memorisation.
 
 ---
 
-## 5 · Configure
+## 6 · Configure
 
 Environment variables are read with an `MT_` prefix; flags override them.
 
@@ -167,7 +192,7 @@ mt inspect tracks
 
 ---
 
-## 6 · Run
+## 7 · Run
 
 Certify the host for each class you serve. This runs a fixed, versioned
 workload, pins your declared thermal and power policy into the device
@@ -269,7 +294,7 @@ MT_WALLET_NAME=<coldkey> MT_WALLET_HOTKEY=<hotkey> \
 
 ---
 
-## 7 · The round, phase by phase
+## 8 · The round, phase by phase
 
 ```
 [start ─────────────────── close) [close ──────── deadline] [·· margin ··]
@@ -312,7 +337,7 @@ shared across several systems is executed once.
 
 ---
 
-## 8 · Abstention
+## 9 · Abstention
 
 **A fault of the artifact scores zero. A fault of your infrastructure abstains.**
 
@@ -349,7 +374,7 @@ The evaluations are real and next round depends on them.
 
 ---
 
-## 9 · Staying on the right version
+## 10 · Staying on the right version
 
 Validators that run different builds compute different weights. Worse, weight
 `version_key` is derived from `MECHANISM_VERSION`, so a validator on a newer
@@ -404,7 +429,7 @@ If you would rather not run unattended updates, leave the flag off and watch
 
 ---
 
-## 10 · Operating
+## 11 · Operating
 
 ```bash
 mt validator status            # local state, cache size, last settled round

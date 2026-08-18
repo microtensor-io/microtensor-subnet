@@ -17,6 +17,7 @@ from microtensor.cli.common import (
 )
 from microtensor.core.constants import (
     ARTIFACT_CACHE_CAP_BYTES,
+    COORDINATOR_URL,
     CORPUS_VERSION,
     GENESIS_BLOCK,
     PROVENANCE_REQUIRED,
@@ -27,6 +28,8 @@ from microtensor.core.constants import (
     TASKS_PER_ROUND,
     UPDATE_POLL_SECONDS,
 )
+from microtensor.core.role import WORKER, RoleConflict
+from microtensor.core.role import require as require_role
 from microtensor.envelope.certify import (
     DEFAULT_REPETITIONS,
     LAUNCH_CLASSES,
@@ -98,6 +101,16 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
     add_chain_arguments(parser)
     add_common_arguments(parser)
+    parser.add_argument(
+        "--coordinator",
+        default=COORDINATOR_URL,
+        help="coordinator base URL; without one this validator runs standalone",
+    )
+    parser.add_argument(
+        "--standalone",
+        action="store_true",
+        help="measure and settle independently, ignoring any coordinator",
+    )
     parser.add_argument("--corpus", type=Path, help="directory of <track>.jsonl corpora")
     parser.add_argument("--corpus-version", default=CORPUS_VERSION)
     parser.add_argument("--round-blocks", type=int, default=ROUND_BLOCKS)
@@ -169,6 +182,11 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
     chain = chain_config(args)
     home = Path(args.home)
     corpus = args.corpus or home / "corpus"
+
+    try:
+        require_role(home, WORKER)
+    except RoleConflict as exc:
+        raise SystemExit(str(exc)) from exc
 
     if not sandbox_available() and not args.allow_unsandboxed:
         raise SystemExit(

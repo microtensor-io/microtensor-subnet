@@ -1,0 +1,391 @@
+from __future__ import annotations
+
+import json
+import time
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+from microtensor.coordinator.collect import Divergence
+from microtensor.coordinator.report import CostBlock, QualityBlock, Report
+from microtensor.coordinator.reputation import Standing
+from microtensor.coordinator.schema import MIGRATIONS, SCHEMA_VERSION
+from microtensor.coordinator.settle import Settlement
+from microtensor.core.protocol import Fault
+from microtensor.store.db import Database
+
+
+class CoordinatorStore:
+    """Rounds, assignments, reports, settlements.
+
+    Reports are kept permanently rather than until settlement. They are the
+    audit trail: the first time a miner disputes a score, the reports are the
+    only thing that can answer, and they cannot be reconstructed afterwards.
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        self.db = Database(path, migrations=MIGRATIONS, schema_version=SCHEMA_VERSION)
+
+    def close(self) -> None:
+        self.db.close()
+
+    def __enter__(self) -> CoordinatorStore:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    # ---------------------------------------------------------------- rounds
+
+    def open_round(
+        self,
+        round_index: int,
+        *,
+        seed_block: int,
+        close_block: int,
+        block_hash: str = "",
+        config_hash: str = "",
+    ) -> None:
+        self.db.execute(
+            """
+            INSERT INTO rounds (round_index, seed_block, block_hash, close_block,
+                                config_hash, opened_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index) DO UPDATE SET
+                seed_block = excluded.seed_block,
+                block_hash = excluded.block_hash,
+                close_block = excluded.close_block,
+                config_hash = excluded.config_hash
+            """,
+            (round_index, seed_block, block_hash, close_block, config_hash, time.time()),
+        )
+
+    def mark_anchored(self, round_index: int) -> None:
+        self.db.execute(
+            "UPDATE rounds SET anchored_at = ? WHERE round_index = ?",
+            (time.time(), round_index),
+        )
+
+    def round(self, round_index: int) -> dict[str, Any] | None:
+        row = self.db.one("SELECT * FROM rounds WHERE round_index = ?", (round_index,))
+        return dict(row) if row else None
+
+    def latest_round(self) -> dict[str, Any] | None:
+        row = self.db.one("SELECT * FROM rounds ORDER BY round_index DESC LIMIT 1")
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------ assignment
+
+    def record_assignment(
+        self,
+        round_index: int,
+        assignment: Mapping[str, Sequence[str]],
+        systems: Mapping[str, tuple[str, str, str]],
+    ) -> None:
+        rows = [
+            (
+                round_index,
+                worker,
+                digest,
+                systems.get(digest, ("", "", ""))[0],
+                systems.get(digest, ("", "", ""))[1],
+                systems.get(digest, ("", "", ""))[2],
+            )
+            for digest, workers in assignment.items()
+            for worker in workers
+        ]
+        if not rows:
+            return
+        self.db.executemany(
+            """
+            INSERT INTO assignments (round_index, worker_hotkey, system_digest,
+                                     track, hardware_class, miner_hotkey)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index, worker_hotkey, system_digest) DO NOTHING
+            """,
+            rows,
+        )
+
+    def assignment_for(self, round_index: int, worker_hotkey: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            """
+            SELECT system_digest, track, hardware_class, miner_hotkey
+            FROM assignments WHERE round_index = ? AND worker_hotkey = ?
+            ORDER BY system_digest
+            """,
+            (round_index, worker_hotkey),
+        )
+        return [dict(r) for r in rows]
+
+    def assigned_digests(self, round_index: int, worker_hotkey: str) -> tuple[str, ...]:
+        return tuple(a["system_digest"] for a in self.assignment_for(round_index, worker_hotkey))
+
+    def expected_reports(self, round_index: int) -> int:
+        row = self.db.one(
+            "SELECT COUNT(*) AS n FROM assignments WHERE round_index = ?", (round_index,)
+        )
+        return int(row["n"]) if row else 0
+
+    def full_assignment(self, round_index: int) -> dict[str, tuple[str, ...]]:
+        rows = self.db.query(
+            """
+            SELECT system_digest, worker_hotkey FROM assignments
+            WHERE round_index = ? ORDER BY system_digest, worker_hotkey
+            """,
+            (round_index,),
+        )
+        out: dict[str, list[str]] = {}
+        for row in rows:
+            out.setdefault(str(row["system_digest"]), []).append(str(row["worker_hotkey"]))
+        return {k: tuple(v) for k, v in out.items()}
+
+    # --------------------------------------------------------------- reports
+
+    def record_report(self, report: Report) -> None:
+        self.db.execute(
+            """
+            INSERT INTO reports (
+                round_index, worker_hotkey, system_digest, quality,
+                quality_rotating, quality_fixed, resolve_rate, expected_ms,
+                expected_j, envelope, ablation, device_profile, conforming,
+                engine_version, corpus_version, fault, signature, body_hash,
+                received_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index, worker_hotkey, system_digest) DO NOTHING
+            """,
+            (
+                report.round_index,
+                report.worker_hotkey,
+                report.system_digest,
+                report.quality.combined,
+                report.quality.rotating,
+                report.quality.fixed,
+                report.resolve_rate,
+                report.cost.expected_ms,
+                report.cost.expected_j,
+                json.dumps(report.envelope, sort_keys=True),
+                json.dumps(report.ablation, sort_keys=True) if report.ablation else None,
+                report.device_profile,
+                int(report.conforming),
+                report.engine_version,
+                report.corpus_version,
+                report.fault.value if report.fault else None,
+                report.signature,
+                report.digest(),
+                time.time(),
+            ),
+        )
+
+    def has_report(self, round_index: int, worker_hotkey: str, system_digest: str) -> bool:
+        row = self.db.one(
+            """
+            SELECT 1 FROM reports
+            WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?
+            """,
+            (round_index, worker_hotkey, system_digest),
+        )
+        return row is not None
+
+    def reporters(self, round_index: int, system_digest: str) -> tuple[str, ...]:
+        rows = self.db.query(
+            "SELECT worker_hotkey FROM reports WHERE round_index = ? AND system_digest = ?",
+            (round_index, system_digest),
+        )
+        return tuple(str(r["worker_hotkey"]) for r in rows)
+
+    def report_count(self, round_index: int) -> int:
+        row = self.db.one(
+            "SELECT COUNT(*) AS n FROM reports WHERE round_index = ?", (round_index,)
+        )
+        return int(row["n"]) if row else 0
+
+    def reports_by_system(self, round_index: int) -> dict[str, list[Report]]:
+        rows = self.db.query(
+            "SELECT * FROM reports WHERE round_index = ? ORDER BY system_digest, worker_hotkey",
+            (round_index,),
+        )
+        out: dict[str, list[Report]] = {}
+        for row in rows:
+            out.setdefault(str(row["system_digest"]), []).append(_report_of(row))
+        return out
+
+    def report_digests(self, round_index: int) -> tuple[str, ...]:
+        rows = self.db.query(
+            "SELECT body_hash FROM reports WHERE round_index = ? ORDER BY body_hash",
+            (round_index,),
+        )
+        return tuple(str(r["body_hash"]) for r in rows)
+
+    def reports_payload(self, round_index: int) -> list[dict[str, Any]]:
+        """Every report as it was signed, so the settlement is recomputable."""
+        rows = self.db.query(
+            "SELECT * FROM reports WHERE round_index = ? ORDER BY system_digest, worker_hotkey",
+            (round_index,),
+        )
+        payload = []
+        for row in rows:
+            report = _report_of(row)
+            body = report.body()
+            body["signature"] = report.signature
+            payload.append(body)
+        return payload
+
+    # ---------------------------------------------------------- divergences
+
+    def record_divergences(self, round_index: int, divergences: Sequence[Divergence]) -> None:
+        if not divergences:
+            return
+        self.db.executemany(
+            """
+            INSERT INTO divergences (round_index, system_digest, worker_hotkey,
+                                     reported, reconciled, kind, noted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index, system_digest, worker_hotkey, kind) DO UPDATE SET
+                reported = excluded.reported,
+                reconciled = excluded.reconciled
+            """,
+            [
+                (
+                    round_index,
+                    d.system_digest,
+                    d.worker_hotkey,
+                    d.reported,
+                    d.reconciled,
+                    d.kind,
+                    time.time(),
+                )
+                for d in divergences
+            ],
+        )
+
+    def divergence_rate(self, round_index: int) -> float:
+        total = self.report_count(round_index)
+        if not total:
+            return 0.0
+        row = self.db.one(
+            "SELECT COUNT(*) AS n FROM divergences WHERE round_index = ?", (round_index,)
+        )
+        return (int(row["n"]) if row else 0) / total
+
+    # ----------------------------------------------------------- reputation
+
+    def standing(self, hotkey: str) -> Standing:
+        row = self.db.one("SELECT * FROM reputation WHERE worker_hotkey = ?", (hotkey,))
+        if row is None:
+            return Standing(hotkey=hotkey)
+        return Standing(
+            hotkey=hotkey,
+            agreed=int(row["agreed"]),
+            diverged=int(row["diverged"]),
+            streak=int(row["streak"]),
+            advisory=bool(row["advisory"]),
+            last_round=int(row["last_round"]),
+        )
+
+    def save_standing(self, standing: Standing) -> None:
+        self.db.execute(
+            """
+            INSERT INTO reputation (worker_hotkey, agreed, diverged, streak,
+                                    advisory, last_round)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (worker_hotkey) DO UPDATE SET
+                agreed = excluded.agreed,
+                diverged = excluded.diverged,
+                streak = excluded.streak,
+                advisory = excluded.advisory,
+                last_round = excluded.last_round
+            """,
+            (
+                standing.hotkey,
+                standing.agreed,
+                standing.diverged,
+                standing.streak,
+                int(standing.advisory),
+                standing.last_round,
+            ),
+        )
+
+    def standings(self) -> list[Standing]:
+        rows = self.db.query("SELECT * FROM reputation ORDER BY worker_hotkey")
+        return [
+            Standing(
+                hotkey=str(r["worker_hotkey"]),
+                agreed=int(r["agreed"]),
+                diverged=int(r["diverged"]),
+                streak=int(r["streak"]),
+                advisory=bool(r["advisory"]),
+                last_round=int(r["last_round"]),
+            )
+            for r in rows
+        ]
+
+    def advisory(self) -> tuple[str, ...]:
+        rows = self.db.query(
+            "SELECT worker_hotkey FROM reputation WHERE advisory = 1 ORDER BY worker_hotkey"
+        )
+        return tuple(str(r["worker_hotkey"]) for r in rows)
+
+    # ---------------------------------------------------------- settlements
+
+    def publish(self, settlement: Settlement) -> None:
+        self.db.execute(
+            """
+            INSERT INTO settlements (round_index, config_hash, corpus_version,
+                                     reports_root, payload, signature, published_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index) DO UPDATE SET
+                config_hash = excluded.config_hash,
+                corpus_version = excluded.corpus_version,
+                reports_root = excluded.reports_root,
+                payload = excluded.payload,
+                signature = excluded.signature,
+                published_at = excluded.published_at
+            """,
+            (
+                settlement.round_index,
+                settlement.config_hash,
+                settlement.corpus_version,
+                settlement.reports_root,
+                json.dumps(settlement.body(), sort_keys=True),
+                settlement.signature,
+                time.time(),
+            ),
+        )
+
+    def settlement(self, round_index: int) -> dict[str, Any] | None:
+        row = self.db.one(
+            "SELECT payload, signature FROM settlements WHERE round_index = ?",
+            (round_index,),
+        )
+        if row is None:
+            return None
+        body: dict[str, Any] = json.loads(str(row["payload"]))
+        body["signature"] = str(row["signature"])
+        return body
+
+
+def _report_of(row: Any) -> Report:
+    fault = row["fault"]
+    return Report(
+        round_index=int(row["round_index"]),
+        worker_hotkey=str(row["worker_hotkey"]),
+        system_digest=str(row["system_digest"]),
+        quality=QualityBlock(
+            rotating=float(row["quality_rotating"]),
+            fixed=float(row["quality_fixed"]),
+            combined=float(row["quality"]),
+        ),
+        resolve_rate=float(row["resolve_rate"]),
+        cost=CostBlock(
+            expected_ms=float(row["expected_ms"]),
+            expected_j=None if row["expected_j"] is None else float(row["expected_j"]),
+        ),
+        envelope=json.loads(str(row["envelope"] or "{}")),
+        ablation=json.loads(str(row["ablation"])) if row["ablation"] else None,
+        device_profile=str(row["device_profile"]),
+        conforming=bool(row["conforming"]),
+        engine_version=str(row["engine_version"]),
+        corpus_version=str(row["corpus_version"]),
+        fault=Fault(str(fault)) if fault else None,
+        signature=str(row["signature"]),
+    )

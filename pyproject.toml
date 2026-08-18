@@ -24,6 +24,13 @@ validator = [
     "numpy>=1.26",
     "psutil>=5.9",
 ]
+# The coordinator. Deliberately excludes the measurement stack: no
+# onnxruntime, no profiler, no jail. A coordinator host that cannot import the
+# harness is one that cannot be quietly repurposed into a worker.
+coordinator = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
 # Fetch backends. Pick the one your source scheme needs.
 huggingface = ["huggingface-hub>=0.24"]
 s3 = ["boto3>=1.34"]

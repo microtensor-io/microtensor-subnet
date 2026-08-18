@@ -1,0 +1,32 @@
+# The coordinator runs on its own machine, separate from any worker validator.
+# It fetches no artifact and loads no model, so it needs neither the
+# measurement stack nor a sandbox.
+services:
+  coordinator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.coordinator
+    image: microtensor/coordinator:latest
+    container_name: microtensor-coordinator
+    # on-failure, never always: a coordinator that exits on a config-anchor
+    # mismatch or a database fault should stay down and page someone.
+    restart: on-failure
+    environment:
+      MT_ROLE: coordinator
+      MT_NETUID: "92"
+      MT_NETWORK: finney
+      MT_HOME: /var/lib/microtensor
+    volumes:
+      - coordinator-state:/var/lib/microtensor
+      - ${HOME}/.bittensor/wallets:/root/.bittensor/wallets:ro
+    ports:
+      - "127.0.0.1:8443:8443"
+    command: ["mt", "coordinator", "serve", "--host", "0.0.0.0", "--port", "8443"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8443/v1/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  coordinator-state:
