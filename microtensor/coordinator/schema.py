@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 1
+SCHEMA_VERSION: Final[int] = 2
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -94,6 +94,25 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
                 streak        INTEGER NOT NULL DEFAULT 0,
                 advisory      INTEGER NOT NULL DEFAULT 0,
                 last_round    INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+        ),
+    ),
+    (
+        2,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS catalogue (
+                round_index    INTEGER NOT NULL,
+                system_digest  TEXT    NOT NULL,
+                miner_hotkey   TEXT    NOT NULL,
+                uid            INTEGER NOT NULL,
+                track          TEXT    NOT NULL,
+                hardware_class TEXT    NOT NULL,
+                committed_at   INTEGER NOT NULL DEFAULT 0,
+                rounds_observed INTEGER NOT NULL DEFAULT 0,
+                stale_rounds   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (round_index, system_digest)
             )
             """,
         ),

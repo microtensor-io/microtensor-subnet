@@ -109,18 +109,12 @@ def plan_round(
     config_hash = str(current.get("config_hash", ""))
 
     if systems is not None and assigned_round is not None and assigned_round != round_index:
-        # The two endpoints disagree about which round is open. Measuring under
-        # that disagreement puts reports on one round and the settlement on
-        # another, so neither is what this worker actually did.
         raise CoordinatorDisagrees(
             f"the coordinator's open round is {round_index} but its assignment is for "
             f"{assigned_round}"
         )
 
     if systems is None:
-        # The endpoint had no assignment document for us at all. That is not the
-        # same as being told we have nothing to do, and it is not a transport
-        # failure either, so it is neither IDLE nor a silent fall-back.
         log.warning("%s (round %d)", NO_ASSIGNMENT_DOC, round_index)
         return Plan(
             mode=Mode.STANDALONE,
@@ -259,10 +253,6 @@ def adopt_settlement(
     try:
         verify_settlement(published, reports, catalogue)
         if uid_by_hotkey is not None:
-            # Recomputation proves the weights follow from the published inputs.
-            # This is the part that checks the inputs themselves: every miner
-            # named must hold the uid the metagraph gives it, so emission cannot
-            # be redirected to a uid of the coordinator's choosing.
             cross_check(published, uid_by_hotkey)
     except SettlementRejected as exc:
         log.error("%s: %s", REFUSED, exc)

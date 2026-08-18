@@ -10,7 +10,7 @@ from microtensor.coordinator.collect import Divergence
 from microtensor.coordinator.report import CostBlock, QualityBlock, Report
 from microtensor.coordinator.reputation import Standing
 from microtensor.coordinator.schema import MIGRATIONS, SCHEMA_VERSION
-from microtensor.coordinator.settle import Settlement
+from microtensor.coordinator.settle import Entry, Settlement
 from microtensor.core.protocol import Fault
 from microtensor.store.db import Database
 
@@ -35,7 +35,6 @@ class CoordinatorStore:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    # ---------------------------------------------------------------- rounds
 
     def open_round(
         self,
@@ -74,7 +73,6 @@ class CoordinatorStore:
         row = self.db.one("SELECT * FROM rounds ORDER BY round_index DESC LIMIT 1")
         return dict(row) if row else None
 
-    # ------------------------------------------------------------ assignment
 
     def record_assignment(
         self,
@@ -139,7 +137,83 @@ class CoordinatorStore:
             out.setdefault(str(row["system_digest"]), []).append(str(row["worker_hotkey"]))
         return {k: tuple(v) for k, v in out.items()}
 
-    # --------------------------------------------------------------- reports
+
+    def record_catalogue(self, round_index: int, catalogue: Mapping[str, Entry]) -> None:
+        """Store which systems this round covers and who owns them."""
+        rows = [
+            (
+                round_index,
+                e.system_digest,
+                e.miner_hotkey,
+                e.uid,
+                e.track,
+                e.hardware_class,
+                e.committed_at,
+                e.rounds_observed,
+                e.stale_rounds,
+            )
+            for e in catalogue.values()
+        ]
+        if not rows:
+            return
+        self.db.executemany(
+            """
+            INSERT INTO catalogue (round_index, system_digest, miner_hotkey, uid,
+                                   track, hardware_class, committed_at,
+                                   rounds_observed, stale_rounds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index, system_digest) DO UPDATE SET
+                miner_hotkey = excluded.miner_hotkey,
+                uid = excluded.uid,
+                track = excluded.track,
+                hardware_class = excluded.hardware_class,
+                committed_at = excluded.committed_at,
+                rounds_observed = excluded.rounds_observed,
+                stale_rounds = excluded.stale_rounds
+            """,
+            rows,
+        )
+
+    def catalogue(self, round_index: int) -> dict[str, Entry]:
+        rows = self.db.query(
+            "SELECT * FROM catalogue WHERE round_index = ? ORDER BY system_digest",
+            (round_index,),
+        )
+        return {
+            str(r["system_digest"]): Entry(
+                system_digest=str(r["system_digest"]),
+                miner_hotkey=str(r["miner_hotkey"]),
+                uid=int(r["uid"]),
+                track=str(r["track"]),
+                hardware_class=str(r["hardware_class"]),
+                quality=0.0,
+                expected_ms=0.0,
+                committed_at=int(r["committed_at"]),
+                rounds_observed=int(r["rounds_observed"]),
+                stale_rounds=int(r["stale_rounds"]),
+            )
+            for r in rows
+        }
+
+    def observations(self, before: int) -> dict[str, tuple[int, int]]:
+        """How many rounds each miner has been seen for, from prior catalogues."""
+        rows = self.db.query(
+            """
+            SELECT miner_hotkey,
+                   COUNT(*) AS seen,
+                   COUNT(DISTINCT system_digest) AS distinct_systems
+            FROM catalogue WHERE round_index < ?
+            GROUP BY miner_hotkey
+            """,
+            (before,),
+        )
+        return {
+            str(r["miner_hotkey"]): (
+                int(r["seen"]) + 1,
+                max(int(r["seen"]) - int(r["distinct_systems"]), 0),
+            )
+            for r in rows
+        }
 
     def record_report(self, report: Report) -> None:
         self.db.execute(
@@ -230,7 +304,6 @@ class CoordinatorStore:
             payload.append(body)
         return payload
 
-    # ---------------------------------------------------------- divergences
 
     def record_divergences(self, round_index: int, divergences: Sequence[Divergence]) -> None:
         if not divergences:
@@ -267,7 +340,6 @@ class CoordinatorStore:
         )
         return (int(row["n"]) if row else 0) / total
 
-    # ----------------------------------------------------------- reputation
 
     def standing(self, hotkey: str) -> Standing:
         row = self.db.one("SELECT * FROM reputation WHERE worker_hotkey = ?", (hotkey,))
@@ -325,7 +397,6 @@ class CoordinatorStore:
         )
         return tuple(str(r["worker_hotkey"]) for r in rows)
 
-    # ---------------------------------------------------------- settlements
 
     def publish(self, settlement: Settlement) -> None:
         self.db.execute(

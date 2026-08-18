@@ -242,11 +242,6 @@ def build(
     per_competition = allocate(entries)
     combined = combine_competitions(per_competition)
 
-    # The cap and the blend belong here, not on each worker. They are mechanism
-    # rules, so a coordinated round that skipped them would quietly pay out
-    # differently from a standalone one; and if workers applied them locally
-    # they would each blend against their own history and stop agreeing on the
-    # vector they are all supposed to be submitting.
     capped = combined
     if coldkeys:
         origins = {h: origin_group(coldkeys[h]) for h in combined if h in coldkeys}

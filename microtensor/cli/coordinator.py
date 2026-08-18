@@ -37,6 +37,14 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     serve.add_argument("--port", type=int, default=COORDINATOR_PORT)
     serve.set_defaults(handler=_serve)
 
+    opened = inner.add_parser(
+        "open", help="read the round from chain, assign it, and store the catalogue"
+    )
+    add_common_arguments(opened)
+    add_chain_arguments(opened)
+    opened.add_argument("--replication", type=int, default=COORDINATOR_REPLICATION)
+    opened.set_defaults(handler=_open)
+
     plan = inner.add_parser("assign", help="compute and store this round's assignment")
     add_common_arguments(plan)
     plan.add_argument("--round", type=int, required=True)
@@ -142,10 +150,65 @@ def _assign(args: argparse.Namespace) -> int:
     return 0
 
 
+def _open(args: argparse.Namespace) -> int:
+    from microtensor.cli.common import chain_config, open_client, open_wallet
+    from microtensor.coordinator.chain import ChainSource, observed
+
+    chain = chain_config(args)
+    wallet = open_wallet(chain, required=False)
+    client = open_client(chain, wallet)
+    source = ChainSource(client=client)
+
+    round_ = source.open_round()
+    systems, catalogue = source.systems(round_)
+    workers = source.workers()
+    seed = source.seed(round_)
+
+    if not systems:
+        print(f"round {round_.index}: nothing committed on chain yet")
+        return 0
+    if not workers:
+        return fail("no worker holds a validator permit, so nothing can be assigned")
+
+    mapping = assign(systems, workers, seed, replication=args.replication)
+
+    with _store(args) as store:
+        store.open_round(
+            round_.index,
+            seed_block=round_.seed_block,
+            close_block=round_.close_block,
+            block_hash=seed,
+            config_hash=config_hash(served_config(CORPUS_VERSION)),
+        )
+        store.record_assignment(
+            round_.index,
+            mapping,
+            {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
+        )
+        store.record_catalogue(
+            round_.index, observed(catalogue, store.observations(round_.index))
+        )
+
+    thin = under_replicated(mapping, args.replication)
+    print(f"round {round_.index} opened, seed block {round_.seed_block}")
+    print(f"  systems     {len(systems)}")
+    print(f"  workers     {len(workers)}")
+    print(f"  assignments {sum(len(v) for v in mapping.values())}")
+    if thin:
+        print(f"  under-replicated: {len(thin)}")
+    print()
+    print("Commit the config hash on chain before workers measure against it:")
+    print(f"  {config_hash(served_config(CORPUS_VERSION))}")
+    return 0
+
+
 def _settle(args: argparse.Namespace) -> int:
     with _store(args) as store:
         service = Coordinator(
-            store=store, registry=Registry({}), corpus_version=CORPUS_VERSION
+            store=store,
+            registry=Registry({}),
+            corpus_version=CORPUS_VERSION,
+            catalogue=store.catalogue(args.round),
         )
         published = service.settle(args.round)
 

@@ -71,7 +71,6 @@ class CoordinatorClient:
     retries: int = COORDINATOR_RETRIES
     backoff: float = COORDINATOR_BACKOFF_SECONDS
 
-    # ------------------------------------------------------------- transport
 
     def _sign(self, method: str, path: str, body: bytes) -> dict[str, str]:
         stamp = f"{time.time():.0f}"
@@ -128,7 +127,6 @@ class CoordinatorClient:
 
         raise CoordinatorUnreachable(f"{url} after {self.retries} attempts: {last}")
 
-    # ------------------------------------------------------------- endpoints
 
     def current_round(self) -> dict[str, Any]:
         return self._call("GET", "/v1/round/current") or {}

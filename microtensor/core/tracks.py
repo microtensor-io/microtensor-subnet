@@ -94,10 +94,6 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="generated_tokens",
         ),
-        # BLOCKED: rubric_f1_tool_calls is a judged metric wearing a computed
-        # name. Before this track is re-enabled, either the rubric becomes fully
-        # mechanical (a checklist reducible to string/structure matching) or the
-        # metric is renamed to what it actually computes.
         Track(
             id="support",
             modality=Modality.TEXT,

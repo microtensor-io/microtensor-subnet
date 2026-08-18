@@ -117,7 +117,6 @@ class Coordinator:
         if not self.coldkeys:
             self.coldkeys = {}
 
-    # ------------------------------------------------------------------ read
 
     def current_round(self) -> dict[str, Any]:
         row = self.store.latest_round()
@@ -185,7 +184,6 @@ class Coordinator:
     def reputation(self) -> list[dict[str, Any]]:
         return [s.to_dict() for s in self.store.standings()]
 
-    # ----------------------------------------------------------------- write
 
     def submit(self, body: dict[str, Any], raw: bytes) -> dict[str, Any]:
         if len(raw) > REPORT_MAX_BYTES:

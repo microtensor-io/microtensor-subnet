@@ -100,18 +100,17 @@ class ValidatorContext:
             log.warning("%s is UNENFORCED: %s", gate.name, gate.detail)
 
         corpora = load_all(config.corpus_dir, config.corpus_version)
-        open_competitions = tuple(
-            (track, hardware) for track, hardware in competitions() if track in corpora
-        )
-        if not open_competitions:
+        missing = sorted({track for track, _ in competitions()} - set(corpora))
+        if missing:
             raise RuntimeError(
-                f"no corpus under {config.corpus_dir} matches an enabled track; "
-                f"found {sorted(corpora)}"
+                f"no corpus under {config.corpus_dir} for enabled track(s) {missing}. "
+                f"A validator that skips a track publishes a vector missing that "
+                f"track's emission share while its peers include it, which is a "
+                f"consensus divergence rather than a smaller sample, so this is "
+                f"refused rather than logged. Found corpora for {sorted(corpora)}."
             )
 
-        missing = {track for track, _ in competitions()} - set(corpora)
-        if missing:
-            log.warning("no corpus for enabled tracks %s; they will not be scored", sorted(missing))
+        open_competitions = tuple(competitions())
 
         from microtensor.envelope.certify import load_policies
 

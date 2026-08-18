@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round, round_for_block
 from microtensor.chain.weights import quantise_weights
 from microtensor.coordinator.report import Report
@@ -159,11 +160,53 @@ def adopted(round_index: int, weights: dict[int, float]) -> Settlement:
 
 
 def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
+    """Run one round, and leave it in a terminal state whatever happens.
+
+    Every deliberate cause routes through the inner abstain(). This wrapper is
+    for the causes nobody enumerated: a sqlite error, a chain fault, a missing
+    corpus key. Without it an unforeseen exception escapes to the loop, the
+    round row stays open forever, and the loop re-enters the same round on every
+    poll. An invariant that holds for the failures you thought of and breaks on
+    the one you did not is not an invariant.
+    """
     started = time.monotonic()
-    snapshot = context.client.snapshot(refresh=True)
-    block_hash = context.client.block_hash(round_.seed_block)
+
+    try:
+        snapshot = context.client.snapshot(refresh=True)
+        block_hash = context.client.block_hash(round_.seed_block)
+    except Exception as exc:
+        reason = f"the chain could not be read, so the round never opened: {exc!r}"
+        log.exception("round %d: %s", round_.index, reason)
+        return RoundOutcome(
+            round_index=round_.index,
+            status=ABSTAINED,
+            reason=reason,
+            elapsed_seconds=time.monotonic() - started,
+        )
+
     context.state.open_round(round_.index, round_.seed_block, block_hash)
 
+    try:
+        return _run_round(context, round_, snapshot, block_hash, started)
+    except Exception as exc:
+        reason = f"the round failed unexpectedly and was abandoned: {exc!r}"
+        log.exception("round %d: %s", round_.index, reason)
+        context.state.finish_round(round_.index, ABSTAINED, reason)
+        return RoundOutcome(
+            round_index=round_.index,
+            status=ABSTAINED,
+            reason=reason,
+            elapsed_seconds=time.monotonic() - started,
+        )
+
+
+def _run_round(
+    context: ValidatorContext,
+    round_: Round,
+    snapshot: MetagraphSnapshot,
+    block_hash: str,
+    started: float,
+) -> RoundOutcome:
     def abstain(reason: str, roster: Roster | None = None) -> RoundOutcome:
         log.warning("round %d abstaining: %s", round_.index, reason)
         context.state.finish_round(round_.index, ABSTAINED, reason)
@@ -183,8 +226,6 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
             f"so this round was not measured: {exc}"
         )
     except CoordinatorRefused as exc:
-        # Answered, and said no. Falling back would hide a misconfiguration
-        # behind a round that looks like it worked.
         return abstain(f"the coordinator refused this validator: {exc}")
     except CoordinatorDisagrees as exc:
         return abstain(f"{ROUND_DRIFT}: {exc}")
@@ -231,7 +272,7 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
         participants = roster.for_competition(track, hardware_class)
         if assigned is not None:
             participants = tuple(
-                p for p in participants if p.manifest.system_digest in assigned
+                p for p in participants if p.commitment.manifest_digest in assigned
             )
         if not participants:
             continue
@@ -264,7 +305,7 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
                 )
                 for evaluation, digest in zip(
                     result.evaluations,
-                    [p.manifest.system_digest for p in participants],
+                    [p.commitment.manifest_digest for p in participants],
                     strict=True,
                 )
             )
@@ -294,9 +335,6 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
         if weights is None:
             return abstain(f"the canonical settlement was not adopted: {why}", roster)
         if not weights:
-            # An empty canonical vector is not "nothing was eligible yet"; it is
-            # the coordinator settling nothing at all, and adopting it would
-            # publish silence while recording the round as settled.
             return abstain(
                 "the coordinator published a settlement with no weights in it", roster
             )
