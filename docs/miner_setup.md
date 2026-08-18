@@ -4,10 +4,10 @@ You compress a frontier model into a specialist that fits a hardware class, host
 the artifact somewhere validators can fetch it, and commit a 128-byte pointer on
 chain each round. That is the whole job.
 
-**You do not serve inference.** There is no axon, no request handler, no GPU that
-has to stay warm, no uptime requirement. Validators fetch your artifact and run
-it on their own certified hardware. A miner box that is offline between rounds
-loses nothing.
+**Your machine trains; the network runs.** Validators fetch your artifact and
+execute it on their own certified hardware, so your box is busy exactly while
+you are training and improving the model. Once per round you come online inside
+the submission window, send one extrinsic, and go back to work.
 
 If you are here to evaluate other people's models, read
 [validator_setup.md](validator_setup.md) instead.
@@ -69,9 +69,9 @@ measured. `mt miner selfcheck` computes exactly that, with a 10 % margin.
 
 ## 3 · Your rig
 
-Nothing here is enforced or even visible to the subnet. You upload an artifact
-and commit a pointer, so your hardware is unverifiable by construction. This is
-what the work actually takes.
+Your rig is yours alone: you upload an artifact and commit a pointer, so the
+subnet sees the model and nothing about the machine that made it. The figures
+below are what the work actually takes.
 
 **The GPU is for building the model, not for running it.** Compression and
 fine-tuning are the real cost, and they happen entirely off-subnet.
@@ -104,8 +104,8 @@ Full breakdown in [min_compute.yml](../min_compute.yml).
 
 ## 4 · Install
 
-Miners need almost nothing: no runtime and no profiler dependencies for the base
-install:
+The base install is the CLI on its own, which is all that packaging and
+committing need:
 
 ```bash
 git clone https://github.com/microtensor-io/microtensor-subnet
@@ -157,7 +157,7 @@ my-model/
   operators are rejected, because a validator will not run code it cannot audit.
 - Greedy decoding. The track fixes it; temperature is not a knob you control.
 - Size is *total*: weights, tokenizer, config, everything in the directory.
-- No `manifest.json` of your own. Packaging writes it.
+- Leave `manifest.json` to `mt miner package`, which writes it for you.
 
 ### Training data
 

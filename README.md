@@ -18,8 +18,9 @@ benchmark:
 3. **The chain** aggregates validator weights through Yuma Consensus. The top
    8 per competition earn on a geometric curve.
 
-Miners run no axon, serve nothing, and need no uptime. Validators need Linux,
-no GPU, and one reference device per class they certify.
+A miner trains offline and comes online once per round to commit a pointer.
+A validator runs Linux on CPU alone, with one certified reference device for
+the class it serves.
 
 [Mine](docs/miner_setup.md) · [Validate](docs/validator_setup.md) ·
 [Mechanism](docs/mechanism.md)
@@ -70,7 +71,7 @@ pip install -e .
 mt inspect tracks          # live competitions, ceilings, emission shares
 mt inspect engines         # what this host can execute; whether the jail binds
 
-# Miner: four commands, no uptime
+# Miner: five commands, once per round
 mt miner init --track code --class mt-3g --artifact ./my-model --source hf:you/mt-code@<sha>
 mt miner selfcheck         # measure your own envelope before declaring it
 mt miner package           # prints the digest to log to your training run

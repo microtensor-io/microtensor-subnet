@@ -9,9 +9,11 @@ invalidate an artifact already submitted.
 
 The governing principle, from which everything else follows:
 
-> **The network holds the weights and runs them.** A miner reports no
-> measurement, serves no endpoint, and supplies no runtime. The artifact that
-> earns a ranking is byte for byte the artifact a customer receives.
+> **The network holds the weights and runs them.** A miner supplies weights, a
+> description of how to load them, and claims about what running them will
+> cost; the validator supplies the runtime and produces every measurement. The
+> artifact that earns a ranking is byte for byte the artifact a customer
+> receives.
 
 ---
 
@@ -583,7 +585,8 @@ Rank is unchanged; only share moves.
 
 ### Concentration cap
 
-Miners are grouped by **coldkey**. Miners serve no axon, so an IP-prefix
+Miners are grouped by **coldkey**. A miner is reachable only through the
+chain, so an IP-prefix
 grouping keys on an address that is absent or stale and misses its actual
 target, one operator running many hotkeys; the coldkey is what that operator
 cannot cheaply multiply without splitting stake. If any coldkey holds more than

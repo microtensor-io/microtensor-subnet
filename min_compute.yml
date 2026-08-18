@@ -56,9 +56,8 @@ miner:
   uptime:
     required: false
     note: >
-      A miner serves no axon and answers no request. It must be reachable once
-      per round, inside the submission window, long enough to send one
-      extrinsic. Offline between windows costs nothing.
+      A miner comes online once per round, inside the submission window, long
+      enough to send one extrinsic. The rest of the round belongs to training.
 
 # Validator hardware is enforced by the mechanism, not by policy text. Envelope
 # measurements are this subnet's product, and a measurement taken on the wrong
