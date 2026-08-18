@@ -288,6 +288,25 @@ MT_WALLET_NAME=<coldkey> MT_WALLET_HOTKEY=<hotkey> \
 
 ---
 
+### What a round costs now
+
+A round runs each system whole, front then router then escalation, and then
+ablates the frontier members: one extra evaluation per component, per system
+on the frontier.
+
+| | |
+|---|---|
+| Every admitted system | one cascade run over the round's task set |
+| Each frontier member | one further run per component it declares |
+| Everything off the frontier | no ablation at all |
+
+The multiplier is bounded by frontier size, not by submission count, because a
+system off the frontier earns nothing and so has no value to divide. Component
+outputs are cached by digest and task set within the round, so a baseline
+shared across several systems is executed once.
+
+---
+
 ## 8 · Abstention
 
 **A fault of the artifact scores zero. A fault of your infrastructure abstains.**
@@ -311,6 +330,13 @@ Abstaining sets no weights that round. EMA state is untouched and you resume
 next round. A partial vector is never submitted: since every validator scores
 every track, a missing track removes that track's whole emission share, which is
 a consensus divergence rather than a smaller sample.
+
+Four conditions abstain a whole round rather than degrading it: an unreachable
+run store, a CPU limit the kernel will not enforce, an artifact still
+unfetchable after retries, and fewer than half the submissions scored. In every
+case a partial vector is never published, because a vector missing a
+competition removes that competition's whole emission share, which is a
+consensus divergence rather than a smaller sample.
 
 A round that evaluates cleanly but pays nobody, because no artifact has been
 observed for `MIN_ROUNDS_OBSERVED` rounds yet, is **settled**, not abstained.

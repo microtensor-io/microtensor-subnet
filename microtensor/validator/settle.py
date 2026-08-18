@@ -5,9 +5,8 @@ from dataclasses import dataclass, field
 
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.weights import WeightVector, quantise_weights
-from microtensor.core.constants import REFERENCE_COST_MS, SYSTEMS_ENABLED
 from microtensor.scoring import frontier
-from microtensor.scoring.schedule import allocate, held_ranks
+from microtensor.scoring.schedule import held_ranks
 from microtensor.scoring.weights import (
     apply_concentration_cap,
     blend,
@@ -42,12 +41,18 @@ class Settlement:
 def _frontier_allocation(
     context: ValidatorContext, round_index: int, track: str, hardware_class: str
 ) -> dict[str, float]:
-    """Emission by exclusive hypervolume, once systems carry a measured cost."""
+    """Emission by exclusive hypervolume on the cost-quality frontier.
+
+    The cost is used exactly as measured. Substituting a default for a low
+    reading would conflate a fast system with an unmeasured one, and because
+    the reference cost quantises to the top of the grid, every such system
+    would land where its exclusive area is zero and earn nothing.
+    """
     entrants = [
         frontier.Entrant(
             key=row.hotkey,
             quality=row.score,
-            cost=row.expected_ms or REFERENCE_COST_MS,
+            cost=row.expected_ms,
             committed_at=row.committed_at,
             rounds_observed=row.rounds_observed,
             stale_rounds=row.stale_rounds,
@@ -68,11 +73,7 @@ def allocations(
             log.info("%s/%s: no admitted candidate this round", track, hardware_class)
             continue
 
-        previous = context.state.holders(track, hardware_class)
-        if SYSTEMS_ENABLED:
-            allocation = _frontier_allocation(context, round_index, track, hardware_class)
-        else:
-            allocation = allocate(candidates, previous)
+        allocation = _frontier_allocation(context, round_index, track, hardware_class)
         if not allocation:
             log.info("%s/%s: nobody cleared the track threshold", track, hardware_class)
             continue

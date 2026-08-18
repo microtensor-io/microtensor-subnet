@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from microtensor.core.constants import ROLE_BASELINES, SYSTEMS_ENABLED
+from microtensor.core.constants import ROLE_BASELINES
 from microtensor.core.protocol import Role
 from microtensor.scoring.ablation import Contribution, baseline_for, settle, unset_roles
 from microtensor.scoring.frontier import Point, quantise_point
@@ -172,9 +172,6 @@ def contributions(
     so dividing its value between components would be dividing zero, and the
     work would scale with submissions rather than with the frontier.
     """
-    if not SYSTEMS_ENABLED:
-        return {}
-
     if len(unset_roles(store.digests)) == len(store.digests):
         log.info("ablation skipped: no role baseline is published yet")
         return {

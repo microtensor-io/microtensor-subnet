@@ -12,7 +12,6 @@ from microtensor.core.constants import (
     BLOCK_TIME_SECONDS,
     HOST_PROFILE,
     PROVENANCE_REQUIRED,
-    SYSTEMS_ENABLED,
 )
 from microtensor.core.protocol import Role
 from microtensor.core.system import SystemManifest
@@ -228,9 +227,6 @@ def _system_reason(manifest: ArtifactManifest, hardware_class: str) -> str:
     system = manifest.system
     if system is None:
         return ""
-    if not SYSTEMS_ENABLED:
-        return "systems are not enabled on this network yet"
-
     placed, reason = system.fits_class(hardware_class)
     if not placed:
         return reason

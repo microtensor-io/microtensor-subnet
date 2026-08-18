@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from microtensor.chain.rounds import Round, round_for_block
-from microtensor.core.constants import MIN_SCORED_FRACTION, REFERENCE_COST_MS, SYSTEMS_ENABLED
+from microtensor.core.constants import MIN_SCORED_FRACTION, REFERENCE_COST_MS
 from microtensor.core.protocol import Role
 from microtensor.provenance.record import ProvenanceUnavailable
 from microtensor.scoring import frontier
@@ -68,14 +68,11 @@ def price_components(
     a fresh set, because a split computed against a different frontier would
     describe a payout nobody received.
     """
-    if not SYSTEMS_ENABLED:
-        return
-
     entrants = [
         frontier.Entrant(
             key=row.hotkey,
             quality=row.score,
-            cost=row.expected_ms or REFERENCE_COST_MS,
+            cost=row.expected_ms,
             committed_at=row.committed_at,
             rounds_observed=row.rounds_observed,
             stale_rounds=row.stale_rounds,

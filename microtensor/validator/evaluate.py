@@ -7,7 +7,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from microtensor.core.constants import SYSTEMS_ENABLED
 from microtensor.core.protocol import (
     Evaluation,
     Fault,
@@ -60,6 +59,23 @@ class CompetitionResult:
         return len(self.evaluations)
 
 
+def _expected_ms(cascade: CascadeResult | None, measured: MeasuredEnvelope | None) -> float:
+    """What one query costs, measured rather than assumed.
+
+    A front-only system runs no cascade, so its cost is the latency the
+    profiler measured for the front itself. Leaving it at zero would be a
+    claim of free inference; falling back to the reference ceiling would put
+    every such system at the worst cost on the grid, where its exclusive
+    hypervolume is zero and it could never earn. Both misreport a quantity the
+    network did in fact measure.
+    """
+    if cascade is not None:
+        return cascade.expected_ms
+    if measured is not None:
+        return float(measured.ttft_p95_ms)
+    return 0.0
+
+
 def _evaluation(
     participant: Participant,
     tasks: RoundTasks,
@@ -88,7 +104,7 @@ def _evaluation(
         n_fixed=n_fixed,
         corpus_version=tasks.corpus_version,
         resolve_rate=cascade.resolve_rate if cascade else 1.0,
-        expected_ms=cascade.expected_ms if cascade else 0.0,
+        expected_ms=_expected_ms(cascade, measured),
         front_only_score=front_only,
         system_digest=participant.manifest.system_digest,
     )
@@ -298,7 +314,7 @@ def evaluate_participant(
     cascade: CascadeResult | None = None
     front_only_score = 0.0
 
-    if SYSTEMS_ENABLED and not participant.system.degenerate:
+    if not participant.system.degenerate:
         cascade, failure = run_system(context, participant, artifact, hardware, tasks)
         if failure or cascade is None:
             log.info("%s scored zero: %s", participant.hotkey, failure)

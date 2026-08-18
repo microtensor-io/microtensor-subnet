@@ -158,18 +158,7 @@ def _provenance_gate() -> Gate:
 
 
 def _baseline_gates() -> list[Gate]:
-    from microtensor.core.constants import ROLE_BASELINES, SYSTEMS_ENABLED
-
-    if not SYSTEMS_ENABLED:
-        return [
-            Gate(
-                name="role baselines",
-                ready=False,
-                posture=OPEN,
-                detail="systems are off, so every submission is scored as a single artifact",
-                fix="publish the three role baselines, then set SYSTEMS_ENABLED",
-            )
-        ]
+    from microtensor.core.constants import ROLE_BASELINES
 
     gates: list[Gate] = []
     for role, digest in sorted(ROLE_BASELINES.items()):

@@ -24,7 +24,6 @@ CORPUS_VERSION: Final[str] = "2026.1"
 
 CLASS_WEIGHTS: Final[dict[str, float]] = {"mt-3g": 1.0}
 
-SYSTEMS_ENABLED: Final[bool] = False
 HOST_PROFILE: Final[str] = "mt-16g"
 
 ALLOWED_ROUTER_FEATURES: Final[frozenset[str]] = frozenset(

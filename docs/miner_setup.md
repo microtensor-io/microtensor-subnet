@@ -364,6 +364,14 @@ the branch under you.
 
 | | |
 |---|---|
+| any component declares a base model off the allowlist | rejected at discovery, reason names the component |
+| any component has no training run | rejected at discovery, reason names the component |
+| router reads a feature that is not on the allowlist | rejected at discovery |
+| router graph contains a disallowed operator | rejected at discovery |
+| router artifact is over 4 MiB | rejected at discovery |
+| specialist placed anywhere but the host profile | rejected at discovery |
+| the same component digest appears twice | rejected at discovery |
+| a router without a specialist, or a specialist without a router | rejected at discovery |
 | no training run for your hotkey | rejected at discovery |
 | training run digest does not match the artifact | rejected at discovery |
 | training run declares a different track, class or base model | rejected at discovery |
@@ -395,24 +403,28 @@ you and why.
   linearly in context. Declare a maximum you can actually hold, then hold it.
 - **Cold start is measured on an unwarmed cache.** A single warm measurement is
   precisely what a miner would construct if permitted to, so it is not admissible.
-- **Rank 8 pays.** The curve is geometric with decay 0.85, so do not concede a
-  competition because you cannot take rank 1.
-- **Incumbency decays.** Resubmitting the same digest round after round bleeds
-  share to active positions. Ship improvements.
-- **Hysteresis protects holders at every rank.** Beating an incumbent takes a
-  margin of 0.005, not a tie. Copying the leader to land just behind them does
-  not work.
+- **There is no ranked list.** A system that nothing else beats on both
+  quality and cost sits on the frontier, and earns in proportion to the region
+  it alone covers. Being second on accuracy costs you nothing if you are
+  cheaper.
+- **Find empty ground.** A system nobody is near earns well even when
+  something else is more accurate. A system sitting on top of an existing one
+  earns almost nothing, because the ground it covers was already covered.
+- **Landing beside a leader earns nothing.** Two systems inside one epsilon
+  neighbourhood collapse to the earlier commitment, so copying a frontier
+  system and shaving it slightly leaves you with no position at all.
+- **Incumbency decays.** Holding a frontier position across rounds with no
+  improvement in either coordinate bleeds share to systems that moved. Ship
+  improvements.
+- **Each component is paid separately.** Your front, router and specialist are
+  priced by the measured difference each makes against the published role
+  baseline, so a component that adds nothing is visibly worth nothing.
 
 ---
 
 ## 12 · Submitting a system
 
-Not enabled yet. `SYSTEMS_ENABLED` ships off, a submission with a system
-manifest is rejected at discovery, and everything above describes the live path.
-This section is here so you can build against it before the switch, since the
-work it rewards is different from compressing a single model.
-
-A system is three parts. A **front** bound to the class ceiling, running on every
+This is the live path. A system is three parts. A **front** bound to the class ceiling, running on every
 query. A **router** deciding which answers to keep. A **specialist** on the host
 profile, answering only what escalates. Declare them in `system.json` beside your
 artifact:
@@ -461,3 +473,27 @@ the specialist's full cost and sit at the expensive end of the frontier.
 hypervolume, so a system that opens a genuinely new trade-off point is paid for
 what it uniquely adds, whether that is the best quality anyone reached or the
 cheapest anyone reached at usable quality.
+
+---
+
+## 13 · Starting simple
+
+**A front alone is a valid system.** Submit one component, leave the router and
+specialist null, and you compete. You will sit at the cheap end of the frontier,
+where cost is lowest and the ground is often empty, and you will earn there.
+
+```bash
+mt miner init --track code --class mt-3g --front ./front
+mt miner selfcheck
+mt miner package
+mt miner ship
+```
+
+This is the recommended first submission. It gets you a measured position, a
+certificate, and a real number to improve against, without solving routing and
+escalation on day one.
+
+Adding a router and specialist buys quality and pays for it in escalation cost,
+which moves you up and to the right. Whether that trade is worth making is
+exactly what the frontier measures, and you are better placed to judge it once
+you can see where your front actually landed.

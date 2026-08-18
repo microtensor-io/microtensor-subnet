@@ -72,12 +72,15 @@ jobs:
           PY
       - name: A round must settle end to end with no chain
         run: mt validator loopback --rounds 3 --miners 4
-      - name: Systems must ship behind the flag
+      - name: The systems path must be the only path
         run: |
           python - <<'PY'
-          from microtensor.core.constants import SYSTEMS_ENABLED
-          assert SYSTEMS_ENABLED is False, "SYSTEMS_ENABLED must be False until ablation lands"
-          print("systems gated")
+          import microtensor.core.constants as c
+          assert not hasattr(c, "SYSTEMS_ENABLED"), "the migration flag must stay deleted"
+          from microtensor.validator.settle import allocations
+          import inspect
+          assert "_frontier_allocation" in inspect.getsource(allocations)
+          print("systems are the only scoring path")
           PY
       - name: A degenerate system must reduce to the single-artifact path
         run: |
