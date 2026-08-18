@@ -41,6 +41,18 @@ class ValidatorConfig:
     dry_run: bool = False
     verify_signatures: bool = True
     degraded: bool = False
+    coordinator_url: str = ""
+    standalone: bool = False
+
+    @property
+    def coordinated(self) -> bool:
+        """Whether this worker takes its work from a coordinator.
+
+        `--standalone` wins over a configured URL so a full independent round is
+        always reachable by config rather than only by failure, which is how the
+        fallback gets tested without taking the coordinator down.
+        """
+        return bool(self.coordinator_url) and not self.standalone
 
     @property
     def state_path(self) -> Path:
@@ -67,6 +79,7 @@ class ValidatorContext:
     competitions: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     certifications: dict[str, dict[str, Any]] = field(default_factory=dict)
     runs: CachedStore | None = None
+    coordinator: Any = None
 
     @classmethod
     def build(
@@ -77,6 +90,7 @@ class ValidatorContext:
         wallet: Any = None,
         hotkey: str = "",
         runs: CachedStore | None = None,
+        coordinator: Any = None,
     ) -> ValidatorContext:
         validate_registry()
         execution.configure(allow_unsandboxed=config.allow_unsandboxed)
@@ -112,6 +126,7 @@ class ValidatorContext:
             competitions=open_competitions,
             certifications=load_policies(config.home),
             runs=runs,
+            coordinator=coordinator,
         )
 
     @property

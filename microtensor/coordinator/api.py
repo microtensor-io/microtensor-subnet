@@ -109,10 +109,13 @@ class Coordinator:
     corpus_version: str = ""
     engine_version: str = ""
     catalogue: dict[str, Entry] = None  # type: ignore[assignment]
+    coldkeys: dict[str, str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if not self.catalogue:
             self.catalogue = {}
+        if not self.coldkeys:
+            self.coldkeys = {}
 
     # ------------------------------------------------------------------ read
 
@@ -132,10 +135,23 @@ class Coordinator:
         }
 
     def assignment(self, hotkey: str) -> dict[str, Any]:
+        """This worker's share of the round, or no document at all.
+
+        The `systems` key is present only when the round has actually been
+        assigned. Returning an empty list before `mt coordinator assign` has run
+        would tell every worker it was legitimately idle, so nobody would
+        measure, quorum would never be reached, and the whole fleet would abstain
+        while logging that everything was fine. Absence of the key is how a
+        worker tells "you have nothing to do" from "there is nothing to do yet".
+        """
         row = self.store.latest_round()
         if row is None:
-            return {"round": None, "systems": []}
+            return {"round": None}
+
         index = int(row["round_index"])
+        if self.store.expected_reports(index) == 0:
+            return {"round": index}
+
         return {
             "round": index,
             "systems": self.store.assignment_for(index, hotkey),
@@ -209,7 +225,8 @@ class Coordinator:
             return existing
 
         by_system = self.store.reports_by_system(round_index)
-        result = intake(by_system, advisory=self.store.advisory())
+        advisory = self.store.advisory()
+        result = intake(by_system, advisory=advisory)
 
         self.store.record_divergences(round_index, result.divergences)
         self._update_reputation(round_index, result)
@@ -227,6 +244,9 @@ class Coordinator:
             report_digests=self.store.report_digests(round_index),
             unscored=result.unscored,
             under_replicated=under_replicated(assignment),
+            advisory=advisory,
+            coldkeys=self.coldkeys,
+            previous=self._previous_weights(round_index),
         )
         self.store.publish(settlement)
         log.info(
@@ -237,6 +257,19 @@ class Coordinator:
             len(result.divergences),
         )
         return self.store.settlement(round_index)
+
+    def _previous_weights(self, round_index: int) -> dict[str, float]:
+        """The last published blend, so the EMA has something to smooth against.
+
+        Taken from the coordinator's own previous settlement rather than from
+        any worker's local history, because every worker adopts this vector and
+        they must all smooth against the same prior.
+        """
+        for earlier in range(round_index - 1, max(round_index - 8, -1), -1):
+            published = self.store.settlement(earlier)
+            if published:
+                return {str(k): float(v) for k, v in published.get("blended", {}).items()}
+        return {}
 
     def _update_reputation(self, round_index: int, result: Any) -> None:
         diverged = {d.worker_hotkey for d in result.divergences}

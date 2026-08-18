@@ -45,6 +45,7 @@ from microtensor.provenance.record import CachedStore
 from microtensor.provenance.wandb_store import WandbStore
 from microtensor.update.loop import UpdateChecker, UpdateSettings
 from microtensor.validator import loopback
+from microtensor.validator.client import CoordinatorClient
 from microtensor.validator.context import ValidatorConfig, ValidatorContext
 from microtensor.validator.loop import RoundLoop
 from microtensor.validator.round import current_round, run_round
@@ -211,6 +212,8 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
         allow_unsandboxed=args.allow_unsandboxed,
         dry_run=args.dry_run,
         degraded=degraded,
+        coordinator_url=args.coordinator,
+        standalone=args.standalone,
     )
 
     wallet = open_wallet(chain, required=not args.dry_run)
@@ -223,7 +226,18 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
     if hotkey and not snapshot.has_permit(hotkey):
         log.warning("hotkey %s holds no validator permit; weights may be ignored", hotkey)
 
-    return ValidatorContext.build(config, client, wallet=wallet, hotkey=hotkey, runs=runs)
+    coordinator = None
+    if config.coordinated:
+        coordinator = CoordinatorClient(
+            base_url=config.coordinator_url, hotkey=hotkey, wallet=wallet
+        )
+        log.info("taking assignments from the coordinator at %s", config.coordinator_url)
+    elif args.coordinator and args.standalone:
+        log.info("--standalone given, so the configured coordinator is ignored")
+
+    return ValidatorContext.build(
+        config, client, wallet=wallet, hotkey=hotkey, runs=runs, coordinator=coordinator
+    )
 
 
 def _updater(args: argparse.Namespace) -> UpdateChecker | None:

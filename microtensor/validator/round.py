@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from microtensor.chain.rounds import Round, round_for_block
-from microtensor.core.constants import MIN_SCORED_FRACTION, REFERENCE_COST_MS
+from microtensor.chain.weights import quantise_weights
+from microtensor.coordinator.report import Report
+from microtensor.core.constants import (
+    MECHANISM_VERSION,
+    MIN_SCORED_FRACTION,
+    REFERENCE_COST_MS,
+)
 from microtensor.core.protocol import Role
 from microtensor.provenance.record import ProvenanceUnavailable
 from microtensor.scoring import frontier
@@ -19,7 +25,17 @@ from microtensor.validator.ablate import (
     OutputCache,
     contributions,
 )
+from microtensor.validator.client import CoordinatorRefused, SettlementRejected
 from microtensor.validator.context import ValidatorContext
+from microtensor.validator.coordinated import (
+    ROUND_DRIFT,
+    CoordinatorDisagrees,
+    Mode,
+    adopt_settlement,
+    emit_reports,
+    plan_round,
+    to_report,
+)
 from microtensor.validator.discover import Participant, Roster, discover
 from microtensor.validator.evaluate import Abstain, evaluate_competition, require_engines
 from microtensor.validator.settle import Settlement, settle
@@ -124,6 +140,24 @@ def _no_executor(
     return None
 
 
+def adopted(round_index: int, weights: dict[int, float]) -> Settlement:
+    """Wrap the coordinator's canonical weights as this round's settlement.
+
+    The vector is taken whole. A worker never merges the canonical weights with
+    its own allocation: it measured a subset, so a merge would produce a vector
+    that is neither the network's answer nor its own, and no other validator
+    would submit the same thing.
+    """
+    return Settlement(
+        round_index=round_index,
+        per_competition={},
+        combined={},
+        capped={},
+        blended={},
+        vector=quantise_weights(weights),
+    )
+
+
 def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
     started = time.monotonic()
     snapshot = context.client.snapshot(refresh=True)
@@ -140,6 +174,32 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
             participants=len(roster) if roster else 0,
             elapsed_seconds=time.monotonic() - started,
         )
+
+    try:
+        plan = plan_round(context.coordinator)
+    except SettlementRejected as exc:
+        return abstain(
+            f"the coordinator's competition config is not the one anchored on chain, "
+            f"so this round was not measured: {exc}"
+        )
+    except CoordinatorRefused as exc:
+        # Answered, and said no. Falling back would hide a misconfiguration
+        # behind a round that looks like it worked.
+        return abstain(f"the coordinator refused this validator: {exc}")
+    except CoordinatorDisagrees as exc:
+        return abstain(f"{ROUND_DRIFT}: {exc}")
+
+    if plan.coordinated and plan.round_index != round_.index:
+        return abstain(
+            f"the coordinator is on round {plan.round_index} but this validator derived "
+            f"{round_.index} from the chain; measuring across that gap would file reports "
+            f"against one round and weights against another"
+        )
+
+    if plan.mode is Mode.IDLE:
+        log.info("round %d: %s", round_.index, plan.reason)
+    elif plan.mode is Mode.STANDALONE and plan.reason:
+        log.warning("round %d: %s", round_.index, plan.reason)
 
     try:
         require_engines()
@@ -164,8 +224,15 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
 
     scored = 0
     expected = 0
+    reports: list[Report] = []
+    assigned = set(plan.systems) if plan.mode is Mode.COORDINATED else None
+
     for track, hardware_class in context.competitions:
         participants = roster.for_competition(track, hardware_class)
+        if assigned is not None:
+            participants = tuple(
+                p for p in participants if p.manifest.system_digest in assigned
+            )
         if not participants:
             continue
         expected += len(participants)
@@ -181,9 +248,26 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
             result = evaluate_competition(context, participants, tasks)
         except Abstain as exc:
             return abstain(str(exc), roster)
-        scored += len(result)
+        scored += sum(1 for e in result.evaluations if e.measured is not None)
 
         price_components(context, round_.index, track, hardware_class, participants)
+
+        if plan.mode is Mode.COORDINATED:
+            reports.extend(
+                to_report(
+                    evaluation,
+                    round_index=plan.round_index,
+                    worker_hotkey=context.hotkey,
+                    system_digest=digest,
+                    engine_version=MECHANISM_VERSION,
+                    corpus_version=context.config.corpus_version,
+                )
+                for evaluation, digest in zip(
+                    result.evaluations,
+                    [p.manifest.system_digest for p in participants],
+                    strict=True,
+                )
+            )
 
     if expected and scored / expected < MIN_SCORED_FRACTION:
         return abstain(
@@ -192,7 +276,33 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
             roster,
         )
 
-    settlement = settle(context, round_.index, snapshot)
+    if plan.mode is Mode.COORDINATED:
+        sent, failure = emit_reports(context.coordinator, reports, wallet=context.wallet)
+        if failure:
+            return abstain(
+                f"this validator measured {len(reports)} systems but only {sent} reports "
+                f"reached the coordinator, so it did not help produce the settlement it "
+                f"would be endorsing: {failure}",
+                roster,
+            )
+        log.info("round %d: %d reports sent to the coordinator", plan.round_index, sent)
+
+    if plan.coordinated:
+        weights, why = adopt_settlement(
+            context.coordinator, plan.round_index, uid_by_hotkey=snapshot.uid_by_hotkey
+        )
+        if weights is None:
+            return abstain(f"the canonical settlement was not adopted: {why}", roster)
+        if not weights:
+            # An empty canonical vector is not "nothing was eligible yet"; it is
+            # the coordinator settling nothing at all, and adopting it would
+            # publish silence while recording the round as settled.
+            return abstain(
+                "the coordinator published a settlement with no weights in it", roster
+            )
+        settlement = adopted(round_.index, weights)
+    else:
+        settlement = settle(context, round_.index, snapshot)
 
     if settlement.is_empty:
         reason = "evaluated cleanly, but no artifact is eligible for emission yet"

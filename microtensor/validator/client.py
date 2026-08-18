@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,7 +19,7 @@ from microtensor.coordinator.api import (
 from microtensor.coordinator.collect import intake
 from microtensor.coordinator.config import MISMATCH, config_hash, matches
 from microtensor.coordinator.report import Report
-from microtensor.coordinator.settle import Entry, merkle_root
+from microtensor.coordinator.settle import Entry, catalogue_from, merkle_root
 from microtensor.coordinator.settle import build as build_settlement
 from microtensor.core.constants import (
     COORDINATOR_BACKOFF_SECONDS,
@@ -39,6 +40,16 @@ class CoordinatorUnreachable(RuntimeError):
     Not fatal. A worker that cannot reach the coordinator settles standalone
     rather than halting, because a coordinator outage must not stop the subnet
     from setting weights.
+    """
+
+
+class CoordinatorRefused(RuntimeError):
+    """The coordinator answered and said no.
+
+    Kept apart from CoordinatorUnreachable because the right response differs. A
+    transport failure falls back to standalone so the subnet keeps setting
+    weights. A refusal means this worker is misconfigured or unauthorised, and
+    quietly settling standalone would hide that behind a working-looking round.
     """
 
 
@@ -96,7 +107,20 @@ class CoordinatorClient:
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
                     return None
-                raise
+                if exc.code in (401, 403):
+                    raise CoordinatorRefused(
+                        f"{url} refused this hotkey ({exc.code}); check the worker is "
+                        f"registered and its clock is correct"
+                    ) from exc
+                if exc.code == 429 or exc.code >= 500:
+                    last = exc
+                    if attempt + 1 < self.retries:
+                        time.sleep(self.backoff * (2**attempt))
+                        continue
+                    raise CoordinatorUnreachable(
+                        f"{url} returned {exc.code} after {self.retries} attempts"
+                    ) from exc
+                raise CoordinatorRefused(f"{url} returned {exc.code}: {exc}") from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last = exc
                 if attempt + 1 < self.retries:
@@ -109,9 +133,24 @@ class CoordinatorClient:
     def current_round(self) -> dict[str, Any]:
         return self._call("GET", "/v1/round/current") or {}
 
-    def assignment(self) -> tuple[str, ...]:
-        found = self._call("GET", f"/v1/assignment/{self.hotkey}") or {}
-        return tuple(s["system_digest"] for s in found.get("systems", []))
+    def assignment(self) -> tuple[int | None, tuple[str, ...] | None]:
+        """The round and the systems this worker measures.
+
+        The systems are None when there is no assignment document at all. None
+        and () mean different things and must not be collapsed: () is the
+        coordinator telling us we have nothing to do this round, None is the
+        endpoint having nothing for us, which is a fault rather than an idle
+        round. The round travels with it so a coordinator that has moved on can
+        be detected instead of measured against.
+        """
+        found = self._call("GET", f"/v1/assignment/{self.hotkey}")
+        if found is None or "systems" not in found:
+            return None, None
+        round_index = found.get("round")
+        return (
+            None if round_index is None else int(round_index),
+            tuple(s["system_digest"] for s in found["systems"]),
+        )
 
     def submit(self, report: Report) -> dict[str, Any]:
         body = report.body()
@@ -140,17 +179,54 @@ def verify_config(served: dict[str, Any], anchored: str) -> None:
         )
 
 
+UID_MISMATCH = "the settlement names a uid the metagraph does not give that hotkey"
+UNKNOWN_HOTKEY = "the settlement names a hotkey absent from the metagraph"
+
+
+def cross_check(published: dict[str, Any], uid_by_hotkey: Mapping[str, int]) -> None:
+    """Check the settlement's own inputs against the chain.
+
+    Recomputation alone proves the weights follow from the published inputs. It
+    does not prove the inputs are honest, and the coordinator supplies them. The
+    part a worker can check independently is identity: every entry names a
+    hotkey the metagraph knows, at the uid the metagraph gives it. A coordinator
+    cannot redirect emission to a uid of its choosing without failing this.
+    """
+    for row in published.get("catalogue", []):
+        hotkey = str(row.get("miner", ""))
+        if hotkey not in uid_by_hotkey:
+            raise SettlementRejected(f"{UNKNOWN_HOTKEY}: {hotkey}")
+        if int(row.get("uid", -1)) != uid_by_hotkey[hotkey]:
+            raise SettlementRejected(
+                f"{UID_MISMATCH}: {hotkey} is uid {uid_by_hotkey[hotkey]}, "
+                f"settlement says {row.get('uid')}"
+            )
+
+
 def verify_settlement(
     published: dict[str, Any],
     reports: list[dict[str, Any]],
-    catalogue: dict[str, Entry],
+    catalogue: dict[str, Entry] | None = None,
 ) -> None:
     """Recompute the settlement from the published reports and compare.
 
     Step 7 of the worker round, and it is not optional. Without it the worker
     is relaying a number it never checked, and a compromised coordinator
     publishing a false settlement would be caught by nobody.
+
+    The catalogue defaults to the one the settlement publishes, because a worker
+    measured only its assigned subset and its local `rounds_observed` differs
+    from its peers' for honest reasons. Pair this with `cross_check` to test the
+    published inputs against the metagraph.
+
+    Reconciliation uses the advisory set the settlement declares. That set is
+    reputation state only the coordinator holds, and excluding a worker changes
+    which value wins a majority, so recomputing without it would disagree with
+    an honest settlement the moment any worker was advisory.
     """
+    if catalogue is None:
+        catalogue = catalogue_from(published.get("catalogue", []))
+
     parsed = [Report.from_dict(r) for r in reports]
 
     root = merkle_root([r.digest() for r in parsed])
@@ -163,7 +239,7 @@ def verify_settlement(
     for report in parsed:
         by_system.setdefault(report.system_digest, []).append(report)
 
-    result = intake(by_system)
+    result = intake(by_system, advisory=published.get("advisory", ()))
     recomputed = build_settlement(
         int(published["round"]),
         config_hash=str(published.get("config_hash", "")),
