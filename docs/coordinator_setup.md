@@ -129,7 +129,7 @@ derived from the close-block seed against each worker's local corpus, unchanged.
 `mt coordinator assign` remains, for replaying an assignment from files:
 
 ```bash
-mt coordinator assign --round 41 --seed <seed>   --systems systems.json --workers workers.json
+mt coordinator assign --round 41 --seed <seed> \n  --systems systems.json --workers workers.json
 ```
 
 ### An unassigned round is not an idle one
