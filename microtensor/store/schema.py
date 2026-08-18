@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 2
+SCHEMA_VERSION: Final[int] = 3
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -109,6 +109,29 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
             """,
             """
             ALTER TABLE evaluations ADD COLUMN system_digest TEXT NOT NULL DEFAULT ''
+            """,
+        ),
+    ),
+    (
+        3,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS contributions (
+                round_index     INTEGER NOT NULL,
+                hotkey          TEXT    NOT NULL,
+                track           TEXT    NOT NULL,
+                hardware_class  TEXT    NOT NULL,
+                role            TEXT    NOT NULL,
+                baseline_digest TEXT    NOT NULL DEFAULT '',
+                value           INTEGER,
+                share           REAL,
+                reason          TEXT    NOT NULL DEFAULT '',
+                PRIMARY KEY (round_index, hotkey, role)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS contributions_by_round
+                ON contributions (round_index, track, hardware_class)
             """,
         ),
     ),

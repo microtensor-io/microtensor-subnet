@@ -21,6 +21,7 @@ COUNT_QUERIES: Final[dict[str, str]] = {
     "evaluations": "SELECT COUNT(*) AS n FROM evaluations",
     "holders": "SELECT COUNT(*) AS n FROM holders",
     "weights": "SELECT COUNT(*) AS n FROM weights",
+    "contributions": "SELECT COUNT(*) AS n FROM contributions",
 }
 
 
@@ -40,6 +41,75 @@ class ValidatorState:
 
     def close(self) -> None:
         self.db.close()
+
+    def record_contributions(
+        self,
+        round_index: int,
+        track: str,
+        hardware_class: str,
+        priced: Mapping[str, Sequence[Any]],
+    ) -> None:
+        """Persist the role-baseline split, nulls included.
+
+        A null value is a record that the network could not measure this
+        component, which is worth keeping: it is the evidence that a baseline
+        is still unpublished, and it must never be read back as a zero.
+        """
+        rows = [
+            (
+                round_index,
+                hotkey,
+                track,
+                hardware_class,
+                c.role.value,
+                c.artifact_digest,
+                c.value,
+                c.share,
+                c.reason,
+            )
+            for hotkey, split in priced.items()
+            for c in split
+        ]
+        if not rows:
+            return
+
+        self.db.executemany(
+            """
+            INSERT INTO contributions (
+                round_index, hotkey, track, hardware_class,
+                role, baseline_digest, value, share, reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index, hotkey, role) DO UPDATE SET
+                baseline_digest = excluded.baseline_digest,
+                value = excluded.value,
+                share = excluded.share,
+                reason = excluded.reason
+            """,
+            rows,
+        )
+
+    def contributions(self, round_index: int, hotkey: str) -> tuple[dict[str, Any], ...]:
+        rows = self.db.query(
+            """
+            SELECT role, baseline_digest, value, share, reason
+            FROM contributions
+            WHERE round_index = ? AND hotkey = ?
+            ORDER BY role
+            """,
+            (round_index, hotkey),
+        )
+        return tuple(
+            {
+                "role": row["role"],
+                "artifact_digest": row["baseline_digest"],
+                "value": row["value"],
+                "share": row["share"],
+                "reason": row["reason"],
+            }
+            for row in rows
+        )
+
 
     def __enter__(self) -> ValidatorState:
         return self
