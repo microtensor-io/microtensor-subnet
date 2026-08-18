@@ -204,12 +204,17 @@ mt validator loopback --rounds 3 --miners 4
 ```
    round  status      participants  scored  weights  reason
        3  settled                4       4        0  evaluated cleanly, but no artifact is eligible for emission yet
-       4  settled                4       4        4
-       5  settled                4       4        4
+       4  settled                4       4        1
+       5  settled                4       4        1
 
 weight vectors submitted: 2
-  uids [1, 2, 3, 4]  values [20565, 17481, 14859, 12630]  sum 65535
+  uids [1]  values [65535]  sum 65535
 ```
+
+One uid taking the whole vector is also correct here: the fake miners are
+clones, so they measure the same quality at the same cost, fall inside one
+epsilon neighbourhood, and collapse to the earliest commitment. Real
+submissions differ and spread along the frontier.
 
 Round 3 paying nobody is correct: an artifact must be observed for
 `MIN_ROUNDS_OBSERVED` rounds before it can earn. The values are the geometric
