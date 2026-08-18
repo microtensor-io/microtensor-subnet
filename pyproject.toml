@@ -90,8 +90,17 @@ module = [
     "psutil.*",
     "numpy.*",
     "wandb.*",
+    "fastapi.*",
+    "uvicorn.*",
 ]
 ignore_missing_imports = true
+
+# The HTTP layer is thin and every route is a one-line call onto Coordinator,
+# which is checked strictly. FastAPI's decorators carry no stubs, so requiring
+# typed handlers here would only add annotations mypy cannot verify anyway.
+[[tool.mypy.overrides]]
+module = ["microtensor.coordinator.api"]
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

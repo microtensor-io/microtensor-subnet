@@ -264,14 +264,14 @@ def build_app(coordinator: Coordinator) -> Any:
     app = FastAPI(title="Microtensor coordinator", version="1")
 
     def authenticate(request: Request, body: bytes) -> str:
-        hotkey = request.headers.get(HOTKEY_HEADER, "")
+        hotkey = str(request.headers.get(HOTKEY_HEADER, ""))
         try:
             verify_request(
                 method=request.method,
                 path=request.url.path,
                 hotkey=hotkey,
-                timestamp=request.headers.get(TIMESTAMP_HEADER, ""),
-                signature=request.headers.get(SIGNATURE_HEADER, ""),
+                timestamp=str(request.headers.get(TIMESTAMP_HEADER, "")),
+                signature=str(request.headers.get(SIGNATURE_HEADER, "")),
                 body=body,
                 registry=coordinator.registry,
             )
