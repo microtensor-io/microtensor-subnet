@@ -17,8 +17,8 @@ services:
       MT_SERVER_CREDENTIAL: ${MT_SERVER_CREDENTIAL:-}
     volumes:
       - coordinator-state:/var/lib/microtensor
-      - ${HOME}/.bittensor/wallets:/root/.bittensor/wallets:ro
-      - ${HOME}/.bittensor/wallets:/home/ubuntu/.bittensor/wallets:ro
+      - ${MT_WALLET_PATH:-${HOME}}/.bittensor/wallets:/root/.bittensor/wallets:ro
+      - ${MT_WALLET_PATH:-${HOME}}/.bittensor/wallets:/home/ubuntu/.bittensor/wallets:ro
     ports:
       - "127.0.0.1:8443:8443"
     command: ["serve", "--host", "0.0.0.0", "--port", "8443"]
