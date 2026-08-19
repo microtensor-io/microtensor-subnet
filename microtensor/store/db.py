@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,7 +34,10 @@ class Database:
         self._schema_version = schema_version
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path), isolation_level=None)
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(
+            str(self.path), isolation_level=None, check_same_thread=False
+        )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -66,26 +70,31 @@ class Database:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            yield self._conn
-        except BaseException:
-            self._conn.execute("ROLLBACK")
-            raise
-        self._conn.execute("COMMIT")
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
-        return self._conn.execute(sql, tuple(params))
+        with self._lock:
+            return self._conn.execute(sql, tuple(params))
 
     def executemany(self, sql: str, rows: Sequence[Sequence[Any]]) -> sqlite3.Cursor:
-        return self._conn.executemany(sql, [tuple(r) for r in rows])
+        with self._lock:
+            return self._conn.executemany(sql, [tuple(r) for r in rows])
 
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
-        return list(self._conn.execute(sql, tuple(params)).fetchall())
+        with self._lock:
+            return list(self._conn.execute(sql, tuple(params)).fetchall())
 
     def one(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Row | None:
-        row: sqlite3.Row | None = self._conn.execute(sql, tuple(params)).fetchone()
-        return row
+        with self._lock:
+            row: sqlite3.Row | None = self._conn.execute(sql, tuple(params)).fetchone()
+            return row
 
     def close(self) -> None:
         self._conn.close()
