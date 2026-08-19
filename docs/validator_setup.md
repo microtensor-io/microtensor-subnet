@@ -1,13 +1,5 @@
 # Running a Microtensor validator
 
-> **Network status.** The subnet is in bring-up. The coordinator and the control
-> plane are live and accepting worker registrations, but **no round is open
-> yet** and the launch config is not published, so a validator that starts today
-> registers, connects and idles. That is the expected state. Rounds open once
-> the launch gates close: the conformance profile and certification band for
-> `mt-3g`, and the three role baselines. Until then emission is held at a
-> reserved key rather than distributed over an unmeasured field.
-
 A validator does the measurement in this subnet. It reads commitments, fetches
 artifacts, measures each one's deployment envelope on certified hardware,
 executes it against a chain-seeded task set inside a resource jail, and
@@ -16,9 +8,6 @@ publishes one weight vector per round.
 It can run either way: standalone, measuring every submission and settling on
 its own, or as a worker under the coordinator, measuring an assigned subset and
 adopting a settlement it recomputes for itself. Section 3 covers the choice.
-
-Miners run none of this. If you are here to submit a model, read
-[miner_setup.md](miner_setup.md) instead. The two roles share almost no surface.
 
 ---
 
@@ -163,8 +152,7 @@ Two things worth knowing before you ask:
 
 - Your registration is not automatically an authorisation to measure. The
   operator admits workers, and an unadmitted hotkey is registered and idle.
-- Nothing is measured until a round opens. See the status note at the top of
-  this document for where the network currently is.
+- Nothing is measured until a round opens.
 
 ---
 
