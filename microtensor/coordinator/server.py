@@ -24,14 +24,12 @@ FELL_BACK = (
     "the schedule is the chain's until it returns"
 )
 
-
 class ServerUnreachable(RuntimeError):
     """The control plane did not answer.
 
     Never fatal. The subnet has to keep running with the server down, so every
     caller of this falls back to chain rather than stopping.
     """
-
 
 class ServerRefused(RuntimeError):
     """The control plane answered and said no.
@@ -40,7 +38,6 @@ class ServerRefused(RuntimeError):
     ingest credential is wrong or revoked, and quietly carrying on would hide
     that behind a round that looks normal.
     """
-
 
 @dataclass(slots=True)
 class ServerClient:
@@ -125,7 +122,6 @@ class ServerClient:
             {"round_index": round_index, "assignment": {k: list(v) for k, v in assignment.items()}},
         ) or {}
 
-
 @dataclass(slots=True)
 class ServerSource:
     """The round comes from the server; the participants still come from chain.
@@ -173,10 +169,6 @@ class ServerSource:
         published = int(current["round"])
 
         if published != derived.index:
-            # Both sides compute the round from block height, so a disagreement
-            # means one of them is on a different chain or a different genesis.
-            # Measuring under that produces a settlement for a round the other
-            # side has never heard of.
             raise ServerRefused(
                 f"the control plane is on round {published} but this chain gives "
                 f"{derived.index}; refusing to measure across that gap"
@@ -228,7 +220,6 @@ class ServerSource:
                 len(permitted),
             )
         return kept
-
 
 def publish_round(
     client: ServerClient,

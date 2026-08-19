@@ -1,5 +1,4 @@
 services:
-  # Microtensor is netuid 92 on finney.
   validator:
     build:
       context: ..
@@ -24,8 +23,6 @@ services:
       - "900"
       - --profile-seconds
       - "60"
-      # Add --auto-update --signing-key <pubkey> to take signed releases
-      # automatically. Exit 75 asks for a restart; restart:unless-stopped obliges.
     logging:
       driver: json-file
       options:

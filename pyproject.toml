@@ -15,8 +15,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Installed on validators only. Miners never execute another party's artifact,
-# so they need none of the runtime or profiling stack.
 validator = [
     "onnx>=1.16",
     "onnxruntime>=1.18",
@@ -24,18 +22,12 @@ validator = [
     "numpy>=1.26",
     "psutil>=5.9",
 ]
-# The coordinator. Deliberately excludes the measurement stack: no
-# onnxruntime, no profiler, no jail. A coordinator host that cannot import the
-# harness is one that cannot be quietly repurposed into a worker.
 coordinator = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
 ]
-# Fetch backends. Pick the one your source scheme needs.
 huggingface = ["huggingface-hub>=0.24"]
 s3 = ["boto3>=1.34"]
-# Training-run provenance. Validators need it to read the run store; miners
-# need it to log a run at all.
 provenance = ["wandb>=0.17"]
 dev = [
     "pytest>=8.0",
@@ -74,8 +66,6 @@ strict = true
 warn_unreachable = true
 disallow_untyped_defs = true
 
-# Third-party packages that ship no stubs and no py.typed marker. The boundary
-# to each of these is narrow and wrapped in our own typed functions.
 [[tool.mypy.overrides]]
 module = [
     "bittensor.*",
@@ -95,9 +85,6 @@ module = [
 ]
 ignore_missing_imports = true
 
-# The HTTP layer is thin and every route is a one-line call onto Coordinator,
-# which is checked strictly. FastAPI's decorators carry no stubs, so requiring
-# typed handlers here would only add annotations mypy cannot verify anyway.
 [[tool.mypy.overrides]]
 module = ["microtensor.coordinator.api"]
 disallow_untyped_decorators = false

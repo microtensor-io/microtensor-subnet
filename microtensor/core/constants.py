@@ -54,8 +54,6 @@ COORDINATOR_RETRIES: Final[int] = 4
 COORDINATOR_BACKOFF_SECONDS: Final[float] = 5.0
 COORDINATOR_TIMEOUT_SECONDS: Final[int] = 30
 COORDINATOR_URL: Final[str] = ""
-# The control plane. Empty means the coordinator derives everything from
-# chain, which is the standalone posture and has to keep working.
 COORDINATOR_SERVER_URL: Final[str] = ""
 COORDINATOR_PORT: Final[int] = 8443
 REPORT_MAX_BYTES: Final[int] = 256 * 1024

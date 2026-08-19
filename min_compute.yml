@@ -1,9 +1,6 @@
 version: "0.1.0"
 netuid: 92
 
-# Miner hardware is guidance, not policy. The subnet never sees a miner's
-# machine: miners upload an artifact and commit a pointer, so nothing here is
-# verifiable or enforced. It is what the work realistically takes.
 miner:
   enforced: false
   rationale: >
@@ -37,7 +34,6 @@ miner:
       - name: "bitsandbytes"
         why: "4-bit and 8-bit quantisation"
 
-  # Running the subnet CLI only. No GPU, no accelerator.
   subnet_tooling:
     cpu_cores: 2
     ram_gb: 4
@@ -45,8 +41,6 @@ miner:
     disk_gb: 50
     note: "mt miner init | package | upload | publish | run"
 
-  # `mt miner selfcheck` loads and runs your artifact locally, so it needs
-  # headroom above the ceiling of whichever class you target.
   selfcheck_ram_gb_by_class:
     mt-16g: 20
     mt-4g: 6
@@ -59,9 +53,6 @@ miner:
       A miner comes online once per round, inside the submission window, long
       enough to send one extrinsic. The rest of the round belongs to training.
 
-# Validator hardware is enforced by the mechanism, not by policy text. Envelope
-# measurements are this subnet's product, and a measurement taken on the wrong
-# device is excluded from aggregation.
 validator:
   enforced: true
 
@@ -93,11 +84,6 @@ validator:
       Runs a neuron continuously, one round every ROUND_BLOCKS. Missing the
       evaluation window means abstaining for that round.
 
-  # Envelope measurement happens on the published reference device for each
-  # class. A validator whose device does not conform may still score accuracy,
-  # which is hardware-independent, but its envelope numbers are excluded.
-  # Certify each device with `mt validator certify <class>`; the declared
-  # thermal and power policy hashes into the device profile.
   reference_bench:
     required: "one device for the launch class, mt-3g"
     classes:

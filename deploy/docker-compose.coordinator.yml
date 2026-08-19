@@ -1,6 +1,3 @@
-# The coordinator runs on its own machine, separate from any worker validator.
-# It fetches no artifact and loads no model, so it needs neither the
-# measurement stack nor a sandbox.
 services:
   coordinator:
     build:
@@ -8,8 +5,6 @@ services:
       dockerfile: deploy/Dockerfile.coordinator
     image: microtensor/coordinator:latest
     container_name: microtensor-coordinator
-    # on-failure, never always: a coordinator that exits on a config-anchor
-    # mismatch or a database fault should stay down and page someone.
     restart: on-failure
     environment:
       MT_ROLE: coordinator
