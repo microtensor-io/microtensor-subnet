@@ -55,27 +55,23 @@ override with `MT_COORDINATOR_URL` and `MT_SERVER_URL`.
 `microtensor/training-runs` bound to its artifact digest, and a validator that
 cannot read that project admits nobody. A read key is enough.
 
-## 4. Add a corpus
+## 4. Corpus
 
-One `<track>.jsonl` per track under `$MT_HOME/corpus`:
+A coordinated validator takes the corpus from the coordinator. You supply
+nothing. Every worker in a round measures the same tasks, and reports carry a
+content digest of what the worker actually holds, so a mismatch is rejected
+rather than folded into the majority as a disagreement.
 
-```
-~/.microtensor/corpus/
-├── code.jsonl
-├── document.jsonl
-├── analytics.jsonl
-└── support.jsonl
-```
-
-One task per line:
+Only a standalone validator supplies its own, one `<track>.jsonl` per track
+under `$MT_HOME/corpus`, one task per line:
 
 ```json
 {"ref": "code-0001", "prompt": "…", "gold": {"cases": [true, true]}, "partition": "rotating", "max_output_tokens": 512}
 ```
 
-`partition` is `rotating` or `fixed`. Every corpus must carry a fixed partition
-or the loader refuses it. Per round the validator draws `⌈0.7·N⌉` rotating tasks
-with the round seed and takes `⌊0.3·N⌋` fixed tasks unchanged.
+`partition` is `rotating` or `fixed`, and every corpus must carry a fixed
+partition. Per round the validator draws `⌈0.7·N⌉` rotating tasks with the round
+seed and takes `⌊0.3·N⌋` fixed tasks unchanged.
 
 ## 5. Certify the host
 
