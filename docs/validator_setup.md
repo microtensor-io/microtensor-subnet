@@ -1,5 +1,13 @@
 # Running a Microtensor validator
 
+> **Network status.** The subnet is in bring-up. The coordinator and the control
+> plane are live and accepting worker registrations, but **no round is open
+> yet** and the launch config is not published, so a validator that starts today
+> registers, connects and idles. That is the expected state. Rounds open once
+> the launch gates close: the conformance profile and certification band for
+> `mt-3g`, and the three role baselines. Until then emission is held at a
+> reserved key rather than distributed over an unmeasured field.
+
 A validator does the measurement in this subnet. It reads commitments, fetches
 artifacts, measures each one's deployment envelope on certified hardware,
 executes it against a chain-seeded task set inside a resource jail, and
@@ -93,8 +101,13 @@ it at the coordinator and it measures only the subset assigned to it, then
 adopts the canonical settlement:
 
 ```bash
-mt validator run --coordinator https://coordinator.microtensor.ai
+mt validator run --coordinator https://coordinator.microtensor.cloud
 ```
+
+The coordinator is live at `https://coordinator.microtensor.cloud` and the
+control plane at `https://api.microtensor.cloud`. Both are the defaults, so
+`MT_COORDINATOR_URL` and `MT_SERVER_URL` only need setting if you are pointing
+somewhere else.
 
 Two things happen automatically and are worth knowing about. The worker
 recomputes the published settlement from the published reports and refuses to
@@ -131,6 +144,27 @@ btcli stake add --netuid 92 --wallet.name <coldkey> --amount <alpha>
 
 You need a validator permit to have weights counted. `mt validator status` warns
 if your hotkey holds none.
+
+### Register as a worker
+
+A coordinated worker registers once with the control plane. The hotkey is taken
+from the signature on the request, never from the body, so you can only ever
+register a hotkey you actually hold.
+
+```bash
+mt validator status --coordinator https://coordinator.microtensor.cloud
+```
+
+Registration happens on the first coordinated run. What it gets you is a
+short-lived token the coordinator verifies offline against a published key, so
+a control plane outage does not lock you out of a round already under way.
+
+Two things worth knowing before you ask:
+
+- Your registration is not automatically an authorisation to measure. The
+  operator admits workers, and an unadmitted hotkey is registered and idle.
+- Nothing is measured until a round opens. See the status note at the top of
+  this document for where the network currently is.
 
 ---
 
@@ -174,6 +208,9 @@ export MT_WALLET_NAME=<coldkey>
 export MT_WALLET_HOTKEY=<hotkey>
 export MT_HOME=~/.microtensor
 export WANDB_API_KEY=<read key>
+
+export MT_COORDINATOR_URL=https://coordinator.microtensor.cloud
+export MT_SERVER_URL=https://api.microtensor.cloud
 ```
 
 `MT_NETUID` defaults to 92, so you do not normally set it. `WANDB_API_KEY` is
