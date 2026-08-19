@@ -15,6 +15,7 @@ services:
       MT_WALLET_PATH: /wallets
       MT_HOME: /var/lib/microtensor
       MT_COORDINATOR_URL: "${MT_COORDINATOR_URL:-https://coordinator.microtensor.cloud}"
+      WANDB_API_KEY: "${WANDB_API_KEY:?set a W&B read key for microtensor/training-runs}"
       MT_SERVER_URL: "${MT_SERVER_URL:-https://api.microtensor.cloud}"
     volumes:
       - state:/var/lib/microtensor
