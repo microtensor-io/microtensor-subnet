@@ -4,8 +4,11 @@ import argparse
 import json
 import logging
 import os
+import time
 from pathlib import Path
+from typing import Any
 
+from microtensor.chain.weights import WeightVector, quantise_weights
 from microtensor.cli.common import add_chain_arguments, add_common_arguments, fail
 from microtensor.coordinator.api import Coordinator, Registry
 from microtensor.coordinator.assign import System, Worker, assign, by_worker, under_replicated
@@ -18,7 +21,7 @@ from microtensor.coordinator.server import (
     ServerUnreachable,
     publish_round,
 )
-from microtensor.coordinator.settle import Settlement
+from microtensor.coordinator.settle import Settlement, apply_reserved, normalise_reserved
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.coordinator.tokens import KeyRing
 from microtensor.core.constants import (
@@ -26,6 +29,7 @@ from microtensor.core.constants import (
     COORDINATOR_REPLICATION,
     COORDINATOR_SERVER_URL,
     CORPUS_VERSION,
+    WEIGHT_INTERVAL_SECONDS,
 )
 from microtensor.core.role import COORDINATOR, RoleConflict, claim, require
 
@@ -73,6 +77,28 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     settle.add_argument("--round", type=int, required=True)
     _add_server_arguments(settle)
     settle.set_defaults(handler=_settle)
+
+    weights = inner.add_parser(
+        "weights", help="set weights from the reserved hold, with or without a round"
+    )
+    add_common_arguments(weights)
+    add_chain_arguments(weights)
+    _add_server_arguments(weights)
+    weights.add_argument(
+        "--loop",
+        action="store_true",
+        help="keep setting weights on an interval instead of returning after one",
+    )
+    weights.add_argument(
+        "--interval",
+        type=int,
+        default=WEIGHT_INTERVAL_SECONDS,
+        help="seconds between attempts when looping",
+    )
+    weights.add_argument(
+        "--dry-run", action="store_true", help="print the vector instead of submitting it"
+    )
+    weights.set_defaults(handler=_weights)
 
     cfg = inner.add_parser("config", help="print the served config and its hash")
     add_common_arguments(cfg)
@@ -257,6 +283,88 @@ def _open(args: argparse.Namespace) -> int:
     print("Commit the config hash on chain before workers measure against it:")
     print(f"  {_config_hash_for(source)}")
     return 0
+
+
+def _measured_weights(store: CoordinatorStore) -> dict[int, float]:
+    """The most recent settled vector, or nothing.
+
+    Nothing is the honest answer before the first round settles. It is not the
+    same as every miner scoring zero, and treating it as such would publish a
+    ranking over a field that was never measured.
+    """
+    row = store.latest_round()
+    if row is None:
+        return {}
+    published = store.settlement(int(row["round_index"])) or {}
+    return {int(uid): float(value) for uid, value in published.get("weights", {}).items()}
+
+
+def _weight_vector(
+    store: CoordinatorStore, held: dict[str, Any], uid_by_hotkey: dict[str, int]
+) -> WeightVector:
+    measured = _measured_weights(store)
+    resolved = {}
+    if held:
+        uid = uid_by_hotkey.get(str(held.get("hotkey", "")))
+        if uid is None:
+            log.warning(
+                "%s holds %.2f%% but is not on this metagraph; ignoring the hold",
+                held.get("hotkey"),
+                float(held.get("share", 0.0)) * 100,
+            )
+        else:
+            resolved = {"hotkey": str(held["hotkey"]), "uid": uid, "share": float(held["share"])}
+
+    return quantise_weights(apply_reserved(measured, normalise_reserved(resolved)))
+
+
+def _weights(args: argparse.Namespace) -> int:
+    """Set weights from the reserved hold, whether or not a round has run.
+
+    A hold is an instruction rather than a measurement, so it does not wait on
+    quorum, a catalogue or a settled round. Those gate the miner ranking, which
+    is a different question: what the measured field earned. When both exist the
+    hold takes its share off the top and the measured vector divides the rest.
+    """
+    from microtensor.cli.common import chain_config, open_client, open_wallet
+
+    chain = chain_config(args)
+    wallet = open_wallet(chain, required=True)
+    client = open_client(chain, wallet)
+    server = _server(args)
+    if server is None:
+        return fail("no control plane is configured, so there is no hold to read")
+
+    while True:
+        try:
+            held = server.reserved()
+        except (ServerUnreachable, ServerRefused) as exc:
+            log.warning("the hold could not be read (%s); setting nothing this pass", exc)
+            held = {}
+
+        if held.get("paused"):
+            log.info("emission is paused at the control plane; setting nothing")
+            vector = WeightVector((), ())
+        else:
+            with _store(args) as store:
+                uids = dict(client.snapshot(refresh=True).uid_by_hotkey)
+                vector = _weight_vector(store, held, uids)
+
+        if vector.is_empty:
+            log.info("nothing to set: no hold resolved and no round has settled")
+        elif args.dry_run:
+            pairs = dict(zip(vector.uids, vector.values, strict=True))
+            print(f"would set {len(vector.uids)} weights: {pairs}")
+        else:
+            ok, reason = client.set_weights(vector)
+            if ok:
+                log.info("set %d weights totalling %d", len(vector.uids), vector.total)
+            else:
+                log.error("weights rejected: %s", reason)
+
+        if not args.loop:
+            return 0
+        time.sleep(args.interval)
 
 
 def _config_hash_for(source: RoundSource) -> str:
