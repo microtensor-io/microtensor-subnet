@@ -3,16 +3,27 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 
 from microtensor.cli.common import add_chain_arguments, add_common_arguments, fail
 from microtensor.coordinator.api import Coordinator, Registry
 from microtensor.coordinator.assign import System, Worker, assign, by_worker, under_replicated
+from microtensor.coordinator.chain import ChainSource, RoundSource
 from microtensor.coordinator.config import config_hash, served_config
+from microtensor.coordinator.server import (
+    ServerClient,
+    ServerRefused,
+    ServerSource,
+    ServerUnreachable,
+    publish_round,
+)
+from microtensor.coordinator.settle import Settlement
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.core.constants import (
     COORDINATOR_PORT,
     COORDINATOR_REPLICATION,
+    COORDINATOR_SERVER_URL,
     CORPUS_VERSION,
 )
 from microtensor.core.role import COORDINATOR, RoleConflict, claim, require
@@ -43,6 +54,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_common_arguments(opened)
     add_chain_arguments(opened)
     opened.add_argument("--replication", type=int, default=COORDINATOR_REPLICATION)
+    _add_server_arguments(opened)
     opened.set_defaults(handler=_open)
 
     plan = inner.add_parser("assign", help="compute and store this round's assignment")
@@ -57,6 +69,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     settle = inner.add_parser("settle", help="reconcile and publish a round")
     add_common_arguments(settle)
     settle.add_argument("--round", type=int, required=True)
+    _add_server_arguments(settle)
     settle.set_defaults(handler=_settle)
 
     cfg = inner.add_parser("config", help="print the served config and its hash")
@@ -150,16 +163,55 @@ def _assign(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_server_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--server",
+        default=os.environ.get("MT_SERVER_URL", COORDINATOR_SERVER_URL),
+        help="control plane base URL; without one the coordinator reads chain alone",
+    )
+    parser.add_argument(
+        "--server-credential",
+        default=os.environ.get("MT_SERVER_CREDENTIAL", ""),
+        help="ingest credential issued by the control plane",
+    )
+    parser.add_argument(
+        "--no-server",
+        action="store_true",
+        help="ignore a configured control plane and derive everything from chain",
+    )
+
+
+def _server(args: argparse.Namespace) -> ServerClient | None:
+    """The control plane client, when one is configured and not suppressed.
+
+    `--no-server` wins over a configured URL so a fully chain-driven round is
+    always reachable by flag rather than only by the server being down.
+    """
+    url = getattr(args, "server", "") or ""
+    if not url or getattr(args, "no_server", False):
+        return None
+    return ServerClient(
+        base_url=url, credential=getattr(args, "server_credential", "") or ""
+    )
+
+
 def _open(args: argparse.Namespace) -> int:
     from microtensor.cli.common import chain_config, open_client, open_wallet
-    from microtensor.coordinator.chain import ChainSource, observed
+    from microtensor.coordinator.chain import observed
 
     chain = chain_config(args)
     wallet = open_wallet(chain, required=False)
     client = open_client(chain, wallet)
-    source = ChainSource(client=client)
+    server = _server(args)
+    source: RoundSource = ChainSource(client=client)
+    if server is not None:
+        source = ServerSource(chain=ChainSource(client=client), client=server)
+        log.info("taking the round from the control plane at %s", args.server)
 
-    round_ = source.open_round()
+    try:
+        round_ = source.open_round()
+    except ServerRefused as exc:
+        return fail(str(exc))
     systems, catalogue = source.systems(round_)
     workers = source.workers()
     seed = source.seed(round_)
@@ -178,7 +230,7 @@ def _open(args: argparse.Namespace) -> int:
             seed_block=round_.seed_block,
             close_block=round_.close_block,
             block_hash=seed,
-            config_hash=config_hash(served_config(CORPUS_VERSION)),
+            config_hash=_config_hash_for(source),
         )
         store.record_assignment(
             round_.index,
@@ -197,9 +249,26 @@ def _open(args: argparse.Namespace) -> int:
     if thin:
         print(f"  under-replicated: {len(thin)}")
     print()
+    if server is not None:
+        try:
+            server.push_assignments(round_.index, mapping)
+        except (ServerUnreachable, ServerRefused) as exc:
+            log.warning("the assignment map was not mirrored to the control plane: %s", exc)
+
     print("Commit the config hash on chain before workers measure against it:")
-    print(f"  {config_hash(served_config(CORPUS_VERSION))}")
+    print(f"  {_config_hash_for(source)}")
     return 0
+
+
+def _config_hash_for(source: RoundSource) -> str:
+    """The hash workers will verify against.
+
+    The control plane's when it published one, because that is the document it
+    is serving to workers; the locally derived one otherwise. Anchoring a hash
+    nobody is serving would make the anchor unverifiable.
+    """
+    published = getattr(source, "config_hash", "")
+    return str(published) if published else config_hash(served_config(CORPUS_VERSION))
 
 
 def _settle(args: argparse.Namespace) -> int:
@@ -215,8 +284,47 @@ def _settle(args: argparse.Namespace) -> int:
     if published is None:
         return fail(f"round {args.round} has not reached quorum yet")
 
+    server = _server(args)
+    if server is not None:
+        with _store(args) as store:
+            reports = store.reports_payload(args.round)
+            assignment = store.full_assignment(args.round)
+            settlement = _settlement_of(store, args.round)
+        try:
+            stored = publish_round(
+                server, settlement, reports=reports, assignment=assignment
+            )
+            print(
+                f"archived on the control plane: {stored['reports']} reports, "
+                f"{stored['assignments']} assignments"
+            )
+        except (ServerUnreachable, ServerRefused) as exc:
+            log.error(
+                "the settlement was computed and set on chain but not archived: %s. "
+                "The reports are still local; re-run this command to push them.",
+                exc,
+            )
+
     print(json.dumps(published, indent=2, sort_keys=True))
     return 0
+
+
+def _settlement_of(store: CoordinatorStore, round_index: int) -> Settlement:
+    """Rebuild the stored settlement so it can be pushed in its signed shape."""
+    published = store.settlement(round_index) or {}
+    return Settlement(
+        round_index=round_index,
+        config_hash=str(published.get("config_hash", "")),
+        corpus_version=str(published.get("corpus_version", "")),
+        reports_root=str(published.get("reports_root", "")),
+        frontier=tuple(published.get("frontier", ())),
+        catalogue=tuple(published.get("catalogue", ())),
+        weights={int(k): float(v) for k, v in published.get("weights", {}).items()},
+        unscored=tuple(published.get("unscored", ())),
+        under_replicated=tuple(published.get("under_replicated", ())),
+        advisory=tuple(published.get("advisory", ())),
+        signature=str(published.get("signature", "")),
+    )
 
 
 def _status(args: argparse.Namespace) -> int:
