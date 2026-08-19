@@ -135,12 +135,77 @@ def _flag(value: Any) -> bool:
         return False
 
 
+def _neuron_objects(source: Any) -> list[Any] | None:
+    """The per neuron records, when this build carries them.
+
+    bittensor 11 replaced the parallel column arrays with a list of neuron
+    objects. Both shapes are read rather than one, because an operator on an
+    older build is still a validator and refusing to parse their metagraph
+    would take them off the subnet for a dependency they did not choose.
+    """
+    listed = getattr(source, "neurons", None)
+    if not listed:
+        return None
+    first = next(iter(listed), None)
+    if first is None or not hasattr(first, "hotkey") or not hasattr(first, "uid"):
+        return None
+    return list(listed)
+
+
+def _stake_of(record: Any) -> float:
+    for name in ("total_stake", "stake", "alpha_stake", "tao_stake", "S"):
+        value = getattr(record, name, None)
+        if value is not None:
+            return _number(value)
+    return 0.0
+
+
+def _snapshot_from_objects(
+    listed: list[Any],
+    source: Any,
+    *,
+    netuid: int | None = None,
+    block: int | None = None,
+) -> MetagraphSnapshot:
+    neurons = tuple(
+        Neuron(
+            uid=int(_number(getattr(record, "uid", 0))),
+            hotkey=str(getattr(record, "hotkey", "")),
+            coldkey=str(getattr(record, "coldkey", "") or ""),
+            stake=_stake_of(record),
+            trust=_number(getattr(record, "trust", 0.0)),
+            validator_trust=_number(
+                getattr(record, "validator_trust", None)
+                if getattr(record, "validator_trust", None) is not None
+                else getattr(record, "consensus", 0.0)
+            ),
+            incentive=_number(getattr(record, "incentive", 0.0)),
+            emission=_number(getattr(record, "emission", 0.0)),
+            validator_permit=_flag(getattr(record, "validator_permit", False)),
+            active=_flag(getattr(record, "active", True)),
+            last_update=int(_number(getattr(record, "last_update", 0))),
+            address=str(getattr(getattr(record, "axon", None), "ip", "") or ""),
+            port=int(_number(getattr(getattr(record, "axon", None), "port", 0))),
+        )
+        for record in listed
+    )
+    return MetagraphSnapshot(
+        neurons=neurons,
+        netuid=int(netuid if netuid is not None else getattr(source, "netuid", 0) or 0),
+        block=int(block if block is not None else _number(getattr(source, "block", 0))),
+    )
+
+
 def snapshot_from(
     source: Any,
     *,
     netuid: int | None = None,
     block: int | None = None,
 ) -> MetagraphSnapshot:
+    listed = _neuron_objects(source)
+    if listed is not None:
+        return _snapshot_from_objects(listed, source, netuid=netuid, block=block)
+
     raw_hotkeys = getattr(source, "hotkeys", None)
     hotkeys = [str(h) for h in raw_hotkeys] if raw_hotkeys is not None else []
     size = len(hotkeys)

@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 
 dependencies = [
-    "bittensor>=9.0.0",
+    "bittensor>=9.0.0,<12",
 ]
 
 [project.optional-dependencies]

@@ -119,16 +119,38 @@ class SubtensorClient:
         if self._cached is not None and fresh and not refresh:
             return self._cached
 
-        raw = with_retry(
-            "metagraph",
-            lambda: self.subtensor.metagraph(netuid=self._config.netuid),
-        )
+        raw = with_retry("metagraph", self._read_metagraph)
         snapshot = snapshot_from(raw, netuid=self._config.netuid)
         self._cached = snapshot
         self._cached_at = time.monotonic()
         return snapshot
 
+    def _read_metagraph(self) -> Any:
+        """Fetch the metagraph from whichever surface this build exposes.
+
+        bittensor 11 moved it under a `subnets` namespace and dropped the method
+        that used to sit on the client. Both are tried so a validator is not
+        forced onto one release of a dependency to stay on the subnet.
+        """
+        namespace = getattr(self.subtensor, "subnets", None)
+        reader = getattr(namespace, "metagraph", None)
+        if callable(reader):
+            found = reader(self._config.netuid)
+            if found is None:
+                raise ChainError(f"netuid {self._config.netuid} is not on this network")
+            return found
+
+        legacy = getattr(self.subtensor, "metagraph", None)
+        if callable(legacy):
+            return legacy(netuid=self._config.netuid)
+
+        raise ChainError("this bittensor build exposes no metagraph reader")
+
     def commitments(self, hotkeys: Sequence[str]) -> dict[str, str]:
+        carried = self._commitments_from_metagraph(hotkeys)
+        if carried is not None:
+            return carried
+
         snapshot = self.snapshot()
         uid_by_hotkey = snapshot.uid_by_hotkey
         reader = getattr(self.subtensor, "get_commitment", None)
@@ -147,6 +169,37 @@ class SubtensorClient:
                 continue
             if raw:
                 found[hotkey] = str(raw)
+        return found
+
+    def _commitments_from_metagraph(self, hotkeys: Sequence[str]) -> dict[str, str] | None:
+        """Read commitments off the metagraph when it already carries them.
+
+        bittensor 11 returns them with the metagraph, which turns one read per
+        miner into no extra reads at all. A build that does not carry them
+        returns None so the per uid path still runs.
+        """
+        raw = with_retry("metagraph", self._read_metagraph)
+        by_uid = getattr(raw, "commitments", None)
+        unregistered = getattr(raw, "unregistered_commitments", None)
+        if by_uid is None and unregistered is None:
+            return None
+
+        wanted = set(hotkeys)
+        found: dict[str, str] = {}
+        for record in getattr(raw, "neurons", ()) or ():
+            hotkey = str(getattr(record, "hotkey", ""))
+            if hotkey not in wanted:
+                continue
+            value = getattr(getattr(record, "commitment", None), "value", None)
+            if value:
+                found[hotkey] = str(value)
+
+        for hotkey, commitment in (unregistered or {}).items():
+            if str(hotkey) in wanted:
+                value = getattr(commitment, "value", None)
+                if value:
+                    found.setdefault(str(hotkey), str(value))
+
         return found
 
     def publish(self, payload: str) -> bool:
@@ -188,6 +241,10 @@ class SubtensorClient:
         )
         uids, values = vector.as_lists()
 
+        submitted = self._set_weights_v11(uids, values)
+        if submitted is not None:
+            return submitted
+
         def call() -> Any:
             return self.subtensor.set_weights(
                 wallet=self.wallet,
@@ -203,6 +260,46 @@ class SubtensorClient:
         if isinstance(result, tuple) and len(result) == 2:
             return bool(result[0]), str(result[1])
         return bool(result), ""
+
+    def _set_weights_v11(
+        self, uids: Sequence[int], values: Sequence[int]
+    ) -> tuple[bool, str] | None:
+        """Submit through the module level helper bittensor 11 exposes.
+
+        It takes proportions rather than the u16 vector, so the quantised
+        values are divided back out. Quantising first is still what happens,
+        because the vector that gets signed and the vector every worker
+        recomputes have to be the same one.
+        """
+        try:
+            import bittensor
+        except ImportError:
+            return None
+
+        helper = getattr(bittensor, "set_weights", None)
+        if not callable(helper) or hasattr(self.subtensor, "set_weights"):
+            return None
+
+        total = float(sum(values)) or 1.0
+        paired = zip(uids, values, strict=True)
+        proportions = {int(uid): float(value) / total for uid, value in paired}
+
+        def call() -> Any:
+            return helper(
+                self._config.netuid,
+                proportions,
+                wallet=self.wallet,
+                network=self._config.resolved_endpoint,
+            )
+
+        try:
+            result = with_retry("set_weights", call)
+        except ChainError as exc:
+            return False, str(exc)
+
+        if isinstance(result, tuple) and len(result) == 2:
+            return bool(result[0]), str(result[1])
+        return True if result is None else bool(result), ""
 
     def is_registered(self, hotkey: str) -> bool:
         return self.snapshot().is_registered(hotkey)
