@@ -13,6 +13,7 @@ log = logging.getLogger("microtensor.coordinator")
 QUALITY_QUANTUM = 4
 
 VERSION_MISMATCH = "engine or corpus version does not match the round"
+CORPUS_MISMATCH = "the worker's corpus does not hash to the one this round is measured against"
 UNASSIGNED = "worker was not assigned this system"
 DUPLICATE = "worker already reported this system this round"
 MALFORMED = "report is malformed"
@@ -86,12 +87,18 @@ def accept(
     engine_version: str,
     corpus_version: str,
     already: Sequence[str] = (),
+    corpus_digest: str = "",
 ) -> None:
     """Whether a report may enter reconciliation. Raises with the reason.
 
     A version mismatch is a rejection, not a divergence. A worker on a
     different engine or corpus is misconfigured, and folding its numbers into
     the majority is how a subtly wrong answer becomes canonical.
+
+    The digest is checked as well as the label, because the label is a claim and
+    the digest is the thing. Two workers can both declare the same corpus
+    version while holding different task files, and without this that
+    disagreement arrives as a divergence between honest measurements.
     """
     if report.system_digest not in assigned:
         raise ReportRejected(UNASSIGNED)
@@ -101,6 +108,8 @@ def accept(
         raise ReportRejected(VERSION_MISMATCH)
     if corpus_version and report.corpus_version != corpus_version:
         raise ReportRejected(VERSION_MISMATCH)
+    if corpus_digest and report.corpus_digest != corpus_digest:
+        raise ReportRejected(f"{CORPUS_MISMATCH}: {report.corpus_digest or 'none declared'}")
 
 
 def _majority(values: list[float]) -> tuple[float | None, str]:

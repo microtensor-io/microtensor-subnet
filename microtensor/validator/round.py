@@ -302,6 +302,7 @@ def _run_round(
                     system_digest=digest,
                     engine_version=MECHANISM_VERSION,
                     corpus_version=context.config.corpus_version,
+                    corpus_digest=context.corpus_digest,
                 )
                 for evaluation, digest in zip(
                     result.evaluations,

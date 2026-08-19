@@ -163,6 +163,14 @@ class CoordinatorClient:
         body["signature"] = report.signature
         return self._call("POST", "/v1/report", body) or {}
 
+    def corpus_index(self) -> dict[str, Any]:
+        found: dict[str, Any] | None = self._call("GET", "/v1/corpus")
+        return found or {}
+
+    def corpus(self, track: str) -> dict[str, Any] | None:
+        found: dict[str, Any] | None = self._call("GET", f"/v1/corpus/{track}")
+        return found
+
     def settlement(self, round_index: int) -> dict[str, Any] | None:
         found: dict[str, Any] | None = self._call("GET", f"/v1/settlement/{round_index}")
         return found

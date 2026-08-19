@@ -99,11 +99,11 @@ class ValidatorContext:
         for gate in unenforced():
             log.warning("%s is UNENFORCED: %s", gate.name, gate.detail)
 
-        corpora = load_all(config.corpus_dir, config.corpus_version)
+        corpora = _corpora_for(config, coordinator)
         missing = sorted({track for track, _ in competitions()} - set(corpora))
         if missing:
             raise RuntimeError(
-                f"no corpus under {config.corpus_dir} for enabled track(s) {missing}. "
+                f"no corpus for enabled track(s) {missing}. "
                 f"A validator that skips a track publishes a vector missing that "
                 f"track's emission share while its peers include it, which is a "
                 f"consensus divergence rather than a smaller sample, so this is "
@@ -129,6 +129,12 @@ class ValidatorContext:
         )
 
     @property
+    def corpus_digest(self) -> str:
+        from microtensor.tasks.corpus import corpus_digest
+
+        return corpus_digest(self.corpora) if self.corpora else ""
+
+    @property
     def tracks(self) -> tuple[str, ...]:
         return tuple(sorted({track for track, _ in self.competitions}))
 
@@ -138,3 +144,31 @@ class ValidatorContext:
     def close(self) -> None:
         self.state.close()
         self.client.close()
+
+
+def _corpora_for(config: Any, coordinator: Any) -> dict[str, Corpus]:
+    """The task set this validator will measure against.
+
+    A coordinated worker takes it from the coordinator so every worker in the
+    round measures the same tasks. Without that, two workers disagreeing about a
+    system is unreadable: nobody can tell a wrong measurement from a different
+    question, and the reconciliation majority counts configurations instead.
+
+    Falling back to a local corpus is deliberate for the standalone case and for
+    a coordinator that serves none yet. It is logged either way, because a
+    validator quietly measuring its own tasks is the failure this exists to stop.
+    """
+    from microtensor.validator.corpus import fetch
+
+    if coordinator is not None and not config.standalone:
+        try:
+            served = fetch(coordinator)
+        except Exception as exc:
+            log.warning("the coordinator served no usable corpus (%s); using the local one", exc)
+        else:
+            if served:
+                return served
+            log.warning("the coordinator serves no corpus yet; using the local one")
+
+    log.info("loading the corpus from %s", config.corpus_dir)
+    return load_all(config.corpus_dir, config.corpus_version)

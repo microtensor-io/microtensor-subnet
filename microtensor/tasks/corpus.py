@@ -60,6 +60,37 @@ class Corpus:
     def __iter__(self) -> Iterator[Task]:
         return iter(self.tasks)
 
+    def digest(self) -> str:
+        """A content hash of the task set.
+
+        The version string says which corpus a worker believes it holds. This
+        says which one it actually holds. Two workers can agree on a label while
+        holding different files, and a disagreement then arrives as a divergence
+        between honest measurements rather than the misconfiguration it is.
+
+        The gold answers are covered. A corpus with the same prompts and
+        different expected outputs scores the same systems differently, so
+        hashing the prompts alone would leave the useful half unchecked.
+        """
+        from microtensor.core.hashing import canonical_hash
+
+        return canonical_hash(
+            {
+                "track": self.track,
+                "version": self.version,
+                "tasks": [
+                    {
+                        "ref": task.ref,
+                        "prompt": task.prompt,
+                        "gold": task.gold,
+                        "partition": task.partition,
+                        "max_output_tokens": task.max_output_tokens,
+                    }
+                    for task in self.tasks
+                ],
+            }
+        )
+
     @property
     def rotating(self) -> tuple[Task, ...]:
         return tuple(t for t in self.tasks if t.partition == ROTATING)
@@ -159,6 +190,17 @@ def attach_tests(corpus: Corpus, bundle: dict[str, dict[str, Any]]) -> Corpus:
             )
         attached.append(replace(task, gold=dict(entry)))
     return Corpus(track=corpus.track, version=corpus.version, tasks=tuple(attached))
+
+
+def corpus_digest(corpora: dict[str, Corpus]) -> str:
+    """One digest over every track a worker serves.
+
+    Ordered by track so two workers holding the same corpora agree regardless of
+    the order they happened to load them in.
+    """
+    from microtensor.core.hashing import canonical_hash
+
+    return canonical_hash({track: corpora[track].digest() for track in sorted(corpora)})
 
 
 def load_all(root: Path, version: str = CORPUS_VERSION) -> dict[str, Corpus]:

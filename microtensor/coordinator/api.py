@@ -112,6 +112,7 @@ class Coordinator:
     keyring: KeyRing | None = None
     corpus_version: str = ""
     engine_version: str = ""
+    corpora: dict[str, Any] = None  # type: ignore[assignment]
     catalogue: dict[str, Entry] = None  # type: ignore[assignment]
     coldkeys: dict[str, str] = None  # type: ignore[assignment]
     uid_by_hotkey: dict[str, int] = None  # type: ignore[assignment]
@@ -124,6 +125,8 @@ class Coordinator:
             self.coldkeys = {}
         if not self.uid_by_hotkey:
             self.uid_by_hotkey = {}
+        if not self.corpora:
+            self.corpora = {}
 
     def current_round(self) -> dict[str, Any]:
         row = self.store.latest_round()
@@ -131,6 +134,7 @@ class Coordinator:
             return {}
         config = served_config(self.corpus_version or "")
         return {
+            "corpus_digest": self.corpus_digest(),
             "round": row["round_index"],
             "seed_block": row["seed_block"],
             "close_block": row["close_block"],
@@ -207,6 +211,7 @@ class Coordinator:
             engine_version=self.engine_version,
             corpus_version=self.corpus_version,
             already=already,
+            corpus_digest=self.corpus_digest(),
         )
 
         self.store.record_report(report)
@@ -270,6 +275,39 @@ class Coordinator:
             len(result.divergences),
         )
         return self.store.settlement(round_index)
+
+    def corpus_digest(self) -> str:
+        from microtensor.tasks.corpus import corpus_digest
+
+        return corpus_digest(self.corpora) if self.corpora else ""
+
+    def corpus(self, track: str) -> dict[str, Any]:
+        """The task set for one track, as the coordinator holds it.
+
+        Served so every worker measures the same tasks. A worker that brought
+        its own corpus would produce numbers nobody else can reproduce, and the
+        reconciliation majority would be counting configurations rather than
+        measurements.
+        """
+        held = self.corpora.get(track)
+        if held is None:
+            return {}
+        return {
+            "track": held.track,
+            "version": held.version,
+            "digest": held.digest(),
+            "tasks": [
+                {
+                    "ref": task.ref,
+                    "prompt": task.prompt,
+                    "gold": task.gold,
+                    "partition": task.partition,
+                    "inputs": task.inputs,
+                    "max_output_tokens": task.max_output_tokens,
+                }
+                for task in held.tasks
+            ],
+        }
 
     def _settle_on_hold(self, round_index: int) -> dict[str, Any] | None:
         existing = self.store.settlement(round_index)
@@ -410,6 +448,25 @@ def build_app(coordinator: Coordinator) -> Any:
     @app.get("/v1/round/current")
     def round_current() -> dict[str, Any]:
         return coordinator.current_round()
+
+    @app.get("/v1/corpus")
+    async def corpus_index(request: Request) -> dict[str, Any]:
+        hotkey = authenticate(request, b"")
+        authorised(request, hotkey)
+        return {
+            "digest": coordinator.corpus_digest(),
+            "version": coordinator.corpus_version,
+            "tracks": sorted(coordinator.corpora),
+        }
+
+    @app.get("/v1/corpus/{track}")
+    async def corpus_track(track: str, request: Request) -> dict[str, Any]:
+        hotkey = authenticate(request, b"")
+        authorised(request, hotkey)
+        found = coordinator.corpus(track)
+        if not found:
+            raise HTTPException(status_code=404, detail=f"no corpus is served for {track!r}")
+        return found
 
     @app.get("/v1/assignment/{hotkey}")
     async def assignment(hotkey: str, request: Request) -> dict[str, Any]:

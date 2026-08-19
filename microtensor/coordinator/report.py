@@ -76,6 +76,7 @@ class Report:
     conforming: bool = False
     engine_version: str = ""
     corpus_version: str = ""
+    corpus_digest: str = ""
     fault: Fault | None = None
     signature: str = ""
 
@@ -95,6 +96,7 @@ class Report:
             "conforming": self.conforming,
             "engine_version": self.engine_version,
             "corpus_version": self.corpus_version,
+            "corpus_digest": self.corpus_digest,
             "fault": self.fault.value if self.fault else None,
         }
 
@@ -115,6 +117,7 @@ class Report:
             conforming=self.conforming,
             engine_version=self.engine_version,
             corpus_version=self.corpus_version,
+            corpus_digest=self.corpus_digest,
             fault=self.fault,
             signature=signature,
         )
@@ -135,6 +138,7 @@ class Report:
             conforming=bool(raw.get("conforming", False)),
             engine_version=str(raw.get("engine_version", "")),
             corpus_version=str(raw.get("corpus_version", "")),
+            corpus_digest=str(raw.get("corpus_digest", "")),
             fault=Fault(fault) if fault else None,
             signature=str(raw.get("signature", "")),
         )

@@ -48,6 +48,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     init.set_defaults(handler=_init)
 
     serve = inner.add_parser("serve", help="serve the coordinator API")
+    serve.add_argument("--corpus", type=Path, help="directory of <track>.jsonl corpora to serve")
     add_common_arguments(serve)
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=COORDINATOR_PORT)
@@ -108,6 +109,23 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_common_arguments(status)
     status.add_argument("--round", type=int)
     status.set_defaults(handler=_status)
+
+
+def _corpora(args: argparse.Namespace) -> dict[str, Any]:
+    """The corpus this coordinator serves to its workers.
+
+    Absent is allowed and logged rather than fatal: a coordinator with no corpus
+    yet still schedules rounds, and its workers fall back to their own until it
+    has one.
+    """
+    from microtensor.tasks.corpus import CorpusError, load_all
+
+    root = getattr(args, "corpus", None) or (_home(args) / "corpus")
+    try:
+        return dict(load_all(Path(root), CORPUS_VERSION))
+    except (CorpusError, OSError) as exc:
+        log.warning("no corpus is being served to workers (%s)", exc)
+        return {}
 
 
 def _home(args: argparse.Namespace) -> Path:
@@ -385,6 +403,7 @@ def _settle(args: argparse.Namespace) -> int:
             store=store,
             registry=Registry({}),
             corpus_version=CORPUS_VERSION,
+            corpora=_corpora(args),
             catalogue=store.catalogue(args.round),
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
@@ -487,6 +506,7 @@ def _serve(args: argparse.Namespace) -> int:
             registry=Registry({}),
             keyring=keyring,
             corpus_version=CORPUS_VERSION,
+            corpora=_corpora(args),
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
         )

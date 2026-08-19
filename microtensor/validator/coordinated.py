@@ -149,6 +149,7 @@ def to_report(
     engine_version: str,
     corpus_version: str,
     ablation: dict[str, float] | None = None,
+    corpus_digest: str = "",
 ) -> Report:
     """One measurement, in the shape the coordinator reconciles."""
     measured = evaluation.measured
@@ -182,6 +183,7 @@ def to_report(
         conforming=bool(measured.conforming) if measured else False,
         engine_version=engine_version,
         corpus_version=corpus_version,
+        corpus_digest=corpus_digest,
     )
 
 
