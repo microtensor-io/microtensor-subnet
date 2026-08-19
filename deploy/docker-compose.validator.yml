@@ -14,6 +14,8 @@ services:
       MT_WALLET_HOTKEY: "${MT_WALLET_HOTKEY:?set the hotkey name}"
       MT_WALLET_PATH: /wallets
       MT_HOME: /var/lib/microtensor
+      MT_COORDINATOR_URL: "${MT_COORDINATOR_URL:-https://coordinator.microtensor.cloud}"
+      MT_SERVER_URL: "${MT_SERVER_URL:-https://api.microtensor.cloud}"
     volumes:
       - state:/var/lib/microtensor
       - ${MT_WALLET_DIR:-~/.bittensor/wallets}:/wallets:ro

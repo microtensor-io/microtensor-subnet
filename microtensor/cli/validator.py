@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -104,7 +105,7 @@ def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
     add_common_arguments(parser)
     parser.add_argument(
         "--coordinator",
-        default=COORDINATOR_URL,
+        default=os.environ.get("MT_COORDINATOR_URL", COORDINATOR_URL),
         help="coordinator base URL; without one this validator runs standalone",
     )
     parser.add_argument(
