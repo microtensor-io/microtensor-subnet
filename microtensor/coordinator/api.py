@@ -18,6 +18,8 @@ from microtensor.coordinator.reputation import update as update_standing
 from microtensor.coordinator.settle import Entry
 from microtensor.coordinator.settle import build as build_settlement
 from microtensor.coordinator.store import CoordinatorStore
+from microtensor.coordinator.tokens import TOKEN_HEADER, KeyRing, TokenInvalid
+from microtensor.coordinator.tokens import verify as verify_token
 from microtensor.core.constants import (
     COORDINATOR_QUORUM,
     REPORT_MAX_BYTES,
@@ -106,6 +108,7 @@ class Coordinator:
 
     store: CoordinatorStore
     registry: Registry
+    keyring: KeyRing | None = None
     corpus_version: str = ""
     engine_version: str = ""
     catalogue: dict[str, Entry] = None  # type: ignore[assignment]
@@ -310,6 +313,28 @@ def build_app(coordinator: Coordinator) -> Any:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         return hotkey
 
+    def authorised(request: Request, hotkey: str) -> None:
+        """Require a control plane token when one can be checked.
+
+        Enforced only once a key is known. A coordinator running without a
+        control plane has no key, no way to check a token, and no business
+        refusing a worker over one; the moment it has read the key, a token
+        becomes mandatory and a revoked worker stops being served on its next
+        request.
+        """
+        keyring = coordinator.keyring
+        if keyring is None or not keyring.load():
+            return
+
+        try:
+            verify_token(
+                str(request.headers.get(TOKEN_HEADER, "")),
+                keyring.public_key,
+                hotkey=hotkey,
+            )
+        except TokenInvalid as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
     @app.get("/v1/round/current")
     def round_current() -> dict[str, Any]:
         return coordinator.current_round()
@@ -319,6 +344,7 @@ def build_app(coordinator: Coordinator) -> Any:
         caller = authenticate(request, b"")
         if caller != hotkey:
             raise HTTPException(status_code=403, detail="a worker may only read its own work")
+        authorised(request, caller)
         return coordinator.assignment(hotkey)
 
     @app.post("/v1/report")
@@ -332,6 +358,8 @@ def build_app(coordinator: Coordinator) -> Any:
 
         if body.get("worker_hotkey") != hotkey:
             raise HTTPException(status_code=403, detail="report is signed by another hotkey")
+
+        authorised(request, hotkey)
 
         try:
             return coordinator.submit(body, raw)

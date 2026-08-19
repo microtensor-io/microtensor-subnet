@@ -21,6 +21,7 @@ from microtensor.coordinator.config import MISMATCH, config_hash, matches
 from microtensor.coordinator.report import Report
 from microtensor.coordinator.settle import Entry, catalogue_from, merkle_root
 from microtensor.coordinator.settle import build as build_settlement
+from microtensor.coordinator.tokens import TOKEN_HEADER
 from microtensor.core.constants import (
     COORDINATOR_BACKOFF_SECONDS,
     COORDINATOR_RETRIES,
@@ -67,6 +68,7 @@ class CoordinatorClient:
     base_url: str
     hotkey: str
     wallet: Any = None
+    token: str = ""
     timeout: int = COORDINATOR_TIMEOUT_SECONDS
     retries: int = COORDINATOR_RETRIES
     backoff: float = COORDINATOR_BACKOFF_SECONDS
@@ -79,6 +81,8 @@ class CoordinatorClient:
             TIMESTAMP_HEADER: stamp,
             "content-type": "application/json",
         }
+        if self.token:
+            headers[TOKEN_HEADER] = self.token
         if self.wallet is not None:
             from microtensor.chain.wallet import sign_bytes
 

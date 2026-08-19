@@ -20,6 +20,7 @@ from microtensor.coordinator.server import (
 )
 from microtensor.coordinator.settle import Settlement
 from microtensor.coordinator.store import CoordinatorStore
+from microtensor.coordinator.tokens import KeyRing
 from microtensor.core.constants import (
     COORDINATOR_PORT,
     COORDINATOR_REPLICATION,
@@ -46,6 +47,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_common_arguments(serve)
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=COORDINATOR_PORT)
+    _add_server_arguments(serve)
     serve.set_defaults(handler=_serve)
 
     opened = inner.add_parser(
@@ -367,8 +369,21 @@ def _serve(args: argparse.Namespace) -> int:
     from microtensor.coordinator.api import build_app
 
     with _store(args) as store:
+        keyring = KeyRing(home=_home(args))
+        server = _server(args)
+        if server is not None:
+            keyring.refresh(server.token_key)
+        if not keyring.load():
+            log.warning(
+                "no control plane key is known, so worker tokens will not be checked; "
+                "point --server at the control plane once to record it"
+            )
+
         service = Coordinator(
-            store=store, registry=Registry({}), corpus_version=CORPUS_VERSION
+            store=store,
+            registry=Registry({}),
+            keyring=keyring,
+            corpus_version=CORPUS_VERSION,
         )
         app = build_app(service)
         log.info("serving the coordinator on %s:%d", args.host, args.port)
