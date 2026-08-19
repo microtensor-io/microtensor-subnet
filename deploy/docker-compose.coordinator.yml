@@ -11,12 +11,17 @@ services:
       MT_NETUID: "92"
       MT_NETWORK: finney
       MT_HOME: /var/lib/microtensor
+      MT_WALLET_NAME: ${MT_WALLET_NAME:-microtensor}
+      MT_WALLET_HOTKEY: ${MT_WALLET_HOTKEY:-micro}
+      MT_SERVER_URL: ${MT_SERVER_URL:-}
+      MT_SERVER_CREDENTIAL: ${MT_SERVER_CREDENTIAL:-}
     volumes:
       - coordinator-state:/var/lib/microtensor
       - ${HOME}/.bittensor/wallets:/root/.bittensor/wallets:ro
+      - ${HOME}/.bittensor/wallets:/home/ubuntu/.bittensor/wallets:ro
     ports:
       - "127.0.0.1:8443:8443"
-    command: ["mt", "coordinator", "serve", "--host", "0.0.0.0", "--port", "8443"]
+    command: ["serve", "--host", "0.0.0.0", "--port", "8443"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8443/v1/health')"]
       interval: 30s
@@ -25,3 +30,4 @@ services:
 
 volumes:
   coordinator-state:
+    name: coordinator-state
