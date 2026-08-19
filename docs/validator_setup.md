@@ -9,10 +9,10 @@ Netuid **92** on finney.
 | OS | Linux (the sandbox needs `resource.setrlimit`) |
 | CPU | 8 cores |
 | RAM | 32 GB |
-| Disk | 1 to 2 TB NVMe |
+| Disk | NVMe. 200 GB to start, 1 TB comfortable for a long run |
 | GPU | none |
 | Network | 1 Gbps, 500 GB to 1 TB monthly transfer |
-| Uptime | continuous, one round every 7200 blocks (about 24 h) |
+| Uptime | continuous. Weights are submitted every 300 blocks (about 60 min); a full measurement round completes every 7200 blocks (about 24 h) |
 | Credentials | a W&B read key for `microtensor/training-runs` |
 
 ## 1. Install
@@ -203,6 +203,16 @@ emission share.
 
 A round that evaluates cleanly but pays nobody, because no artifact has reached
 `MIN_ROUNDS_OBSERVED` yet, is settled rather than abstained.
+
+## Weights and rounds
+
+Weight submission is not tied to round completion. The validator re-submits its
+standing vector every 300 blocks, so it is never silent between rounds. A round
+takes about 24 h because a full measurement pass over every submitted system
+does; a validator that only set weights when a round finished would go quiet for
+twenty epochs at a time and give up the dividends to whoever kept submitting.
+
+The refresh republishes what the last round settled. It recomputes nothing.
 
 ## Round phases
 

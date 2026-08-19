@@ -7,7 +7,13 @@ from collections.abc import Callable
 from types import FrameType
 
 from microtensor.chain.rounds import Round, round_for_block
-from microtensor.core.constants import BLOCK_TIME_SECONDS, POLL_INTERVAL_SECONDS
+from microtensor.chain.weights import quantise_weights
+from microtensor.core.constants import (
+    BLOCK_TIME_SECONDS,
+    POLL_INTERVAL_SECONDS,
+    WEIGHT_REFRESH_BLOCKS,
+)
+from microtensor.scoring.weights import to_uid_weights
 from microtensor.update.loop import UpdateChecker
 from microtensor.validator.context import ValidatorContext
 from microtensor.validator.round import RoundOutcome, run_round
@@ -37,6 +43,7 @@ class RoundLoop:
         self._sleep = sleep
         self._running = False
         self.rounds_run = 0
+        self._last_weight_block = 0
         self.updater = updater
         self.restarting = False
 
@@ -69,6 +76,39 @@ class RoundLoop:
             self.restarting = True
             raise Restart(applied.release.tag)
 
+    def refresh_weights(self, block: int) -> None:
+        """Re-submit the standing vector so this validator is never silent.
+
+        A round takes a day; an epoch is 360 blocks. A validator that only
+        submits when a round completes stops setting weights for twenty epochs
+        at a time, and a copier submitting the same stale vector every epoch
+        collects the dividends that silence gives up. Nothing here recomputes
+        anything: it republishes what the last round already settled.
+        """
+        if block - self._last_weight_block < WEIGHT_REFRESH_BLOCKS:
+            return
+
+        standing = self.context.state.last_weights()
+        if not standing:
+            return
+
+        snapshot = self.context.client.snapshot()
+        uid_weights, _ = to_uid_weights(standing, snapshot.uid_by_hotkey)
+        vector = quantise_weights(uid_weights)
+        if vector.is_empty:
+            return
+
+        if self.context.config.dry_run:
+            self._last_weight_block = block
+            return
+
+        ok, reason = self.context.client.set_weights(vector)
+        self._last_weight_block = block
+        if ok:
+            log.info("refreshed %d weights at block %d", len(vector.uids), block)
+        else:
+            log.warning("weight refresh rejected at block %d: %s", block, reason)
+
     def wait_for_close(self, round_: Round) -> None:
         while self._running:
             block = self.context.client.block()
@@ -76,6 +116,10 @@ class RoundLoop:
                 return
 
             self.consider_update(round_, block)
+            try:
+                self.refresh_weights(block)
+            except Exception as exc:
+                log.warning("weight refresh failed, continuing the round: %s", exc)
             remaining = round_.close_block - block
             delay = min(self.poll_seconds, max(1, remaining * BLOCK_TIME_SECONDS))
             log.info(
@@ -89,12 +133,18 @@ class RoundLoop:
 
         if self.context.state.is_settled(round_.index):
             log.info("round %d is already settled; waiting for the next", round_.index)
+            try:
+                self.refresh_weights(self.context.client.block())
+            except Exception as exc:
+                log.warning("weight refresh failed while idle: %s", exc)
             self._sleep(self.poll_seconds)
             return None
 
         self.wait_for_close(round_)
         outcome = run_round(self.context, round_)
         self.rounds_run += 1
+        if outcome is not None and outcome.settled:
+            self._last_weight_block = self.context.client.block()
         return outcome
 
     def run(self, max_rounds: int | None = None) -> int:
