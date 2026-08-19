@@ -30,6 +30,8 @@ class RoundSource(Protocol):
 
     def coldkeys(self) -> dict[str, str]: ...
 
+    def uids(self) -> dict[str, int]: ...
+
     def seed(self, round_: Round) -> str: ...
 
 
@@ -105,10 +107,11 @@ class ChainSource:
     def coldkeys(self) -> dict[str, str]:
         return dict(self.client.snapshot().coldkeys())
 
+    def uids(self) -> dict[str, int]:
+        return dict(self.client.snapshot().uid_by_hotkey)
 
-def observed(
-    catalogue: dict[str, Entry], history: dict[str, tuple[int, int]]
-) -> dict[str, Entry]:
+
+def observed(catalogue: dict[str, Entry], history: dict[str, tuple[int, int]]) -> dict[str, Entry]:
     """Fold each system's observation counters into the catalogue."""
     out: dict[str, Entry] = {}
     for digest, entry in catalogue.items():

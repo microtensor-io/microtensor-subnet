@@ -24,12 +24,14 @@ FELL_BACK = (
     "the schedule is the chain's until it returns"
 )
 
+
 class ServerUnreachable(RuntimeError):
     """The control plane did not answer.
 
     Never fatal. The subnet has to keep running with the server down, so every
     caller of this falls back to chain rather than stopping.
     """
+
 
 class ServerRefused(RuntimeError):
     """The control plane answered and said no.
@@ -38,6 +40,7 @@ class ServerRefused(RuntimeError):
     ingest credential is wrong or revoked, and quietly carrying on would hide
     that behind a round that looks normal.
     """
+
 
 @dataclass(slots=True)
 class ServerClient:
@@ -105,22 +108,47 @@ class ServerClient:
         found = self._call("GET", "/v1/public/keys") or {}
         return str(found.get("token_public_key", ""))
 
+    def reserved(self) -> dict[str, Any]:
+        """The emission the control plane is holding for a named hotkey.
+
+        An unreachable server yields no hold rather than the last one seen. A
+        stale hold is a payment nobody authorised this round, and holding
+        nothing is the state the mechanism already knows how to settle.
+        """
+        found = self._call("GET", "/v1/control/emission") or {}
+        if found.get("paused"):
+            return {"paused": True}
+        return {
+            "hotkey": str(found.get("reserved_hotkey", "")),
+            "share": float(found.get("reserved_share", 0.0)),
+        }
+
     def push_settlement(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/v1/ingest/settlement", payload) or {}
 
     def push_reports(self, round_index: int, reports: list[dict[str, Any]]) -> dict[str, Any]:
-        return self._call(
-            "POST", "/v1/ingest/reports", {"round_index": round_index, "reports": reports}
-        ) or {}
+        return (
+            self._call(
+                "POST", "/v1/ingest/reports", {"round_index": round_index, "reports": reports}
+            )
+            or {}
+        )
 
     def push_assignments(
         self, round_index: int, assignment: Mapping[str, Sequence[str]]
     ) -> dict[str, Any]:
-        return self._call(
-            "POST",
-            "/v1/ingest/assignments",
-            {"round_index": round_index, "assignment": {k: list(v) for k, v in assignment.items()}},
-        ) or {}
+        return (
+            self._call(
+                "POST",
+                "/v1/ingest/assignments",
+                {
+                    "round_index": round_index,
+                    "assignment": {k: list(v) for k, v in assignment.items()},
+                },
+            )
+            or {}
+        )
+
 
 @dataclass(slots=True)
 class ServerSource:
@@ -185,6 +213,9 @@ class ServerSource:
     def coldkeys(self) -> dict[str, str]:
         return self.chain.coldkeys()
 
+    def uids(self) -> dict[str, int]:
+        return self.chain.uids()
+
     def workers(self) -> Sequence[Worker]:
         """Permitted on chain, and authorised by the server when it answers.
 
@@ -220,6 +251,7 @@ class ServerSource:
                 len(permitted),
             )
         return kept
+
 
 def publish_round(
     client: ServerClient,

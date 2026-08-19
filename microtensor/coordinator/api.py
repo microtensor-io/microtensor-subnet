@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -113,13 +114,16 @@ class Coordinator:
     engine_version: str = ""
     catalogue: dict[str, Entry] = None  # type: ignore[assignment]
     coldkeys: dict[str, str] = None  # type: ignore[assignment]
+    uid_by_hotkey: dict[str, int] = None  # type: ignore[assignment]
+    reserve: Callable[[], dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if not self.catalogue:
             self.catalogue = {}
         if not self.coldkeys:
             self.coldkeys = {}
-
+        if not self.uid_by_hotkey:
+            self.uid_by_hotkey = {}
 
     def current_round(self) -> dict[str, Any]:
         row = self.store.latest_round()
@@ -187,7 +191,6 @@ class Coordinator:
     def reputation(self) -> list[dict[str, Any]]:
         return [s.to_dict() for s in self.store.standings()]
 
-
     def submit(self, body: dict[str, Any], raw: bytes) -> dict[str, Any]:
         if len(raw) > REPORT_MAX_BYTES:
             raise ReportRejected(TOO_LARGE)
@@ -215,11 +218,19 @@ class Coordinator:
         Returns None while the round is still collecting, so a caller polling
         this cannot accidentally publish a settlement built from a third of
         the measurements.
+
+        A round with nothing to measure is the exception. Quorum over zero
+        assignments is undefined rather than reached, so a subnet with no
+        commitments yet would publish nothing and a declared hold would never
+        pay. Such a round settles on the hold alone and says so: no reports, no
+        frontier, and a weight vector that names only the reserved uid.
         """
         expected = self.store.expected_reports(round_index)
         received = self.store.report_count(round_index)
         if not quorum_reached(expected, received, COORDINATOR_QUORUM):
-            return None
+            if expected > 0 or received > 0:
+                return None
+            return self._settle_on_hold(round_index)
 
         existing = self.store.settlement(round_index)
         if existing is not None:
@@ -248,6 +259,7 @@ class Coordinator:
             advisory=advisory,
             coldkeys=self.coldkeys,
             previous=self._previous_weights(round_index),
+            reserved=self._reserved(),
         )
         self.store.publish(settlement)
         log.info(
@@ -258,6 +270,68 @@ class Coordinator:
             len(result.divergences),
         )
         return self.store.settlement(round_index)
+
+    def _settle_on_hold(self, round_index: int) -> dict[str, Any] | None:
+        existing = self.store.settlement(round_index)
+        if existing is not None:
+            return existing
+
+        held = self._reserved()
+        if not held:
+            return None
+
+        row = self.store.round(round_index) or {}
+        settlement = build_settlement(
+            round_index,
+            config_hash=str(row.get("config_hash", "")),
+            corpus_version=self.corpus_version,
+            reconciled=(),
+            catalogue={},
+            report_digests=[],
+            coldkeys=self.coldkeys,
+            reserved=held,
+        )
+        self.store.publish(settlement)
+        log.info(
+            "round %d had nothing to measure; settled on the hold for %s alone",
+            round_index,
+            held["hotkey"],
+        )
+        return self.store.settlement(round_index)
+
+    def _reserved(self) -> dict[str, Any]:
+        """Resolve the control plane's hold against this metagraph.
+
+        A hotkey the metagraph does not carry is dropped rather than settled
+        around. The hold names a uid in the published settlement and every
+        worker checks that uid against its own metagraph, so publishing one
+        that cannot be resolved here would be rejected everywhere it landed.
+        """
+        if self.reserve is None:
+            return {}
+
+        try:
+            held = self.reserve() or {}
+        except Exception as exc:
+            log.warning("the reserved emission could not be read (%s); holding nothing", exc)
+            return {}
+
+        hotkey = str(held.get("hotkey", ""))
+        share = float(held.get("share", 0.0))
+        if not hotkey or share <= 0.0:
+            return {}
+
+        uid = self.uid_by_hotkey.get(hotkey)
+        if uid is None:
+            log.warning(
+                "%s is reserved %.2f%% of emission but is not on this metagraph; holding nothing",
+                hotkey,
+                share * 100,
+            )
+            return {}
+
+        log.info("holding %.2f%% of emission for %s at uid %d", share * 100, hotkey, uid)
+        return {"hotkey": hotkey, "uid": uid, "share": share}
 
     def _previous_weights(self, round_index: int) -> dict[str, float]:
         """The last published blend, so the EMA has something to smooth against.
@@ -279,9 +353,7 @@ class Coordinator:
         for hotkey in sorted(agreed | diverged):
             standing = self.store.standing(hotkey)
             self.store.save_standing(
-                update_standing(
-                    standing, agreed=hotkey not in diverged, round_index=round_index
-                )
+                update_standing(standing, agreed=hotkey not in diverged, round_index=round_index)
             )
 
 

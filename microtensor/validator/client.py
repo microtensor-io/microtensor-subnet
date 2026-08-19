@@ -19,7 +19,13 @@ from microtensor.coordinator.api import (
 from microtensor.coordinator.collect import intake
 from microtensor.coordinator.config import MISMATCH, config_hash, matches
 from microtensor.coordinator.report import Report
-from microtensor.coordinator.settle import Entry, catalogue_from, merkle_root
+from microtensor.coordinator.settle import (
+    RESERVE_MAX,
+    Entry,
+    catalogue_from,
+    merkle_root,
+    normalise_reserved,
+)
 from microtensor.coordinator.settle import build as build_settlement
 from microtensor.coordinator.tokens import TOKEN_HEADER
 from microtensor.core.constants import (
@@ -72,7 +78,6 @@ class CoordinatorClient:
     timeout: int = COORDINATOR_TIMEOUT_SECONDS
     retries: int = COORDINATOR_RETRIES
     backoff: float = COORDINATOR_BACKOFF_SECONDS
-
 
     def _sign(self, method: str, path: str, body: bytes) -> dict[str, str]:
         stamp = f"{time.time():.0f}"
@@ -131,7 +136,6 @@ class CoordinatorClient:
 
         raise CoordinatorUnreachable(f"{url} after {self.retries} attempts: {last}")
 
-
     def current_round(self) -> dict[str, Any]:
         return self._call("GET", "/v1/round/current") or {}
 
@@ -183,6 +187,7 @@ def verify_config(served: dict[str, Any], anchored: str) -> None:
 
 UID_MISMATCH = "the settlement names a uid the metagraph does not give that hotkey"
 UNKNOWN_HOTKEY = "the settlement names a hotkey absent from the metagraph"
+RESERVE_TOO_LARGE = "the settlement holds back more emission than this worker will sign"
 
 
 def cross_check(published: dict[str, Any], uid_by_hotkey: Mapping[str, int]) -> None:
@@ -204,11 +209,23 @@ def cross_check(published: dict[str, Any], uid_by_hotkey: Mapping[str, int]) -> 
                 f"settlement says {row.get('uid')}"
             )
 
+    held = published.get("reserved") or {}
+    if held:
+        hotkey = str(held.get("hotkey", ""))
+        if hotkey not in uid_by_hotkey:
+            raise SettlementRejected(f"{UNKNOWN_HOTKEY}: {hotkey}")
+        if int(held.get("uid", -1)) != uid_by_hotkey[hotkey]:
+            raise SettlementRejected(
+                f"{UID_MISMATCH}: {hotkey} is uid {uid_by_hotkey[hotkey]}, "
+                f"settlement says {held.get('uid')}"
+            )
+
 
 def verify_settlement(
     published: dict[str, Any],
     reports: list[dict[str, Any]],
     catalogue: dict[str, Entry] | None = None,
+    reserve_ceiling: float = RESERVE_MAX,
 ) -> None:
     """Recompute the settlement from the published reports and compare.
 
@@ -220,6 +237,11 @@ def verify_settlement(
     measured only its assigned subset and its local `rounds_observed` differs
     from its peers' for honest reasons. Pair this with `cross_check` to test the
     published inputs against the metagraph.
+
+    A declared reserve is folded in the same way the coordinator folded it, so
+    a hold reproduces rather than reading as a divergence. It reproduces because
+    it is stated: an undeclared hold changes the weights without changing the
+    inputs and fails here like any other tampering.
 
     Reconciliation uses the advisory set the settlement declares. That set is
     reputation state only the coordinator holds, and excluding a worker changes
@@ -251,7 +273,15 @@ def verify_settlement(
         report_digests=[r.digest() for r in parsed],
         unscored=result.unscored,
         under_replicated=published.get("under_replicated", ()),
+        reserved=published.get("reserved"),
     )
+
+    held = normalise_reserved(published.get("reserved"))
+    if held and float(held["share"]) > reserve_ceiling:
+        raise SettlementRejected(
+            f"{RESERVE_TOO_LARGE}: {held['share']:.4f} held for {held['hotkey']}, "
+            f"ceiling is {reserve_ceiling:.4f}"
+        )
 
     published_weights = {
         str(k): round(float(v), 9) for k, v in published.get("weights", {}).items()

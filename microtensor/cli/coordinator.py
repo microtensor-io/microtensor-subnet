@@ -192,9 +192,7 @@ def _server(args: argparse.Namespace) -> ServerClient | None:
     url = getattr(args, "server", "") or ""
     if not url or getattr(args, "no_server", False):
         return None
-    return ServerClient(
-        base_url=url, credential=getattr(args, "server_credential", "") or ""
-    )
+    return ServerClient(base_url=url, credential=getattr(args, "server_credential", "") or "")
 
 
 def _open(args: argparse.Namespace) -> int:
@@ -239,9 +237,8 @@ def _open(args: argparse.Namespace) -> int:
             mapping,
             {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
         )
-        store.record_catalogue(
-            round_.index, observed(catalogue, store.observations(round_.index))
-        )
+        store.record_catalogue(round_.index, observed(catalogue, store.observations(round_.index)))
+        store.record_metagraph(round_.index, source.uids())
 
     thin = under_replicated(mapping, args.replication)
     print(f"round {round_.index} opened, seed block {round_.seed_block}")
@@ -274,28 +271,28 @@ def _config_hash_for(source: RoundSource) -> str:
 
 
 def _settle(args: argparse.Namespace) -> int:
+    server = _server(args)
     with _store(args) as store:
         service = Coordinator(
             store=store,
             registry=Registry({}),
             corpus_version=CORPUS_VERSION,
             catalogue=store.catalogue(args.round),
+            uid_by_hotkey=store.uids(),
+            reserve=server.reserved if server is not None else None,
         )
         published = service.settle(args.round)
 
     if published is None:
         return fail(f"round {args.round} has not reached quorum yet")
 
-    server = _server(args)
     if server is not None:
         with _store(args) as store:
             reports = store.reports_payload(args.round)
             assignment = store.full_assignment(args.round)
             settlement = _settlement_of(store, args.round)
         try:
-            stored = publish_round(
-                server, settlement, reports=reports, assignment=assignment
-            )
+            stored = publish_round(server, settlement, reports=reports, assignment=assignment)
             print(
                 f"archived on the control plane: {stored['reports']} reports, "
                 f"{stored['assignments']} assignments"
@@ -325,15 +322,16 @@ def _settlement_of(store: CoordinatorStore, round_index: int) -> Settlement:
         unscored=tuple(published.get("unscored", ())),
         under_replicated=tuple(published.get("under_replicated", ())),
         advisory=tuple(published.get("advisory", ())),
+        capped=bool(published.get("capped", False)),
+        blended={str(k): float(v) for k, v in published.get("blended", {}).items()},
+        reserved=dict(published.get("reserved") or {}),
         signature=str(published.get("signature", "")),
     )
 
 
 def _status(args: argparse.Namespace) -> int:
     with _store(args) as store:
-        service = Coordinator(
-            store=store, registry=Registry({}), corpus_version=CORPUS_VERSION
-        )
+        service = Coordinator(store=store, registry=Registry({}), corpus_version=CORPUS_VERSION)
         health = service.health()
         standings = service.reputation()
 
@@ -353,10 +351,7 @@ def _status(args: argparse.Namespace) -> int:
         print(f"{'worker':<50}{'agreed':>8}{'diverged':>10}{'rate':>8}  state")
         for s in standings:
             state = "advisory" if s["advisory"] else "deciding"
-            print(
-                f"{s['hotkey']:<50}{s['agreed']:>8}{s['diverged']:>10}"
-                f"{s['rate']:>8.2f}  {state}"
-            )
+            print(f"{s['hotkey']:<50}{s['agreed']:>8}{s['diverged']:>10}{s['rate']:>8.2f}  {state}")
     return 0
 
 
@@ -384,6 +379,8 @@ def _serve(args: argparse.Namespace) -> int:
             registry=Registry({}),
             keyring=keyring,
             corpus_version=CORPUS_VERSION,
+            uid_by_hotkey=store.uids(),
+            reserve=server.reserved if server is not None else None,
         )
         app = build_app(service)
         log.info("serving the coordinator on %s:%d", args.host, args.port)

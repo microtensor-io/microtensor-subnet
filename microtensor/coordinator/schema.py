@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 2
+SCHEMA_VERSION: Final[int] = 3
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -113,6 +113,18 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
                 rounds_observed INTEGER NOT NULL DEFAULT 0,
                 stale_rounds   INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (round_index, system_digest)
+            )
+            """,
+        ),
+    ),
+    (
+        3,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS metagraph (
+                hotkey       TEXT    PRIMARY KEY,
+                uid          INTEGER NOT NULL,
+                round_index  INTEGER NOT NULL DEFAULT 0
             )
             """,
         ),

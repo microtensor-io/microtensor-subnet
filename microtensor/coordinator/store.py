@@ -35,7 +35,6 @@ class CoordinatorStore:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-
     def open_round(
         self,
         round_index: int,
@@ -72,7 +71,6 @@ class CoordinatorStore:
     def latest_round(self) -> dict[str, Any] | None:
         row = self.db.one("SELECT * FROM rounds ORDER BY round_index DESC LIMIT 1")
         return dict(row) if row else None
-
 
     def record_assignment(
         self,
@@ -137,7 +135,6 @@ class CoordinatorStore:
             out.setdefault(str(row["system_digest"]), []).append(str(row["worker_hotkey"]))
         return {k: tuple(v) for k, v in out.items()}
 
-
     def record_catalogue(self, round_index: int, catalogue: Mapping[str, Entry]) -> None:
         """Store which systems this round covers and who owns them."""
         rows = [
@@ -173,6 +170,34 @@ class CoordinatorStore:
             """,
             rows,
         )
+
+    def record_metagraph(self, round_index: int, uid_by_hotkey: Mapping[str, int]) -> None:
+        """Keep the uid map the round was opened against.
+
+        Settling happens in a separate invocation from opening, and the reserved
+        hotkey is a validator rather than a miner, so it appears in no catalogue
+        row. Without this the settle path would have to reach for chain again to
+        learn a uid it already had in hand.
+        """
+        if not uid_by_hotkey:
+            return
+        with self.db.transaction():
+            self.db.executemany(
+                """
+                INSERT INTO metagraph (hotkey, uid, round_index)
+                VALUES (?, ?, ?)
+                ON CONFLICT(hotkey) DO UPDATE SET
+                    uid = excluded.uid,
+                    round_index = excluded.round_index
+                """,
+                [(h, int(u), round_index) for h, u in sorted(uid_by_hotkey.items())],
+            )
+
+    def uids(self) -> dict[str, int]:
+        return {
+            str(r["hotkey"]): int(r["uid"])
+            for r in self.db.query("SELECT hotkey, uid FROM metagraph")
+        }
 
     def catalogue(self, round_index: int) -> dict[str, Entry]:
         rows = self.db.query(
@@ -268,9 +293,7 @@ class CoordinatorStore:
         return tuple(str(r["worker_hotkey"]) for r in rows)
 
     def report_count(self, round_index: int) -> int:
-        row = self.db.one(
-            "SELECT COUNT(*) AS n FROM reports WHERE round_index = ?", (round_index,)
-        )
+        row = self.db.one("SELECT COUNT(*) AS n FROM reports WHERE round_index = ?", (round_index,))
         return int(row["n"]) if row else 0
 
     def reports_by_system(self, round_index: int) -> dict[str, list[Report]]:
@@ -303,7 +326,6 @@ class CoordinatorStore:
             body["signature"] = report.signature
             payload.append(body)
         return payload
-
 
     def record_divergences(self, round_index: int, divergences: Sequence[Divergence]) -> None:
         if not divergences:
@@ -339,7 +361,6 @@ class CoordinatorStore:
             "SELECT COUNT(*) AS n FROM divergences WHERE round_index = ?", (round_index,)
         )
         return (int(row["n"]) if row else 0) / total
-
 
     def standing(self, hotkey: str) -> Standing:
         row = self.db.one("SELECT * FROM reputation WHERE worker_hotkey = ?", (hotkey,))
@@ -396,7 +417,6 @@ class CoordinatorStore:
             "SELECT worker_hotkey FROM reputation WHERE advisory = 1 ORDER BY worker_hotkey"
         )
         return tuple(str(r["worker_hotkey"]) for r in rows)
-
 
     def publish(self, settlement: Settlement) -> None:
         self.db.execute(

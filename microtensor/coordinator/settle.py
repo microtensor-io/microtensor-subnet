@@ -19,6 +19,7 @@ from microtensor.scoring.weights import (
 log = logging.getLogger("microtensor.coordinator")
 
 SETTLEMENT_VERSION = 1
+RESERVE_MAX = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,7 @@ class Settlement:
     advisory: tuple[str, ...] = ()
     capped: bool = False
     blended: dict[str, float] = field(default_factory=dict)
+    reserved: dict[str, Any] = field(default_factory=dict)
     signature: str = ""
 
     def body(self) -> dict[str, Any]:
@@ -71,6 +73,7 @@ class Settlement:
             "advisory": list(self.advisory),
             "capped": self.capped,
             "blended": dict(sorted(self.blended.items())),
+            "reserved": dict(sorted(self.reserved.items())),
         }
 
     def digest(self) -> str:
@@ -91,6 +94,7 @@ class Settlement:
             advisory=self.advisory,
             capped=self.capped,
             blended=self.blended,
+            reserved=self.reserved,
             signature=signature,
         )
 
@@ -223,6 +227,46 @@ def catalogue_from(payload: Sequence[dict[str, Any]]) -> dict[str, Entry]:
     }
 
 
+def normalise_reserved(reserved: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The declared hold, or nothing.
+
+    A hold with no hotkey, no uid or no share is not a hold, and recording it as
+    an empty dict rather than a zeroed one keeps the settlement digest identical
+    to what an unreserved round produces.
+    """
+    if not reserved:
+        return {}
+
+    hotkey = str(reserved.get("hotkey", ""))
+    share = float(reserved.get("share", 0.0))
+    uid = int(reserved.get("uid", -1))
+    if not hotkey or uid < 0 or share <= 0.0:
+        return {}
+
+    return {"hotkey": hotkey, "uid": uid, "share": min(share, RESERVE_MAX)}
+
+
+def apply_reserved(weights: Mapping[int, float], reserved: Mapping[str, Any]) -> dict[int, float]:
+    """Fold a declared hold into the measured weights.
+
+    The hold is published alongside the vector rather than applied silently, so
+    every worker recomputes the same number and a coordinator quietly routing
+    emission to a uid of its choosing fails verification like any other
+    divergence. Measured shares are scaled to the remainder, which keeps their
+    proportions to each other intact.
+    """
+    if not reserved:
+        return dict(weights)
+
+    share = min(float(reserved.get("share", 0.0)), RESERVE_MAX)
+    remainder = RESERVE_MAX - share
+    uid = int(reserved["uid"])
+
+    out = {u: v * remainder for u, v in weights.items() if v * remainder > 0.0}
+    out[uid] = out.get(uid, 0.0) + share
+    return out
+
+
 def build(
     round_index: int,
     *,
@@ -236,6 +280,7 @@ def build(
     advisory: Sequence[str] = (),
     coldkeys: Mapping[str, str] | None = None,
     previous: Mapping[str, float] | None = None,
+    reserved: Mapping[str, Any] | None = None,
 ) -> Settlement:
     """The canonical settlement for one round."""
     entries = to_entries(reconciled, catalogue)
@@ -262,6 +307,9 @@ def build(
 
     uid_of = {e.miner_hotkey: e.uid for e in entries}
     weights = {uid_of[hotkey]: share for hotkey, share in final.items() if hotkey in uid_of}
+
+    hold = normalise_reserved(reserved)
+    weights = apply_reserved(weights, hold)
 
     by_digest = {e.system_digest: e for e in entries}
     published = tuple(
@@ -292,4 +340,5 @@ def build(
         advisory=tuple(sorted(advisory)),
         capped=bool(coldkeys),
         blended=dict(final),
+        reserved=hold,
     )
