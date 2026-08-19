@@ -23,6 +23,7 @@ validator = [
     "psutil>=5.9",
 ]
 coordinator = [
+    "pynacl>=1.5",
     "fastapi>=0.110",
     "uvicorn>=0.29",
 ]
@@ -80,6 +81,7 @@ module = [
     "psutil.*",
     "numpy.*",
     "wandb.*",
+    "nacl.*",
     "fastapi.*",
     "uvicorn.*",
 ]
