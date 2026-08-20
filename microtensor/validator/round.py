@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round, round_for_block
@@ -400,7 +399,7 @@ def _run_loopback_round(
     snapshot: MetagraphSnapshot,
     block_hash: str,
     started: float,
-    abstain: Any,
+    abstain: Callable[..., RoundOutcome],
 ) -> RoundOutcome:
     """The synthetic-chain harness measures and settles in one process.
 
