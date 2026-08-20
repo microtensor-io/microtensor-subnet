@@ -9,7 +9,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from microtensor.core.hashing import digest_file  # noqa: E402
-from microtensor.tasks.generator import MANIFEST_NAME  # noqa: E402
+
+MANIFEST_NAME = "corpus.manifest.json"
 
 
 def load_train(path: Path) -> list[dict[str, object]]:
