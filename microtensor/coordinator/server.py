@@ -134,6 +134,9 @@ class ServerClient:
             or {}
         )
 
+    def push_release(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._call("POST", "/v1/ingest/release", payload) or {}
+
     def push_assignments(
         self, round_index: int, assignment: Mapping[str, Sequence[str]]
     ) -> dict[str, Any]:

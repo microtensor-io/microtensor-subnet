@@ -8,12 +8,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from microtensor.chain.rounds import is_release_boundary, release_cutoff_block
 from microtensor.chain.weights import WeightVector, quantise_weights
 from microtensor.cli.common import add_chain_arguments, add_common_arguments, fail
 from microtensor.coordinator.api import Coordinator, Registry
 from microtensor.coordinator.assign import System, Worker, assign, by_worker, under_replicated
 from microtensor.coordinator.chain import ChainSource, RoundSource
 from microtensor.coordinator.config import config_hash, served_config
+from microtensor.coordinator.release import ReleaseError
+from microtensor.coordinator.release import build as build_release
 from microtensor.coordinator.server import (
     ServerClient,
     ServerRefused,
@@ -431,8 +434,69 @@ def _settle(args: argparse.Namespace) -> int:
                 exc,
             )
 
+        with _store(args) as store:
+            for version in _cut_releases(store, server, args.round):
+                print(f"released {version}")
+
     print(json.dumps(published, indent=2, sort_keys=True))
     return 0
+
+
+def _cut_releases(
+    store: CoordinatorStore, server: ServerClient | None, round_index: int
+) -> list[str]:
+    """Freeze each competition's frontier if this round ends a cycle.
+
+    Runs after settlement, reads its output, and changes nothing about it. A
+    release is a snapshot for distribution, not a scoring event: emissions for
+    this round are identical whether or not a release is cut from it.
+    """
+    if server is None or not is_release_boundary(round_index):
+        return []
+
+    published = store.settlement(round_index) or {}
+    frontier = published.get("frontier", ())
+    if not frontier:
+        return []
+
+    cutoff = release_cutoff_block(round_index)
+    now = int(time.time())
+    competitions = sorted(
+        {(str(row.get("track", "")), str(row.get("class", ""))) for row in frontier}
+    )
+
+    cut: list[str] = []
+    for track, hardware_class in competitions:
+        if not track or not hardware_class:
+            continue
+        try:
+            release = build_release(
+                published,
+                track=track,
+                hardware_class=hardware_class,
+                cutoff_block=cutoff,
+                published_at=now,
+            )
+        except ReleaseError as exc:
+            log.info("no release for %s/%s: %s", track, hardware_class, exc)
+            continue
+
+        payload = release.body()
+        payload["digest"] = release.digest()
+        payload["signature"] = release.signature
+        try:
+            server.push_release(payload)
+        except ServerRefused as exc:
+            log.warning("the control plane refused %s: %s", release.version, exc)
+            continue
+        except ServerUnreachable as exc:
+            log.warning("%s was not published: %s", release.version, exc)
+            continue
+
+        cut.append(release.version)
+        log.info("cut %s with %d systems", release.version, len(release.frontier))
+
+    return cut
 
 
 def _settlement_of(store: CoordinatorStore, round_index: int) -> Settlement:
