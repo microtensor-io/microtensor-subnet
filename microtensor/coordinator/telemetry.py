@@ -169,3 +169,33 @@ def silent(
         if block - last >= threshold:
             dropped[hotkey] = last
     return dict(sorted(dropped.items()))
+
+
+def for_server(
+    states: Sequence[Mapping[str, Any]], hardware: Sequence[Mapping[str, Any]] = ()
+) -> list[dict[str, Any]]:
+    """The rows the control plane holds: current state, one per miner.
+
+    Trimmed on the way out. Loss, throughput and MFU stay here, because the
+    public surface serves the fact that a miner is training and never its
+    numbers, and a field that is not sent cannot be shown by accident.
+    """
+    gear = {str(row.get("hotkey", "")): row for row in hardware}
+
+    out = []
+    for state in states:
+        hotkey = str(state.get("hotkey", ""))
+        card = gear.get(hotkey, {})
+        out.append(
+            {
+                "hotkey": hotkey,
+                "phase": str(state.get("phase", "")),
+                "role": state.get("role"),
+                "last_epoch": state.get("last_epoch"),
+                "last_block": state.get("last_block") or 0,
+                "gpu_name": str(card.get("gpu_name") or ""),
+                "gpu_count": int(card.get("gpu_count") or 0),
+                "framework": str(card.get("framework") or ""),
+            }
+        )
+    return sorted(out, key=lambda row: row["hotkey"])

@@ -435,11 +435,35 @@ def _settle(args: argparse.Namespace) -> int:
             )
 
         with _store(args) as store:
+            _push_telemetry(store, server, args.round)
             for version in _cut_releases(store, server, args.round):
                 print(f"released {version}")
 
     print(json.dumps(published, indent=2, sort_keys=True))
     return 0
+
+
+def _push_telemetry(
+    store: CoordinatorStore, server: ServerClient | None, round_index: int
+) -> None:
+    """Mirror who was training to the control plane.
+
+    Best effort. Telemetry is observational, so failing to mirror it must never
+    interfere with a settlement that has already been computed and set.
+    """
+    if server is None:
+        return
+
+    from microtensor.coordinator.telemetry import for_server
+
+    rows = for_server(store.telemetry_state(round_index), store.hardware_for(round_index))
+    if not rows:
+        return
+
+    try:
+        server.push_telemetry(round_index, rows)
+    except (ServerUnreachable, ServerRefused) as exc:
+        log.warning("telemetry was not mirrored to the control plane: %s", exc)
 
 
 def _cut_releases(

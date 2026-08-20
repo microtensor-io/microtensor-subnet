@@ -139,6 +139,21 @@ class ServerClient:
         found = self._call("GET", f"/v1/control/milestone?{query}")
         return dict(found) if found else {}
 
+    def push_telemetry(self, round_index: int, miners: list[dict[str, Any]]) -> dict[str, Any]:
+        """Mirror the current training state to the control plane.
+
+        A snapshot, not the event stream. Per epoch history stays here: it is an
+        operational concern and the public surface has no use for a loss curve.
+        """
+        return (
+            self._call(
+                "POST",
+                "/v1/ingest/telemetry",
+                {"round_index": round_index, "miners": miners},
+            )
+            or {}
+        )
+
     def push_release(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/v1/ingest/release", payload) or {}
 
