@@ -104,6 +104,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     weights.set_defaults(handler=_weights)
 
+    dash = inner.add_parser("dashboard", help="write a round page from the local store")
+    add_common_arguments(dash)
+    dash.add_argument("--round", type=int, help="which round, defaults to the latest")
+    dash.add_argument("--out", type=Path, default=Path("dashboard.html"))
+    dash.set_defaults(handler=_dashboard)
+
     cfg = inner.add_parser("config", help="print the served config and its hash")
     add_common_arguments(cfg)
     cfg.set_defaults(handler=_config)
@@ -160,6 +166,36 @@ def _init(args: argparse.Namespace) -> int:
     print("This host measures nothing. It fetches no artifact, loads no model, and")
     print("installs no jail. Commit the config hash on chain each round so workers")
     print("can prove the rules they measured against.")
+    return 0
+
+
+def _dashboard(args: argparse.Namespace) -> int:
+    """Write one page from what the store already holds.
+
+    A static file rather than a service, because the first thing worth learning
+    is whether the stored data carries what it is assumed to, and a generator
+    answers that without a presentation layer to build first.
+    """
+    from microtensor.coordinator.dashboard import render
+
+    with _store(args) as store:
+        row = store.latest_round()
+        if args.round is None:
+            if row is None:
+                return fail("no round has been opened yet")
+            index = int(row["round_index"])
+        else:
+            index = int(args.round)
+        page = render(
+            index,
+            store.telemetry_state(index),
+            store.hardware_for(index),
+            store.settlement(index),
+            store.frontier_history(),
+        )
+
+    args.out.write_text(page, encoding="utf-8")
+    print(f"wrote {args.out}")
     return 0
 
 
