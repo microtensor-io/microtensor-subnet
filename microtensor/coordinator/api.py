@@ -276,6 +276,63 @@ class Coordinator:
         )
         return self.store.settlement(round_index)
 
+    def ingest_telemetry(self, hotkey: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Take a window of events from one miner.
+
+        The hotkey comes from the verified signature, never the body, so a
+        caller can only ever report on itself. Events are observational: a
+        malformed field is nulled rather than refusing the batch, because a gap
+        in a chart costs nothing and a rejected batch costs the whole window.
+        """
+        from microtensor.coordinator.telemetry import clean_batch
+
+        events = clean_batch(list(body.get("events", ())), hotkey)
+        self.store.record_telemetry(events)
+        return {"accepted": len(events)}
+
+    def ingest_hardware(self, hotkey: str, body: dict[str, Any]) -> dict[str, Any]:
+        from microtensor.coordinator.telemetry import clean_hardware
+
+        report = clean_hardware(dict(body.get("hardware", {})), hotkey)
+        self.store.record_hardware(report)
+        return {"accepted": True}
+
+    def telemetry_round(self, round_index: int) -> dict[str, Any]:
+        """Where every miner currently is, one row each.
+
+        Read from the rolled up state rather than by scanning events, so a
+        hundred dashboard viewers cost one query over as many rows as there are
+        miners.
+        """
+        return {
+            "round": round_index,
+            "reported": True,
+            "miners": self.store.telemetry_state(round_index),
+        }
+
+    def telemetry_miner(self, hotkey: str) -> dict[str, Any]:
+        return {"hotkey": hotkey, "events": self.store.telemetry_for(hotkey)}
+
+    def telemetry_hardware(self, round_index: int) -> dict[str, Any]:
+        """Network composition for a round, with derived throughput.
+
+        `tflops` is computed here from the accelerator name rather than accepted
+        from the miner, so a participant cannot inflate it and the figure means
+        the same thing across the network. Everything else on the row is self
+        reported and labelled as such.
+        """
+        from microtensor.miner.telemetry import tflops_for
+
+        rows = []
+        for row in self.store.hardware_for(round_index):
+            entry = dict(row)
+            entry["tflops"] = tflops_for(
+                str(entry.get("gpu_name", "")), int(entry.get("gpu_count") or 0)
+            )
+            rows.append(entry)
+
+        return {"round": round_index, "self_reported": True, "hardware": rows}
+
     def corpus_digest(self) -> str:
         from microtensor.tasks.corpus import corpus_digest
 
@@ -448,6 +505,44 @@ def build_app(coordinator: Coordinator) -> Any:
     @app.get("/v1/round/current")
     def round_current() -> dict[str, Any]:
         return coordinator.current_round()
+
+    @app.post("/v1/telemetry")
+    async def telemetry(request: Request) -> dict[str, Any]:
+        raw = await request.body()
+        hotkey = authenticate(request, raw)
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="malformed telemetry body") from exc
+
+        from microtensor.coordinator.telemetry import TelemetryRejected
+
+        try:
+            return coordinator.ingest_telemetry(hotkey, body)
+        except TelemetryRejected as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/telemetry/hardware")
+    async def telemetry_hardware_in(request: Request) -> dict[str, Any]:
+        raw = await request.body()
+        hotkey = authenticate(request, raw)
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="malformed hardware body") from exc
+        return coordinator.ingest_hardware(hotkey, body)
+
+    @app.get("/v1/telemetry/round/{index}")
+    def telemetry_round(index: int) -> dict[str, Any]:
+        return coordinator.telemetry_round(index)
+
+    @app.get("/v1/telemetry/miner/{hotkey}")
+    def telemetry_miner(hotkey: str) -> dict[str, Any]:
+        return coordinator.telemetry_miner(hotkey)
+
+    @app.get("/v1/telemetry/hardware/{index}")
+    def telemetry_hardware_out(index: int) -> dict[str, Any]:
+        return coordinator.telemetry_hardware(index)
 
     @app.get("/v1/corpus")
     async def corpus_index(request: Request) -> dict[str, Any]:

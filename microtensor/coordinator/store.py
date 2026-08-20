@@ -171,6 +171,250 @@ class CoordinatorStore:
             rows,
         )
 
+    def record_telemetry(self, events: Sequence[Mapping[str, Any]]) -> None:
+        """Append events and roll the current state forward in one transaction.
+
+        Kept away from reports and settlements, which are permanent, small and
+        load bearing. Telemetry is the opposite of all three: high volume, low
+        value per row, and safe to lose.
+        """
+        if not events:
+            return
+
+        from microtensor.coordinator.telemetry import state_from
+
+        now = int(time.time())
+        with self.db.transaction():
+            self.db.executemany(
+                """
+                INSERT INTO telemetry_events (
+                    hotkey, round_index, phase, role, epoch, step, loss, throughput,
+                    mfu, elapsed_s, eta_s, base_model, note, emitted_block, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        e["hotkey"],
+                        e["round_index"],
+                        e["phase"],
+                        e.get("role"),
+                        e.get("epoch"),
+                        e.get("step"),
+                        e.get("loss"),
+                        e.get("throughput"),
+                        e.get("mfu"),
+                        e.get("elapsed_s", 0),
+                        e.get("eta_s"),
+                        e.get("base_model"),
+                        e.get("note"),
+                        e.get("emitted_block", 0),
+                        now,
+                    )
+                    for e in events
+                ],
+            )
+
+            by_miner: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+            for event in events:
+                by_miner.setdefault((event["hotkey"], event["round_index"]), []).append(event)
+
+            for group in by_miner.values():
+                state = state_from(group)
+                if state is None:
+                    continue
+                self.db.execute(
+                    """
+                    INSERT INTO telemetry_state (
+                        hotkey, round_index, phase, role, last_epoch, loss, throughput,
+                        mfu, elapsed_s, eta_s, note, last_block, first_seen, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(hotkey, round_index) DO UPDATE SET
+                        phase = excluded.phase,
+                        role = excluded.role,
+                        last_epoch = excluded.last_epoch,
+                        loss = excluded.loss,
+                        throughput = excluded.throughput,
+                        mfu = excluded.mfu,
+                        elapsed_s = excluded.elapsed_s,
+                        eta_s = excluded.eta_s,
+                        note = excluded.note,
+                        last_block = MAX(telemetry_state.last_block, excluded.last_block),
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        state["hotkey"],
+                        state["round_index"],
+                        state["phase"],
+                        state.get("role"),
+                        state.get("last_epoch"),
+                        state.get("loss"),
+                        state.get("throughput"),
+                        state.get("mfu"),
+                        state.get("elapsed_s", 0),
+                        state.get("eta_s"),
+                        state.get("note"),
+                        state.get("last_block", 0),
+                        now,
+                        now,
+                    ),
+                )
+
+    def record_hardware(self, report: Mapping[str, Any]) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                """
+                INSERT INTO telemetry_hardware (
+                    hotkey, round_index, gpu_name, gpu_count, vram_total_mb, cpu_count,
+                    ram_total_mb, bandwidth_up_mbps, bandwidth_down_mbps, framework,
+                    emitted_block
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(hotkey, round_index) DO UPDATE SET
+                    gpu_name = excluded.gpu_name,
+                    gpu_count = excluded.gpu_count,
+                    vram_total_mb = excluded.vram_total_mb,
+                    cpu_count = excluded.cpu_count,
+                    ram_total_mb = excluded.ram_total_mb,
+                    bandwidth_up_mbps = excluded.bandwidth_up_mbps,
+                    bandwidth_down_mbps = excluded.bandwidth_down_mbps,
+                    framework = excluded.framework,
+                    emitted_block = excluded.emitted_block
+                """,
+                (
+                    report["hotkey"],
+                    report["round_index"],
+                    report.get("gpu_name", ""),
+                    report.get("gpu_count", 0),
+                    report.get("vram_total_mb", 0),
+                    report.get("cpu_count", 0),
+                    report.get("ram_total_mb", 0),
+                    report.get("bandwidth_up_mbps"),
+                    report.get("bandwidth_down_mbps"),
+                    report.get("framework", ""),
+                    report.get("emitted_block", 0),
+                ),
+            )
+
+    def telemetry_state(self, round_index: int) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.db.query(
+                "SELECT * FROM telemetry_state WHERE round_index = ? ORDER BY hotkey",
+                (round_index,),
+            )
+        ]
+
+    def telemetry_for(self, hotkey: str, limit: int = 500) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.db.query(
+                """
+                SELECT * FROM telemetry_events WHERE hotkey = ?
+                ORDER BY emitted_block DESC, id DESC LIMIT ?
+                """,
+                (hotkey, limit),
+            )
+        ]
+
+    def hardware_for(self, round_index: int) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.db.query(
+                "SELECT * FROM telemetry_hardware WHERE round_index = ? ORDER BY hotkey",
+                (round_index,),
+            )
+        ]
+
+    def prune_telemetry(self, older_than_days: int = 30) -> int:
+        cutoff = int(time.time()) - older_than_days * 86400
+        with self.db.transaction():
+            cursor = self.db.execute(
+                "DELETE FROM telemetry_events WHERE received_at < ?", (cutoff,)
+            )
+        return int(cursor.rowcount or 0)
+
+    def record_frontier(
+        self,
+        round_index: int,
+        snapshots: Sequence[Mapping[str, Any]],
+        summaries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Keep the frontier as settlement computed it.
+
+        Written once per round because history that is not captured cannot be
+        reconstructed: recomputing three hundred rounds to draw one line is the
+        alternative, and it gets worse every round.
+        """
+        if not snapshots and not summaries:
+            return
+
+        with self.db.transaction():
+            self.db.executemany(
+                """
+                INSERT INTO frontier_snapshots (
+                    round_index, track, hardware_class, system_digest,
+                    quality_q, cost_q, hv_exclusive, rank_by_cost
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(round_index, track, hardware_class, system_digest) DO UPDATE SET
+                    quality_q = excluded.quality_q,
+                    cost_q = excluded.cost_q,
+                    hv_exclusive = excluded.hv_exclusive,
+                    rank_by_cost = excluded.rank_by_cost
+                """,
+                [
+                    (
+                        round_index,
+                        s["track"],
+                        s["hardware_class"],
+                        s["system_digest"],
+                        s.get("quality_q", 0.0),
+                        s.get("cost_q", 0.0),
+                        s.get("hv_exclusive", 0.0),
+                        s.get("rank_by_cost", 0),
+                    )
+                    for s in snapshots
+                ],
+            )
+            self.db.executemany(
+                """
+                INSERT INTO frontier_summary (
+                    round_index, track, hardware_class, member_count, hv_total,
+                    best_quality, lowest_cost, median_resolve_rate
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(round_index, track, hardware_class) DO UPDATE SET
+                    member_count = excluded.member_count,
+                    hv_total = excluded.hv_total,
+                    best_quality = excluded.best_quality,
+                    lowest_cost = excluded.lowest_cost,
+                    median_resolve_rate = excluded.median_resolve_rate
+                """,
+                [
+                    (
+                        round_index,
+                        s["track"],
+                        s["hardware_class"],
+                        s.get("member_count", 0),
+                        s.get("hv_total", 0.0),
+                        s.get("best_quality", 0.0),
+                        s.get("lowest_cost", 0.0),
+                        s.get("median_resolve_rate", 0.0),
+                    )
+                    for s in summaries
+                ],
+            )
+
+    def frontier_history(self, track: str = "", hardware_class: str = "") -> list[dict[str, Any]]:
+        if track and hardware_class:
+            rows = self.db.query(
+                """
+                SELECT * FROM frontier_summary WHERE track = ? AND hardware_class = ?
+                ORDER BY round_index
+                """,
+                (track, hardware_class),
+            )
+        else:
+            rows = self.db.query("SELECT * FROM frontier_summary ORDER BY round_index")
+        return [dict(row) for row in rows]
+
     def record_metagraph(self, round_index: int, uid_by_hotkey: Mapping[str, int]) -> None:
         """Keep the uid map the round was opened against.
 

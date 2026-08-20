@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 3
+SCHEMA_VERSION: Final[int] = 4
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -125,6 +125,96 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
                 hotkey       TEXT    PRIMARY KEY,
                 uid          INTEGER NOT NULL,
                 round_index  INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+        ),
+    ),
+    (
+        4,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_events (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                hotkey         TEXT    NOT NULL,
+                round_index    INTEGER NOT NULL,
+                phase          TEXT    NOT NULL,
+                role           TEXT,
+                epoch          INTEGER,
+                step           INTEGER,
+                loss           REAL,
+                throughput     REAL,
+                mfu            REAL,
+                elapsed_s      INTEGER NOT NULL DEFAULT 0,
+                eta_s          INTEGER,
+                base_model     TEXT,
+                note           TEXT,
+                emitted_block  INTEGER NOT NULL DEFAULT 0,
+                received_at    INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_telemetry_events_round
+                ON telemetry_events (hotkey, round_index)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_state (
+                hotkey         TEXT    NOT NULL,
+                round_index    INTEGER NOT NULL,
+                phase          TEXT    NOT NULL,
+                role           TEXT,
+                last_epoch     INTEGER,
+                loss           REAL,
+                throughput     REAL,
+                mfu            REAL,
+                elapsed_s      INTEGER NOT NULL DEFAULT 0,
+                eta_s          INTEGER,
+                note           TEXT,
+                last_block     INTEGER NOT NULL DEFAULT 0,
+                first_seen     INTEGER NOT NULL DEFAULT 0,
+                updated_at     INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (hotkey, round_index)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_hardware (
+                hotkey              TEXT    NOT NULL,
+                round_index         INTEGER NOT NULL,
+                gpu_name            TEXT    NOT NULL DEFAULT '',
+                gpu_count           INTEGER NOT NULL DEFAULT 0,
+                vram_total_mb       INTEGER NOT NULL DEFAULT 0,
+                cpu_count           INTEGER NOT NULL DEFAULT 0,
+                ram_total_mb        INTEGER NOT NULL DEFAULT 0,
+                bandwidth_up_mbps   REAL,
+                bandwidth_down_mbps REAL,
+                framework           TEXT    NOT NULL DEFAULT '',
+                emitted_block       INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (hotkey, round_index)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS frontier_snapshots (
+                round_index    INTEGER NOT NULL,
+                track          TEXT    NOT NULL,
+                hardware_class TEXT    NOT NULL,
+                system_digest  TEXT    NOT NULL,
+                quality_q      REAL    NOT NULL DEFAULT 0,
+                cost_q         REAL    NOT NULL DEFAULT 0,
+                hv_exclusive   REAL    NOT NULL DEFAULT 0,
+                rank_by_cost   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (round_index, track, hardware_class, system_digest)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS frontier_summary (
+                round_index         INTEGER NOT NULL,
+                track               TEXT    NOT NULL,
+                hardware_class      TEXT    NOT NULL,
+                member_count        INTEGER NOT NULL DEFAULT 0,
+                hv_total            REAL    NOT NULL DEFAULT 0,
+                best_quality        REAL    NOT NULL DEFAULT 0,
+                lowest_cost         REAL    NOT NULL DEFAULT 0,
+                median_resolve_rate REAL    NOT NULL DEFAULT 0,
+                PRIMARY KEY (round_index, track, hardware_class)
             )
             """,
         ),
