@@ -32,13 +32,22 @@ unit at which capability is now delivered is well established in the systems
 literature.
 
 What such a system costs and delivers, though, is knowable only by measuring it.
-Expected cost per query depends on the fraction of traffic the front resolves, a
-joint property of that model, the routing thresholds and the task distribution.
-End-to-end quality depends on what the system finally returns rather than on
-what the front returns alone. Resident memory under production context routinely
-exceeds what a parameter count implies. Each of these emerges from the assembled
-composition running on specific hardware, and none follows from a component's
-published figures.
+Expected cost per query is
+
+```
+C  =  c_front  +  (1 - ρ) · c_specialist
+```
+
+where `ρ` is the fraction of traffic the front resolves. That fraction is a
+joint property of the front model, the routing thresholds and the task
+distribution, so no component's published figures determine it. End-to-end
+quality likewise depends on what the system finally returns rather than on what
+the front returns alone, and resident memory under production context routinely
+exceeds what a parameter count implies, because the cache term grows with input
+length rather than with weight count.
+
+Each of these emerges from the assembled composition running on specific
+hardware.
 
 Established evaluation ranks single frozen models against a quality metric. That
 measures a well-defined property and is the right instrument for comparing
@@ -50,7 +59,23 @@ certificate bound to the exact artifacts that produced it.
 
 ## How it works
 
-Microtensor rewards miners for building inference systems and measures what they
+```
+                                    ┌──────────────┐
+                        escalate    │  specialist  │
+                     ┌─────────────▶│ host profile │───┐
+                     │   (1 - ρ)    └──────────────┘   │
+  ┌───────┐   ┌──────┴──────┐                          ▼
+  │ query │──▶│    front    │──▶ ◇ router          ┌────────┐
+  └───────┘   │ class limit │                      │ answer │
+              └─────────────┘──────────────────────└────────┘
+                                    resolve  (ρ)
+```
+
+The front runs on every query, so its envelope determines the economics of the
+whole system. The specialist runs only on the escalated fraction, so its cost
+enters the total weighted by `1 - ρ`.
+
+Microtensor rewards miners for building these systems and measures what they
 cost. The mechanism works as follows:
 
 1. **Miners** build up to three components: a **front model** compressed from a
@@ -86,18 +111,52 @@ memory envelope rather than a device. A system is admissible only when every
 component fits both the class ceiling and the envelope its author declared for
 it, so a certificate reports figures that are binding rather than aspirational.
 
+Admission is binary. A system exists for a round only when every component
+clears both bounds on every axis:
+
+```
+admissible  ⇔  measured ≤ declared ≤ class ceiling
+                for size, memory, latency, on every component
+```
+
 Among admissible systems, reward follows position on the cost-quality frontier.
-A system that is not beaten on both axes sits on that frontier and earns in
-proportion to the region it alone covers. A system placed beside an existing one
-earns close to nothing, while a system opening an unoccupied trade-off earns in
+
+```
+  quality
+     ▲
+     │                              ● C
+     │                     ┌────────┘
+     │            ● B      │ region B
+     │       ┌─────────────┘ alone covers
+     │  ● A  │           ·        · ← dominated systems
+     │       │      ·
+     └───────┴────────────────────────────────▶ cost
+```
+
+A system that is not beaten on both axes sits on the frontier and earns in
+proportion to the region it alone covers:
+
+```
+E(S)  ∝  HV(frontier)  −  HV(frontier without S)
+```
+
+A system placed beside an existing one covers almost nothing the other does not,
+and both earn less as a result. A system opening an unoccupied trade-off earns in
 proportion to the ground it opens. There is no ranked list and no weighted
-composite score, so no arbitrary trade-off between quality and cost is imposed
-on participants.
+composite score, so no arbitrary exchange rate between quality and cost is
+imposed on participants.
 
 Within a system, each component is settled by role-baseline ablation: the
 measured change in the system's value when that component is replaced by the
-published baseline for its role. A component the system does not need measures
-zero and earns nothing.
+published baseline for its role.
+
+```
+φ(component)  =  V(system)  −  V(system with component → role baseline)
+```
+
+A component the system does not need measures zero and earns nothing, and a
+router that improves the system's frontier position by trading escalation
+against quality is paid exactly the value of that improvement.
 
 Each class is a standing competition that opens and remains open, so a new class
 is an addition rather than a replacement. The target stays in motion through
