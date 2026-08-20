@@ -55,6 +55,7 @@ class Settlement:
     capped: bool = False
     blended: dict[str, float] = field(default_factory=dict)
     reserved: dict[str, Any] = field(default_factory=dict)
+    dropped: dict[str, int] = field(default_factory=dict)
     signature: str = ""
 
     def body(self) -> dict[str, Any]:
@@ -74,6 +75,7 @@ class Settlement:
             "capped": self.capped,
             "blended": dict(sorted(self.blended.items())),
             "reserved": dict(sorted(self.reserved.items())),
+            "dropped": dict(sorted(self.dropped.items())),
         }
 
     def digest(self) -> str:
@@ -95,6 +97,7 @@ class Settlement:
             capped=self.capped,
             blended=self.blended,
             reserved=self.reserved,
+            dropped=self.dropped,
             signature=signature,
         )
 
@@ -357,6 +360,7 @@ def build(
     coldkeys: Mapping[str, str] | None = None,
     previous: Mapping[str, float] | None = None,
     reserved: Mapping[str, Any] | None = None,
+    dropped: Mapping[str, int] | None = None,
 ) -> Settlement:
     """The canonical settlement for one round."""
     entries = to_entries(reconciled, catalogue)
@@ -417,4 +421,5 @@ def build(
         capped=bool(coldkeys),
         blended=dict(final),
         reserved=hold,
+        dropped={str(k): int(v) for k, v in sorted((dropped or {}).items())},
     )

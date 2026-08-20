@@ -251,6 +251,11 @@ def verify_settlement(
     it is stated: an undeclared hold changes the weights without changing the
     inputs and fails here like any other tampering.
 
+    The dropped set is taken from the settlement for the same reason as the
+    advisory set: it is liveness state only the coordinator observes, it changes
+    who is measured, and recomputing without it would disagree with an honest
+    settlement the moment any miner went quiet.
+
     Reconciliation uses the advisory set the settlement declares. That set is
     reputation state only the coordinator holds, and excluding a worker changes
     which value wins a majority, so recomputing without it would disagree with
@@ -282,6 +287,7 @@ def verify_settlement(
         unscored=result.unscored,
         under_replicated=published.get("under_replicated", ()),
         reserved=published.get("reserved"),
+        dropped=published.get("dropped"),
     )
 
     held = normalise_reserved(published.get("reserved"))

@@ -265,6 +265,7 @@ class Coordinator:
             coldkeys=self.coldkeys,
             previous=self._previous_weights(round_index),
             reserved=self._reserved(),
+            dropped=self._dropped(round_index, int(row.get("seed_block", 0) or 0)),
         )
         self.store.publish(settlement)
 
@@ -371,6 +372,26 @@ class Coordinator:
                 for task in held.tasks
             ],
         }
+
+    def _dropped(self, round_index: int, block: int) -> dict[str, int]:
+        """Miners that went quiet during training and never committed.
+
+        A commitment ends the check. Someone who finished training, committed on
+        chain and then lost the box has an artifact any validator can fetch, and
+        discarding it over a dead heartbeat throws away the work for a reason
+        unrelated to the work.
+
+        Published in the settlement rather than kept here, because a worker that
+        cannot check the drop would enrol a miner the coordinator excluded and
+        the two would settle different participant sets.
+        """
+        from microtensor.coordinator.telemetry import silent
+
+        if not block:
+            return {}
+
+        committed = {entry.miner_hotkey for entry in self.catalogue.values()}
+        return silent(self.store.telemetry_state(round_index), block, committed)
 
     def _settle_on_hold(self, round_index: int) -> dict[str, Any] | None:
         existing = self.store.settlement(round_index)
