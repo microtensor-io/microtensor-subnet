@@ -267,6 +267,12 @@ class Coordinator:
             reserved=self._reserved(),
         )
         self.store.publish(settlement)
+
+        from microtensor.coordinator.settle import snapshots_from
+
+        snapshots, summaries = snapshots_from(settlement.body(), result.reconciled)
+        self.store.record_frontier(round_index, snapshots, summaries)
+
         log.info(
             "round %d settled: %d systems, %d unscored, %d divergences",
             round_index,

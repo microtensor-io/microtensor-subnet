@@ -267,6 +267,82 @@ def apply_reserved(weights: Mapping[int, float], reserved: Mapping[str, Any]) ->
     return out
 
 
+def snapshots_from(
+    published: Mapping[str, Any],
+    reconciled: Sequence[Reconciled] = (),
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The frontier as this round settled it, kept for history.
+
+    Read off the settlement rather than added to it. Storing a snapshot must not
+    change what validators sign, so nothing here touches the settlement body:
+    the resolve rate comes from the reconciled measurements alongside it, and
+    the rest is projected from rows the settlement already publishes.
+
+    Coordinates are the quantised values scoring used, so a snapshot is the
+    input the settlement saw rather than a rounded rendering of it.
+    """
+    resolve = {r.system_digest: r.resolve_rate for r in reconciled}
+
+    by_competition: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in published.get("frontier", ()):
+        share = float(row.get("share", 0.0))
+        if share <= 0.0:
+            continue
+        key = (str(row.get("track", "")), str(row.get("class", "")))
+        by_competition.setdefault(key, []).append(dict(row))
+
+    snapshots: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+
+    for (track, hardware_class), rows in sorted(by_competition.items()):
+        ordered = sorted(
+            rows, key=lambda r: (float(r.get("expected_ms", 0.0)), str(r.get("system")))
+        )
+
+        rates = [
+            float(resolve[str(r.get("system"))])
+            for r in ordered
+            if str(r.get("system")) in resolve and resolve[str(r.get("system"))] is not None
+        ]
+
+        for position, row in enumerate(ordered, start=1):
+            snapshots.append(
+                {
+                    "track": track,
+                    "hardware_class": hardware_class,
+                    "system_digest": str(row.get("system", "")),
+                    "quality_q": float(row.get("quality", 0.0)),
+                    "cost_q": float(row.get("expected_ms", 0.0)),
+                    "hv_exclusive": float(row.get("share", 0.0)),
+                    "rank_by_cost": position,
+                }
+            )
+
+        summaries.append(
+            {
+                "track": track,
+                "hardware_class": hardware_class,
+                "member_count": len(ordered),
+                "hv_total": round(sum(float(r.get("share", 0.0)) for r in ordered), 9),
+                "best_quality": max(float(r.get("quality", 0.0)) for r in ordered),
+                "lowest_cost": min(float(r.get("expected_ms", 0.0)) for r in ordered),
+                "median_resolve_rate": _median(rates),
+            }
+        )
+
+    return snapshots, summaries
+
+
+def _median(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return round(ordered[middle], 6)
+    return round((ordered[middle - 1] + ordered[middle]) / 2, 6)
+
+
 def build(
     round_index: int,
     *,
