@@ -117,6 +117,7 @@ class Coordinator:
     coldkeys: dict[str, str] = None  # type: ignore[assignment]
     uid_by_hotkey: dict[str, int] = None  # type: ignore[assignment]
     reserve: Callable[[], dict[str, Any]] | None = None
+    mirror_report: Callable[[int, list[dict[str, Any]]], Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.catalogue:
@@ -215,7 +216,25 @@ class Coordinator:
         )
 
         self.store.record_report(report)
+        self._mirror(report)
         return {"accepted": True, "digest": report.digest()}
+
+    def _mirror(self, report: Report) -> None:
+        """Hand the control plane the measurement as it lands.
+
+        Best effort, like telemetry: the live view is an observation feed, and
+        failing to mirror one report must never refuse the worker who made it.
+        Settlement re-pushes the full set, so a missed mirror heals itself.
+        """
+        if self.mirror_report is None:
+            return
+
+        body = report.body()
+        body["signature"] = report.signature
+        try:
+            self.mirror_report(report.round_index, [body])
+        except Exception as exc:
+            log.warning("a report was not mirrored to the control plane: %s", exc)
 
     def settle(self, round_index: int) -> dict[str, Any] | None:
         """Reconcile, settle, and publish once quorum is reached.

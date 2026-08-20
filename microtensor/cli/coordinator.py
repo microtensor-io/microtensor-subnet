@@ -297,7 +297,11 @@ def _open(args: argparse.Namespace) -> int:
     print()
     if server is not None:
         try:
-            server.push_assignments(round_.index, mapping)
+            server.push_assignments(
+                round_.index,
+                mapping,
+                {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
+            )
         except (ServerUnreachable, ServerRefused) as exc:
             log.warning("the assignment map was not mirrored to the control plane: %s", exc)
 
@@ -609,6 +613,7 @@ def _serve(args: argparse.Namespace) -> int:
             corpora=_corpora(args),
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
+            mirror_report=server.push_reports if server is not None else None,
         )
         app = build_app(service)
         log.info("serving the coordinator on %s:%d", args.host, args.port)

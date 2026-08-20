@@ -158,19 +158,27 @@ class ServerClient:
         return self._call("POST", "/v1/ingest/release", payload) or {}
 
     def push_assignments(
-        self, round_index: int, assignment: Mapping[str, Sequence[str]]
+        self,
+        round_index: int,
+        assignment: Mapping[str, Sequence[str]],
+        systems: Mapping[str, tuple[str, str, str]] | None = None,
     ) -> dict[str, Any]:
-        return (
-            self._call(
-                "POST",
-                "/v1/ingest/assignments",
-                {
-                    "round_index": round_index,
-                    "assignment": {k: list(v) for k, v in assignment.items()},
-                },
-            )
-            or {}
-        )
+        """Mirror who measures what, and which arena each system entered.
+
+        The arena rides along because the server's live view needs it before
+        any settlement names the system; the assignment map alone only says
+        which workers were drawn.
+        """
+        body: dict[str, Any] = {
+            "round_index": round_index,
+            "assignment": {k: list(v) for k, v in assignment.items()},
+        }
+        if systems:
+            body["systems"] = [
+                {"digest": digest, "track": track, "hardware_class": klass, "miner": miner}
+                for digest, (track, klass, miner) in systems.items()
+            ]
+        return self._call("POST", "/v1/ingest/assignments", body) or {}
 
 
 @dataclass(slots=True)
