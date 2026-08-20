@@ -53,6 +53,26 @@ miner:
       A miner comes online once per round, inside the submission window, long
       enough to send one extrinsic. The rest of the round belongs to training.
 
+  unattended:
+    command: "mt miner serve"
+    note: >
+      Trains and submits without anyone typing a command, reporting each epoch
+      to the coordinator. Telemetry is observational: it never enters a
+      certificate and never affects a score.
+    network:
+      public_ip: true
+      port: 8091
+      why: >
+        The daemon answers on-demand status queries over an axon. Only needed
+        for mt miner serve; the manual package, provenance, ship path needs no
+        inbound port.
+    liveness:
+      heartbeat_blocks: 300
+      note: >
+        Silence past the heartbeat drops a miner that has not committed. A
+        commitment on chain ends the check, because the artifact is already
+        fetchable by any validator.
+
 validator:
   enforced: true
 

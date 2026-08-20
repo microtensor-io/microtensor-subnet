@@ -360,6 +360,80 @@ the branch under you.
 
 ---
 
+## 8b · Running unattended
+
+`mt miner serve` trains and submits without anyone typing a command. It reports
+each epoch and each transition to the coordinator, then packages, uploads, logs
+provenance and commits on chain exactly as `mt miner ship` does.
+
+```bash
+mt miner serve --train mytraining:run --epochs 40
+```
+
+`--train` names a `module:function` in your own code. The daemon calls it with a
+hook and owns nothing else about your training loop:
+
+```python
+def run(hook):
+    for epoch in range(40):
+        loss = train_one_epoch()
+        hook.on_epoch_end(epoch, {"loss": loss, "throughput": samples_per_second})
+```
+
+Two adapters ship for the common cases:
+
+```python
+from microtensor.miner.adapters import LoopAdapter, TrainerCallback
+
+adapter = LoopAdapter(hook, samples_per_epoch=len(dataset))   # a plain loop
+trainer = Trainer(..., callbacks=[TrainerCallback(hook)])     # HuggingFace
+```
+
+The state machine is `registered -> training -> packaging -> uploading ->
+committing -> submitted`, with `failed` reachable from any of them. The chain
+commitment stays yours throughout: it is a signed extrinsic, so only your hotkey
+can produce one.
+
+Pass `--no-telemetry` to submit unattended while reporting nothing.
+
+### What telemetry is, and what it is not
+
+Everything the daemon reports is observational. It never enters a certificate,
+never affects a score, and never gates admission. Validators measure your
+artifacts themselves on their own certified hardware, and that measurement is
+the only figure that carries weight.
+
+Hardware is self reported and labelled as such wherever it appears. Claiming an
+accelerator you do not have changes nothing about admission, scoring, or
+eligibility.
+
+### Liveness
+
+A miner silent for 300 blocks, about an hour, is dropped from the round.
+
+The rule has one exception, and it matters:
+
+| | |
+|---|---|
+| no commitment, silent past the threshold | dropped from the round |
+| commitment on chain | measured, regardless of silence |
+
+If you finished training and committed, your artifact is in a store any
+validator can fetch. Losing your box after that does not cost you the round.
+
+### The manual path still works
+
+`package`, `provenance`, `ship` by hand remain supported. If you would rather
+train separately and submit yourself, nothing here changes that.
+
+### A public port
+
+`mt miner serve` also answers on-demand status queries over a Bittensor axon, so
+a dashboard or an operator can look into one run. That needs a reachable IP and
+port 8091 open.
+
+---
+
 ## 9b · Releases, and why the cutoff matters
 
 Rounds settle every day. Every 30 rounds the frontier is frozen and published as

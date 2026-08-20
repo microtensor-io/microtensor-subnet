@@ -200,6 +200,22 @@ emission share.
 A round that evaluates cleanly but pays nobody, because no artifact has reached
 `MIN_ROUNDS_OBSERVED` yet, is settled rather than abstained.
 
+## The dropped set
+
+Settlements carry a `dropped` map of miners that went quiet during training
+without committing, each with the block they were last heard from. It is
+verified the same way the advisory set is: recomputed from the published
+settlement, and a mismatch rejects the settlement.
+
+A commitment ends the check. A miner that committed on chain is measured whether
+or not it kept reporting, because the artifact is already fetchable.
+
+Standalone validators see no telemetry and are unaffected. They enrol from chain
+commitments alone, which is correct precisely because a commitment always
+survives silence.
+
+---
+
 ## Weights and rounds
 
 Weight submission is not tied to round completion. The validator re-submits its

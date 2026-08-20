@@ -187,6 +187,39 @@ target rolls forward.
 
 ---
 
+## 2c · Telemetry
+
+A miner may report what it is doing: which phase it is in, which epoch it has
+reached, its loss, its throughput, and what hardware it claims to be training
+on. The coordinator stores that stream and serves it.
+
+**It is observational and nothing more.** Telemetry is reported by the party
+being measured, so it can be neither verified nor trusted. It therefore never
+enters a certificate, never affects a score, never gates admission, and never
+determines eligibility for a competition.
+
+The whole design follows from that one boundary: a miner can tell you what it is
+doing without ever telling you how good it is. What it is doing is reported;
+how good it is, validators measure on their own certified hardware.
+
+Hardware is the clearest case. A participant can claim any accelerator, which is
+acceptable for describing the network and unacceptable as an input to anything
+else. Peak throughput is derived from the accelerator name through a table in
+this repository rather than accepted from the miner, so the figure means the
+same thing across the network and cannot be inflated.
+
+Liveness is the one place telemetry touches the mechanism, and it is bounded.
+Silence past `TELEMETRY_HEARTBEAT_BLOCKS` drops a miner from the round, measured
+in blocks rather than epochs because a silent miner has no epoch clock and
+blocks are chain derived. A chain commitment ends the check: the artifact is
+already fetchable, and discarding it over a dead heartbeat would throw away real
+work for a reason unrelated to the work. The dropped set is published in the
+settlement so a worker verifies it rather than taking the coordinator's word,
+and a standalone validator, which sees no telemetry at all, enrols from
+commitments and settles identically.
+
+---
+
 ## 3 · The submission (frozen)
 
 Three parts, signed by the miner's hotkey and pinned by digest:
