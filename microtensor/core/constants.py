@@ -59,6 +59,7 @@ COORDINATOR_BACKOFF_SECONDS: Final[float] = 5.0
 COORDINATOR_TIMEOUT_SECONDS: Final[int] = 30
 COORDINATOR_URL: Final[str] = ""
 COORDINATOR_SERVER_URL: Final[str] = ""
+PUBLIC_SERVER_URL: Final[str] = "https://api.microtensor.cloud"
 COORDINATOR_PORT: Final[int] = 8443
 REPORT_MAX_BYTES: Final[int] = 256 * 1024
 REPUTATION_FLOOR: Final[float] = 0.80

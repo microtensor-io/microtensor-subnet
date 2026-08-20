@@ -3,8 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from microtensor.chain.rounds import release_index, release_version
 from microtensor.cli.common import add_common_arguments, fail
-from microtensor.core.constants import CLASS_WEIGHTS, MECHANISM_VERSION
+from microtensor.core.constants import (
+    CLASS_WEIGHTS,
+    MECHANISM_VERSION,
+    RELEASE_ROUNDS,
+)
 from microtensor.core.readiness import audit, summary
 from microtensor.core.tracks import (
     CLASSES,
@@ -71,6 +76,15 @@ def _tracks(args: argparse.Namespace) -> int:
     for track_id, class_id in live:
         print(f"{f'{track_id}/{class_id}':<24}{get_track(track_id).published_metric:<24}scored")
 
+    print(f"\n{'competition':<24}release")
+    for track_id, class_id in live:
+        version = release_version(track_id, class_id, release_index(0))
+        print(f"{f'{track_id}/{class_id}':<24}{version}")
+
+    print(
+        f"\nreleases cut every {RELEASE_ROUNDS} rounds; a release freezes the "
+        "frontier for distribution and pays nobody"
+    )
     print(f"\n{len(enabled_tracks())} tracks open, {len(live)} competitions")
     return 0
 

@@ -5,6 +5,12 @@ import json
 import logging
 from pathlib import Path
 
+from microtensor.chain.rounds import (
+    release_cutoff_block,
+    release_index,
+    release_version,
+    rounds_until_release,
+)
 from microtensor.chain.wallet import hotkey_address
 from microtensor.cli.common import (
     add_chain_arguments,
@@ -18,6 +24,7 @@ from microtensor.core.constants import (
     CORPUS_VERSION,
     GENESIS_BLOCK,
     PROVENANCE_REQUIRED,
+    PUBLIC_SERVER_URL,
     ROUND_BLOCKS,
 )
 from microtensor.core.protocol import ArtifactFormat, DeclaredEnvelope, LoadManifest
@@ -34,6 +41,7 @@ from microtensor.miner.package import (
 from microtensor.miner.provenance import ProvenanceMissing
 from microtensor.miner.publish import PublishError, PublishLoop, current_round, publish
 from microtensor.miner.selfcheck import SelfCheckError, selfcheck
+from microtensor.miner.standing import fetch as fetch_standing
 from microtensor.miner.upload import UploadError, plan_upload, upload
 from microtensor.provenance.record import ProvenanceUnavailable, RunStore
 
@@ -96,6 +104,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     status = inner.add_parser("status", help="show what this miner would publish")
     _add_settings_arguments(status)
+    status.add_argument(
+        "--server", default=PUBLIC_SERVER_URL, help="public API to read standing from"
+    )
+    status.add_argument(
+        "--offline", action="store_true", help="print the local manifest without asking the API"
+    )
     status.set_defaults(handler=_status)
 
     prov = inner.add_parser(
@@ -483,4 +497,45 @@ def _status(args: argparse.Namespace) -> int:
         f"declared    size {manifest.declared.size_bytes}, "
         f"rss {manifest.declared.peak_rss_bytes}, p95 {manifest.declared.p95_latency_ms}ms"
     )
+
+    index = manifest.round_index
+    print()
+    version = release_version(manifest.track, manifest.hardware_class, release_index(index))
+    print(f"release     {version}")
+    print(
+        f"cutoff      {rounds_until_release(index)} round(s), "
+        f"block {release_cutoff_block(index)}"
+    )
+
+    if getattr(args, "offline", False):
+        return 0
+
+    standing = fetch_standing(
+        args.server, manifest.track, manifest.hardware_class, manifest.digest()
+    )
+    if not standing.reachable:
+        print(f"standing    unavailable ({standing.reason})")
+        return 0
+
+    if standing.on_frontier:
+        print(f"frontier    yes, rank {standing.rank_by_cost} of {standing.of_total} by cost")
+        print(f"measured    quality {standing.quality:.4f}, {standing.expected_ms:.1f} ms")
+    else:
+        print(f"frontier    no ({standing.of_total} system(s) on it)")
+
+    if standing.contribution:
+        parts = " · ".join(
+            f"{role} {value:.2f}" for role, value in sorted(standing.contribution.items())
+        )
+        print(f"contribution {parts}")
+
+    if standing.milestone:
+        target_quality = standing.milestone.get("target_quality")
+        target_cost = standing.milestone.get("target_cost")
+        met = standing.milestone.get("met_by")
+        print(
+            f"milestone   {target_quality} quality under {target_cost} ms  ·  "
+            f"{'met by ' + str(met)[:12] if met else 'unmet'}"
+        )
+
     return 0
