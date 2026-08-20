@@ -111,7 +111,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--coordinator", default=COORDINATOR_URL, help="where to report training progress"
     )
     serve.add_argument(
-        "--entrypoint",
+        "--train",
+        dest="train_entrypoint",
         help="module:function that runs training and calls the hook, for example train:run",
     )
     serve.add_argument("--epochs", type=int, help="expected epoch count, used for the estimate")
@@ -540,11 +541,11 @@ def _serve(args: argparse.Namespace) -> int:
     except (MinerConfigError, PublishError) as exc:
         return fail(str(exc))
 
-    if not args.entrypoint:
-        return fail("give --entrypoint module:function so the daemon knows what to run")
+    if not args.train_entrypoint:
+        return fail("give --train module:function so the daemon knows what to run")
 
     try:
-        train = _entrypoint(args.entrypoint)
+        train = _entrypoint(args.train_entrypoint)
     except MinerConfigError as exc:
         return fail(str(exc))
 
