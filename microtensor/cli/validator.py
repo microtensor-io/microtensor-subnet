@@ -106,12 +106,7 @@ def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--coordinator",
         default=os.environ.get("MT_COORDINATOR_URL", COORDINATOR_URL),
-        help="coordinator base URL; without one this validator runs standalone",
-    )
-    parser.add_argument(
-        "--standalone",
-        action="store_true",
-        help="measure and settle independently, ignoring any coordinator",
+        help="coordinator base URL; without one this validator holds its last vector",
     )
     parser.add_argument("--corpus", type=Path, help="directory of <track>.jsonl corpora")
     parser.add_argument("--corpus-version", default=CORPUS_VERSION)
@@ -214,7 +209,6 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
         dry_run=args.dry_run,
         degraded=degraded,
         coordinator_url=args.coordinator,
-        standalone=args.standalone,
     )
 
     wallet = open_wallet(chain, required=not args.dry_run)
@@ -233,8 +227,6 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
             base_url=config.coordinator_url, hotkey=hotkey, wallet=wallet
         )
         log.info("taking assignments from the coordinator at %s", config.coordinator_url)
-    elif args.coordinator and args.standalone:
-        log.info("--standalone given, so the configured coordinator is ignored")
 
     return ValidatorContext.build(
         config, client, wallet=wallet, hotkey=hotkey, runs=runs, coordinator=coordinator

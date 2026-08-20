@@ -44,19 +44,19 @@ WEIGHTS_MISMATCH = "the settlement's weights do not recompute from the published
 class CoordinatorUnreachable(RuntimeError):
     """The coordinator could not be reached inside the round window.
 
-    Not fatal. A worker that cannot reach the coordinator settles standalone
-    rather than halting, because a coordinator outage must not stop the subnet
-    from setting weights.
+    Not fatal. A worker that cannot reach the coordinator holds its last
+    settled vector rather than halting: an outage pauses the network, and
+    weights keep flowing throughout.
     """
 
 
 class CoordinatorRefused(RuntimeError):
     """The coordinator answered and said no.
 
-    Kept apart from CoordinatorUnreachable because the right response differs. A
-    transport failure falls back to standalone so the subnet keeps setting
+    Kept apart from CoordinatorUnreachable because the right response differs.
+    A transport failure holds the last vector so the subnet keeps setting
     weights. A refusal means this worker is misconfigured or unauthorised, and
-    quietly settling standalone would hide that behind a working-looking round.
+    quietly holding would hide that behind a working-looking pause.
     """
 
 

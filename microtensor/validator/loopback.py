@@ -174,6 +174,7 @@ def build(
         allow_unsandboxed=True,
         dry_run=False,
         verify_signatures=False,
+        loopback=True,
     )
     context = ValidatorContext.build(config, client, hotkey=VALIDATOR_HOTKEY)
     return Loopback(context=context, client=client, round=round_, miners=tuple(built))

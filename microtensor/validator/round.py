@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -218,6 +219,9 @@ def _run_round(
             elapsed_seconds=time.monotonic() - started,
         )
 
+    if context.config.loopback:
+        return _run_loopback_round(context, round_, snapshot, block_hash, started, abstain)
+
     try:
         plan = plan_round(context.coordinator)
     except SettlementRejected as exc:
@@ -230,17 +234,35 @@ def _run_round(
     except CoordinatorDisagrees as exc:
         return abstain(f"{ROUND_DRIFT}: {exc}")
 
-    if plan.coordinated and plan.round_index != round_.index:
+    if plan.mode is Mode.HOLD:
+        return abstain(f"holding the last settled vector: {plan.reason}")
+
+    if plan.mode is Mode.IDLE:
+        log.info("round %d: %s", round_.index, plan.reason)
+        if plan.round_index:
+            weights, why = adopt_settlement(
+                context.coordinator, plan.round_index, uid_by_hotkey=snapshot.uid_by_hotkey
+            )
+            if weights:
+                settlement = adopted(round_.index, weights)
+                ok, reason = publish_weights(context, settlement)
+                if ok:
+                    context.state.finish_round(round_.index, SETTLED, plan.reason)
+                    return RoundOutcome(
+                        round_index=round_.index,
+                        status=SETTLED,
+                        reason=plan.reason,
+                        settlement=settlement,
+                        elapsed_seconds=time.monotonic() - started,
+                    )
+        return abstain(f"idle without measurement: {plan.reason}")
+
+    if plan.round_index != round_.index:
         return abstain(
             f"the coordinator is on round {plan.round_index} but this validator derived "
             f"{round_.index} from the chain; measuring across that gap would file reports "
             f"against one round and weights against another"
         )
-
-    if plan.mode is Mode.IDLE:
-        log.info("round %d: %s", round_.index, plan.reason)
-    elif plan.mode is Mode.STANDALONE and plan.reason:
-        log.warning("round %d: %s", round_.index, plan.reason)
 
     try:
         require_engines()
@@ -266,7 +288,7 @@ def _run_round(
     scored = 0
     expected = 0
     reports: list[Report] = []
-    assigned = set(plan.systems) if plan.mode is Mode.COORDINATED else None
+    assigned = set(plan.systems)
 
     for track, hardware_class in context.competitions:
         participants = roster.for_competition(track, hardware_class)
@@ -329,19 +351,16 @@ def _run_round(
             )
         log.info("round %d: %d reports sent to the coordinator", plan.round_index, sent)
 
-    if plan.coordinated:
-        weights, why = adopt_settlement(
-            context.coordinator, plan.round_index, uid_by_hotkey=snapshot.uid_by_hotkey
+    weights, why = adopt_settlement(
+        context.coordinator, plan.round_index, uid_by_hotkey=snapshot.uid_by_hotkey
+    )
+    if weights is None:
+        return abstain(f"the canonical settlement was not adopted: {why}", roster)
+    if not weights:
+        return abstain(
+            "the coordinator published a settlement with no weights in it", roster
         )
-        if weights is None:
-            return abstain(f"the canonical settlement was not adopted: {why}", roster)
-        if not weights:
-            return abstain(
-                "the coordinator published a settlement with no weights in it", roster
-            )
-        settlement = adopted(round_.index, weights)
-    else:
-        settlement = settle(context, round_.index, snapshot)
+    settlement = adopted(round_.index, weights)
 
     if settlement.is_empty:
         reason = "evaluated cleanly, but no artifact is eligible for emission yet"
@@ -378,4 +397,100 @@ def _run_round(
         scored=scored,
         settlement=settlement,
         elapsed_seconds=elapsed,
+    )
+
+
+def _run_loopback_round(
+    context: ValidatorContext,
+    round_: Round,
+    snapshot: MetagraphSnapshot,
+    block_hash: str,
+    started: float,
+    abstain: Any,
+) -> RoundOutcome:
+    """The synthetic-chain harness measures and settles in one process.
+
+    The only place a validator still measures without a coordinator. Loopback
+    stands up a whole subnet locally, so there is no server to own the round;
+    every real deployment holds instead.
+    """
+    try:
+        require_engines()
+        roster = discover(context, snapshot, round_)
+    except Abstain as exc:
+        return abstain(str(exc))
+    except ProvenanceUnavailable as exc:
+        return abstain(
+            f"the training run store is unreachable, so the participant set cannot be "
+            f"agreed with other validators: {exc}"
+        )
+
+    if context.config.degraded:
+        return abstain(
+            "degraded host: the cpu limit does not bind, so budgets cannot be "
+            "enforced; abstain-only until the host is fixed",
+            roster,
+        )
+
+    if not roster.participants:
+        return abstain("no admissible submission this round", roster)
+
+    scored = 0
+    expected = 0
+    for track, hardware_class in context.competitions:
+        participants = roster.for_competition(track, hardware_class)
+        if not participants:
+            continue
+        expected += len(participants)
+
+        tasks = select(
+            context.corpus(track),
+            competition_seed(block_hash, track, hardware_class),
+            hardware_class,
+            budget=context.config.tasks_per_round,
+            round_index=round_.index,
+        )
+        try:
+            result = evaluate_competition(context, participants, tasks)
+        except Abstain as exc:
+            return abstain(str(exc), roster)
+        scored += sum(1 for e in result.evaluations if e.measured is not None)
+
+        price_components(context, round_.index, track, hardware_class, participants)
+
+    if expected and scored / expected < MIN_SCORED_FRACTION:
+        return abstain(
+            f"only {scored} of {expected} submissions were scored, below the "
+            f"{MIN_SCORED_FRACTION:.0%} floor",
+            roster,
+        )
+
+    settlement = settle(context, round_.index, snapshot)
+
+    if settlement.is_empty:
+        reason = "evaluated cleanly, but no artifact is eligible for emission yet"
+        log.info("round %d: %s", round_.index, reason)
+        context.state.finish_round(round_.index, SETTLED, reason)
+        return RoundOutcome(
+            round_index=round_.index,
+            status=SETTLED,
+            reason=reason,
+            participants=len(roster),
+            scored=scored,
+            settlement=settlement,
+            elapsed_seconds=time.monotonic() - started,
+        )
+
+    ok, reason = publish_weights(context, settlement)
+    if not ok:
+        return abstain(f"weights were not published: {reason}", roster)
+
+    context.state.finish_round(round_.index, SETTLED)
+    return RoundOutcome(
+        round_index=round_.index,
+        status=SETTLED,
+        participants=len(roster),
+        scored=scored,
+        settlement=settlement,
+        elapsed_seconds=time.monotonic() - started,
     )

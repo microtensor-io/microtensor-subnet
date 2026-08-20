@@ -39,20 +39,19 @@ class ValidatorConfig:
     profile_seconds: int = 60
     allow_unsandboxed: bool = False
     dry_run: bool = False
+    loopback: bool = False
     verify_signatures: bool = True
     degraded: bool = False
     coordinator_url: str = ""
-    standalone: bool = False
 
     @property
     def coordinated(self) -> bool:
         """Whether this worker takes its work from a coordinator.
 
-        `--standalone` wins over a configured URL so a full independent round is
-        always reachable by config rather than only by failure, which is how the
-        fallback gets tested without taking the coordinator down.
+        Without one it holds: rounds exist only on the server now, so there is
+        no independent round to run, only a standing vector to keep flowing.
         """
-        return bool(self.coordinator_url) and not self.standalone
+        return bool(self.coordinator_url)
 
     @property
     def state_path(self) -> Path:
@@ -154,13 +153,13 @@ def _corpora_for(config: Any, coordinator: Any) -> dict[str, Corpus]:
     system is unreadable: nobody can tell a wrong measurement from a different
     question, and the reconciliation majority counts configurations instead.
 
-    Falling back to a local corpus is deliberate for the standalone case and for
-    a coordinator that serves none yet. It is logged either way, because a
+    Falling back to a local corpus is deliberate for loopback and for a
+    coordinator that serves none yet. It is logged either way, because a
     validator quietly measuring its own tasks is the failure this exists to stop.
     """
     from microtensor.validator.corpus import fetch
 
-    if coordinator is not None and not config.standalone:
+    if coordinator is not None:
         try:
             served = fetch(coordinator)
         except Exception as exc:

@@ -19,9 +19,9 @@ from microtensor.validator.client import (
 
 log = logging.getLogger("microtensor.validator")
 
-FELL_BACK = (
-    "the coordinator is unreachable, so this round was measured and settled "
-    "standalone; weights are this validator's own"
+HELD = (
+    "the coordinator is unreachable, so nothing was measured; the last settled "
+    "weight vector keeps flowing until contact is restored"
 )
 REFUSED = "the published settlement did not recompute, so it was not submitted"
 NO_ASSIGNMENT_DOC = "the coordinator returned no assignment for this worker and round"
@@ -36,15 +36,16 @@ class Mode(str, Enum):
     """What this worker is doing this round.
 
     Three states, not two, and the distinction between the last two is the
-    point. IDLE means the coordinator answered and had nothing for us, which is
-    an ordinary round. STANDALONE means we could not reach it. Collapsing them
-    would let an outage read as an empty assignment, so the worker would sit out
-    the round believing everything was fine.
+    point. IDLE means the coordinator answered and had nothing to measure,
+    which is the intended state between rounds. HOLD means we could not reach
+    it: an outage pauses the network rather than breaking it, and the last
+    settled vector keeps flowing throughout. Collapsing them would let an
+    outage read as an ordinary quiet round.
     """
 
     COORDINATED = "coordinated"
     IDLE = "idle"
-    STANDALONE = "standalone"
+    HOLD = "hold"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,17 +59,13 @@ class Plan:
     reason: str = ""
 
     @property
-    def standalone(self) -> bool:
-        return self.mode is Mode.STANDALONE
-
-    @property
     def coordinated(self) -> bool:
         """Whether the coordinator is answering, with or without work for us."""
         return self.mode in (Mode.COORDINATED, Mode.IDLE)
 
     @property
     def measures(self) -> bool:
-        return self.mode in (Mode.COORDINATED, Mode.STANDALONE)
+        return self.mode is Mode.COORDINATED
 
 
 def plan_round(
@@ -76,25 +73,26 @@ def plan_round(
     *,
     require_anchor: bool = True,
 ) -> Plan:
-    """Ask the coordinator for work, or decide to go it alone.
+    """Ask the coordinator for work, or hold what already settled.
 
     Two failures, deliberately handled differently. An unreachable coordinator
-    falls back, because the subnet must keep setting weights. A config that does
-    not match its on-chain anchor does not fall back: it aborts the round on this
-    worker, because measuring against ceilings nobody committed to produces
-    numbers that look valid and are not.
+    holds: no measurement, the last settled vector keeps flowing, because a
+    round now exists only on the server and a validator with no coordinator
+    has no round to run. A config that does not match its on-chain anchor does
+    not hold: it aborts the round on this worker, because measuring against
+    ceilings nobody committed to produces numbers that look valid and are not.
     """
     if client is None:
-        return Plan(mode=Mode.STANDALONE, reason="no coordinator is configured")
+        return Plan(mode=Mode.HOLD, reason="no coordinator is configured; holding weights")
 
     try:
         current = client.current_round()
     except CoordinatorUnreachable as exc:
-        log.warning("%s (%s)", FELL_BACK, exc)
-        return Plan(mode=Mode.STANDALONE, reason=FELL_BACK)
+        log.warning("%s (%s)", HELD, exc)
+        return Plan(mode=Mode.HOLD, reason=HELD)
 
     if not current:
-        return Plan(mode=Mode.STANDALONE, reason="the coordinator has opened no round")
+        return Plan(mode=Mode.IDLE, reason="no round is open; the network is idle")
 
     if require_anchor:
         verify_config(current.get("config", {}), str(current.get("config_hash", "")))
@@ -102,8 +100,8 @@ def plan_round(
     try:
         assigned_round, systems = client.assignment()
     except CoordinatorUnreachable as exc:
-        log.warning("%s (%s)", FELL_BACK, exc)
-        return Plan(mode=Mode.STANDALONE, reason=FELL_BACK)
+        log.warning("%s (%s)", HELD, exc)
+        return Plan(mode=Mode.HOLD, reason=HELD)
 
     round_index = int(current["round"])
     config_hash = str(current.get("config_hash", ""))
@@ -117,7 +115,7 @@ def plan_round(
     if systems is None:
         log.warning("%s (round %d)", NO_ASSIGNMENT_DOC, round_index)
         return Plan(
-            mode=Mode.STANDALONE,
+            mode=Mode.HOLD,
             round_index=round_index,
             config_hash=config_hash,
             reason=NO_ASSIGNMENT_DOC,
