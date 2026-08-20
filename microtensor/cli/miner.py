@@ -21,6 +21,7 @@ from microtensor.cli.common import (
     open_wallet,
 )
 from microtensor.core.constants import (
+    COORDINATOR_URL,
     CORPUS_VERSION,
     GENESIS_BLOCK,
     PROVENANCE_REQUIRED,
@@ -101,6 +102,23 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _add_settings_arguments(serve)
     serve.add_argument("--max-rounds", type=int)
     serve.set_defaults(handler=_run)
+
+    serve = inner.add_parser(
+        "serve", help="train and submit unattended, reporting progress each epoch"
+    )
+    _add_settings_arguments(serve)
+    serve.add_argument(
+        "--coordinator", default=COORDINATOR_URL, help="where to report training progress"
+    )
+    serve.add_argument(
+        "--entrypoint",
+        help="module:function that runs training and calls the hook, for example train:run",
+    )
+    serve.add_argument("--epochs", type=int, help="expected epoch count, used for the estimate")
+    serve.add_argument(
+        "--no-telemetry", action="store_true", help="submit unattended but report nothing"
+    )
+    serve.set_defaults(handler=_serve)
 
     status = inner.add_parser("status", help="show what this miner would publish")
     _add_settings_arguments(status)
@@ -478,6 +496,85 @@ def _run(args: argparse.Namespace) -> int:
     finally:
         client.close()
     return 0
+
+
+def _entrypoint(spec: str):  # type: ignore[no-untyped-def]
+    """Resolve `module:function` to something callable.
+
+    The participant's training code stays theirs and stays out of this package.
+    All the daemon needs is a callable that accepts the hook.
+    """
+    import importlib
+
+    if ":" not in spec:
+        raise MinerConfigError(f"an entrypoint looks like module:function, not {spec!r}")
+
+    module_name, _, attribute = spec.partition(":")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise MinerConfigError(f"could not import {module_name!r}: {exc}") from exc
+
+    found = getattr(module, attribute, None)
+    if not callable(found):
+        raise MinerConfigError(f"{spec!r} is not callable")
+    return found
+
+
+def _serve(args: argparse.Namespace) -> int:
+    """Train, then submit, without anyone typing a command.
+
+    The submission half is the same code `mt miner ship` runs. It is called
+    rather than reimplemented so the unattended path and the manual one cannot
+    drift apart.
+    """
+    from microtensor.miner.daemon import Daemon
+    from microtensor.miner.telemetry import TelemetryClient
+
+    try:
+        config = _config(args)
+        wallet = open_wallet(config.chain)
+        client = open_client(config.chain, wallet)
+        round_ = current_round(config, client)
+        hotkey = hotkey_address(wallet)
+    except (MinerConfigError, PublishError) as exc:
+        return fail(str(exc))
+
+    if not args.entrypoint:
+        return fail("give --entrypoint module:function so the daemon knows what to run")
+
+    try:
+        train = _entrypoint(args.entrypoint)
+    except MinerConfigError as exc:
+        return fail(str(exc))
+
+    url = "" if args.no_telemetry else str(args.coordinator or "")
+    telemetry = TelemetryClient(url, wallet)
+    telemetry.start()
+
+    daemon = Daemon(
+        hotkey=hotkey,
+        round_index=round_.index,
+        client=telemetry,
+        block_of=client.block,
+    )
+    if daemon.reporter is not None and args.epochs:
+        daemon.reporter.epochs_total = int(args.epochs)
+
+    print(f"round {round_.index}: training as {hotkey[:12]}")
+    if not url:
+        print("telemetry off; this run reports nothing")
+
+    def submit() -> None:
+        ship = argparse.Namespace(**vars(args))
+        ship.no_selfcheck = getattr(args, "no_selfcheck", False)
+        code = _ship(ship)
+        if code != 0:
+            raise PublishError("submission failed; see the error above")
+
+    ok = daemon.run(train, submit)
+    print(f"round {round_.index}: {daemon.phase.value}")
+    return 0 if ok else 1
 
 
 def _status(args: argparse.Namespace) -> int:
