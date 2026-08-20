@@ -360,6 +360,48 @@ the branch under you.
 
 ---
 
+## 9b · Releases, and why the cutoff matters
+
+Rounds settle every day. Every 30 rounds the frontier is frozen and published as
+a version, like `microtensor-code-mt3g-v1`. That version is what the API serves
+and what customers actually download and deploy.
+
+**On the frontier when the cycle's final round settles means your system ships
+in that release.** The cutoff is that round's close block, the same deadline you
+already work to, so nothing new to track except which round ends the cycle.
+
+A release pays nothing. Emissions are settled per round exactly as before, and a
+boundary round pays what any other round would. Holding an improvement back to
+land it just before a cutoff gains you nothing and costs you the rounds you sat
+out.
+
+`mt miner status` shows where you stand:
+
+```
+competition code/mt-3g
+round       47
+hotkey      5F3sa2TJ...
+files       3  (1.21 GiB)
+signed      yes
+declared    size 1288490188, rss 2952790016, p95 165ms
+
+release     microtensor-code-mt3g-v2
+cutoff      13 round(s), block 4180000
+frontier    yes, rank 2 of 7 by cost
+measured    quality 0.8140, 118.0 ms
+contribution front 0.62 · router 0.28 · specialist 0.10
+milestone   0.85 quality under 150.0 ms  ·  unmet
+```
+
+The contribution line is the one to act on. It decomposes what your system
+earned across the three components you declared, so it tells you which part is
+carrying the result and which is not worth its cost. A specialist at 0.10 is a
+specialist worth cutting or retraining.
+
+Pass `--offline` to print the local half without asking the API.
+
+---
+
 ## 10 · What gets you zeroed
 
 | | |

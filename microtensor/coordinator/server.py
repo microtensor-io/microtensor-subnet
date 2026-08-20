@@ -134,6 +134,11 @@ class ServerClient:
             or {}
         )
 
+    def milestone(self, track: str, hardware_class: str) -> dict[str, Any]:
+        query = urllib.parse.urlencode({"track": track, "hardware_class": hardware_class})
+        found = self._call("GET", f"/v1/control/milestone?{query}")
+        return dict(found) if found else {}
+
     def push_release(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/v1/ingest/release", payload) or {}
 

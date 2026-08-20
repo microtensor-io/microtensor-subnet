@@ -15,7 +15,7 @@ from microtensor.coordinator.api import Coordinator, Registry
 from microtensor.coordinator.assign import System, Worker, assign, by_worker, under_replicated
 from microtensor.coordinator.chain import ChainSource, RoundSource
 from microtensor.coordinator.config import config_hash, served_config
-from microtensor.coordinator.release import ReleaseError
+from microtensor.coordinator.release import Milestone, ReleaseError
 from microtensor.coordinator.release import build as build_release
 from microtensor.coordinator.server import (
     ServerClient,
@@ -469,6 +469,17 @@ def _cut_releases(
     for track, hardware_class in competitions:
         if not track or not hardware_class:
             continue
+        target = None
+        try:
+            stated = server.milestone(track, hardware_class)
+            if stated:
+                target = Milestone(
+                    target_quality=float(stated["target_quality"]),
+                    target_cost=float(stated["target_cost"]),
+                )
+        except (ServerUnreachable, ServerRefused, KeyError, TypeError, ValueError) as exc:
+            log.info("no milestone for %s/%s: %s", track, hardware_class, exc)
+
         try:
             release = build_release(
                 published,
@@ -476,6 +487,7 @@ def _cut_releases(
                 hardware_class=hardware_class,
                 cutoff_block=cutoff,
                 published_at=now,
+                milestone=target,
             )
         except ReleaseError as exc:
             log.info("no release for %s/%s: %s", track, hardware_class, exc)

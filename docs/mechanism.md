@@ -122,6 +122,71 @@ done for a given ceiling.
 
 ---
 
+## 2b · Releases
+
+Three layers, each with one job.
+
+| Layer | Cadence | Purpose |
+|---|---|---|
+| Round | about 24 h | Settles emissions. Miners iterate. Nothing announced. |
+| Release | 30 rounds | Freezes the frontier for distribution. The product. |
+| Milestone | Per cycle | The stated target for the cycle. The goal. |
+
+A release is a snapshot, not a scoring event. Every 30 rounds the coordinator
+freezes the frontier as it settled and publishes it under a version like
+`microtensor-code-mt3g-v1`, which names the track, the envelope and the
+generation without a lookup. That version is what the API serves, what registry
+subscribers download, and what gets announced.
+
+The cutoff is the close block of the final round in the cycle, reusing the
+round's own deadline rather than inventing a second one. A system on the
+frontier when that round settles is in the release.
+
+Release position is derived from round index the way round index is derived from
+block height. Nothing is stored and nobody has to be asked.
+
+**Immutable once published.** A customer who pinned v1 keeps receiving the v1
+they pinned, so a correction is a new release rather than an edit. The server
+refuses a second release for the same cycle and competition.
+
+**Why separate layers.** No enterprise deploys something that changes daily. A
+customer needs a version, a changelog, and a decision about when to upgrade.
+Releases give them that while the frontier keeps moving underneath. Serving live
+frontier state to a paying subscriber would change their deployment without
+their knowledge, which is the failure this layer exists to prevent.
+
+### A release carries no emission weight
+
+This is the decision that is easy to get wrong, so the reasoning is written down
+rather than left to be re-derived.
+
+The obvious addition is a bonus for making the release frontier. It must not be
+added. A release bonus makes the cutoff round worth more than the twenty-nine
+before it, which rewards holding an improvement back until just before cutoff.
+That is sandbagging, and it is exactly what continuous daily rounds exist to
+prevent. It would also concentrate all measurement load into a single round.
+
+Emissions stay per round, settled per round, submitted per epoch. The release is
+reputational and commercial: the system ships to customers under a version with
+its miner's name on it, and that is the reward.
+
+If this is ever revisited, the safe form is a small standing bonus for
+consecutive rounds on the frontier, which rewards sustained quality rather than
+timing.
+
+### Milestones
+
+A milestone is a target quality and cost stated at the start of a cycle and
+carried in the release manifest with whether it was met. It is descriptive.
+Nothing gates on it and nothing pays for it, and it is deliberately held outside
+the anchored config so changing it is not a consensus event.
+
+If a system meets it, that is the result for the cycle and the next target is set
+harder. If nothing meets it, the release ships with the best available and the
+target rolls forward.
+
+---
+
 ## 3 · The submission (frozen)
 
 Three parts, signed by the miner's hotkey and pinned by digest:

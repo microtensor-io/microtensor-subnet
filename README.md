@@ -43,6 +43,9 @@ the class it serves.
 The front class binds the front model and its router, which are co-resident.
 The escalation specialist is measured against the host profile.
 
+Rounds settle daily. Every 30 rounds the frontier is frozen and published as a
+version, and that release is what the API and the registry serve.
+
 **Metric:** pass@1 (greedy), executed against hidden tests, scored on the
 system's **final** answer. Generated code runs in a sandbox and the score is
 the fraction of hidden tests that pass. One generation, decoded greedily at
