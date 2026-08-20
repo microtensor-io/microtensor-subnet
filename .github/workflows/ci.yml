@@ -92,18 +92,19 @@ jobs:
           assert system.fits_class("mt-3g") == (True, "")
           print("degenerate reduction holds")
           PY
-      - name: A worker must settle standalone when the coordinator is unreachable
+      - name: A worker must hold its last vector when the coordinator is unreachable
         run: |
           python - <<'PY'
           from microtensor.validator.client import CoordinatorClient
-          from microtensor.validator.coordinated import FELL_BACK, plan_round
+          from microtensor.validator.coordinated import HELD, Mode, plan_round
           client = CoordinatorClient(
               base_url="http://127.0.0.1:9", hotkey="w0", retries=2, backoff=0.0, timeout=1
           )
           plan = plan_round(client)
-          assert plan.standalone, "an unreachable coordinator must not halt the round"
-          assert plan.reason == FELL_BACK
-          print("coordinator outage falls back to standalone")
+          assert plan.mode is Mode.HOLD, "an outage must pause, not fragment"
+          assert not plan.measures, "a holding worker must not measure"
+          assert plan.reason == HELD
+          print("coordinator outage holds the last settled vector")
           PY
       - name: A worker must refuse a settlement it cannot recompute
         run: |

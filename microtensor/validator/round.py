@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round, round_for_block
@@ -100,15 +100,11 @@ def price_components(
     if not entrants:
         return
 
-    members = frontier.frontier(
-        frontier.to_points(frontier.eligible(entrants), REFERENCE_COST_MS)
-    )
+    members = frontier.frontier(frontier.to_points(frontier.eligible(entrants), REFERENCE_COST_MS))
     if not members:
         return
 
-    roles = {
-        p.hotkey: tuple(c.role for c in p.system.components) for p in participants
-    }
+    roles = {p.hotkey: tuple(c.role for c in p.system.components) for p in participants}
 
     try:
         priced = contributions(
@@ -357,9 +353,7 @@ def _run_round(
     if weights is None:
         return abstain(f"the canonical settlement was not adopted: {why}", roster)
     if not weights:
-        return abstain(
-            "the coordinator published a settlement with no weights in it", roster
-        )
+        return abstain("the coordinator published a settlement with no weights in it", roster)
     settlement = adopted(round_.index, weights)
 
     if settlement.is_empty:

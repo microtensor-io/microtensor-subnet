@@ -216,9 +216,7 @@ def emit_reports(
                 f"before it became unreachable: {exc}"
             )
         except Exception as exc:
-            return sent, (
-                f"the coordinator refused the report for {report.system_digest}: {exc}"
-            )
+            return sent, (f"the coordinator refused the report for {report.system_digest}: {exc}")
         sent += 1
 
     return sent, ""
@@ -258,7 +256,5 @@ def adopt_settlement(
         log.error("%s: %s", REFUSED, exc)
         return None, f"{REFUSED}: {exc}"
 
-    weights = {
-        int(uid): float(value) for uid, value in published.get("weights", {}).items()
-    }
+    weights = {int(uid): float(value) for uid, value in published.get("weights", {}).items()}
     return weights, ""
