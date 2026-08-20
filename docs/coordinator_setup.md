@@ -215,20 +215,25 @@ the state the check exists to refuse.
 
 ## 8 · When the coordinator is down
 
-Workers retry with backoff inside the round window. If it is still unreachable
-at the deadline they fall back to standalone: derive the round from chain
-state, measure what they can, settle independently, and submit their own
-vector. The fallback is logged prominently.
+**Coordinator availability is an operational requirement, not a convenience.**
+Rounds exist only on the control plane now, so a worker that cannot reach the
+coordinator has no round to run. It measures nothing and keeps submitting its
+last settled weight vector on the normal cadence until contact returns. The
+hold is logged prominently.
 
-Standalone rounds are slower and cover fewer systems, but the subnet continues
-and weights are still set. Without this a coordinator outage would halt the
-network and nobody would earn.
+An outage therefore pauses the network rather than fragmenting it: no new
+measurement happens, but weights keep flowing and nobody loses standing for
+silence. What an outage does cost is time — every hour down is an hour no
+round can progress — so treat coordinator uptime with the same seriousness as
+the key that sets weights, and put an alert on the overdue-round watchdog.
 
-Run the fallback deliberately at least once before you depend on it:
+Verify the hold behaves before you depend on it:
 
 ```bash
 mt validator run --coordinator http://127.0.0.1:1 --max-rounds 1
 ```
+
+The log should show the validator holding its last vector, not measuring.
 
 ---
 
