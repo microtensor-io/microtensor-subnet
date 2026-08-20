@@ -8,6 +8,7 @@ GENESIS_BLOCK: Final[int] = 0
 
 BLOCK_TIME_SECONDS: Final[int] = 12
 ROUND_BLOCKS: Final[int] = 7200
+RELEASE_ROUNDS: Final[int] = 30
 WEIGHT_INTERVAL_SECONDS: Final[int] = 1320
 EPOCH_BLOCKS: Final[int] = 360
 WEIGHT_REFRESH_BLOCKS: Final[int] = 300
