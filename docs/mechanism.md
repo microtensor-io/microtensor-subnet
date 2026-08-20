@@ -114,10 +114,11 @@ A class names a memory envelope, not a device. The reference column is the kind
 of machine that envelope is meant to fit on, but nothing about it is enforced:
 what binds is the ceiling triple, measured on certified validator hardware.
 
-Classes rotate across rounds within a track. The architecture that maximises
-accuracy at 8 GB is not the one that maximises it at 600 MB, so a frontier point
-in one class transfers poorly to another. **Rotation is the primary mechanism
-preventing a single permanent winner.**
+Each class is a standing competition that opens and stays open, so a new class
+is an addition rather than a replacement. Anti-stagnation comes from the
+rotating corpus partition, incumbent decay, and reference-model advance, each of
+which keeps the target moving while preserving work a participant has already
+done for a given ceiling.
 
 ---
 
