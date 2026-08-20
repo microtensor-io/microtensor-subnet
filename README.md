@@ -1,150 +1,165 @@
+<div align="center">
+
 # Microtensor
 
-**Certified inference systems, measured on the hardware they claim.**
-Bittensor subnet 92.
+### A Decentralized Network for Certified Inference Systems
 
-Nobody deploys a model. They deploy a system: a small specialist answers most
-queries on cheap hardware, and a routing gate escalates the rest. That
-composition decides your real cost and your real quality, and no model card
-tells you either number.
+Bittensor subnet 92
 
-Microtensor rewards miners for building those systems and measures what they
-actually cost.
+[Miner](docs/miner_setup.md) •
+[Validator](docs/validator_setup.md) •
+[Coordinator](docs/coordinator_setup.md) •
+[Mechanism](docs/mechanism.md) •
+[Dashboard](https://microtensor.cloud)
 
-1. **Miners** build three components: a **front model** compressed from a
-   pinned base to fit a hardware envelope, a **router** that decides when the
-   front is out of its depth, and an **escalation specialist** for what the
-   front cannot handle. They upload the artifacts and commit a 128-byte
-   pointer on chain before the round closes.
-2. **Validators** fetch every component and run the assembled system
-   themselves: they measure size, sustained peak memory and p95 latency on
-   certified reference hardware, gate on the class ceiling and each
-   component's own declaration, then score the system end to end against a
-   chain-seeded hidden task set and record what it cost per query.
-3. **The chain** aggregates validator weights through Yuma Consensus. Systems
-   are paid by the ground they uniquely cover on the cost-quality frontier,
-   and each component is paid the measured difference it makes.
-
-A miner trains offline and comes online once per round to commit a pointer.
-A validator runs Linux on CPU alone, with one certified reference device for
-the class it serves.
-
-[Mine](docs/miner_setup.md) · [Validate](docs/validator_setup.md) ·
-[Mechanism](docs/mechanism.md)
+</div>
 
 ---
 
-## Live competition
+## Introduction
 
-| Track | Front class | Size | Peak RSS | p95 first output |
-|---|---|---|---|---|
-| `code` | `mt-3g` | 1.5 GiB | 3 GiB | 180 ms |
+Frontier-quality inference is unavailable in most of the places that need it. At
+sustained volume the cost exceeds the value of the work; in interactive systems
+the latency exceeds the budget; and in regulated environments the data cannot
+leave the network at all, so no remote endpoint is admissible at any price.
 
-The front class binds the front model and its router, which are co-resident.
-The escalation specialist is measured against the host profile.
+Composed systems answer this. The dominant pattern is the cascade: a compact
+specialist resident on inexpensive hardware answers the queries it can, a
+confidence gate decides, and the remainder escalate to a larger model. Routed
+compositions of this kind match frontier answer quality while reducing cost by
+more than an order of magnitude, and the position that compound systems are the
+unit at which capability is now delivered is well established in the systems
+literature.
 
-Rounds settle daily. Every 30 rounds the frontier is frozen and published as a
-version, and that release is what the API and the registry serve.
+What such a system costs and delivers, though, is knowable only by measuring it.
+Expected cost per query depends on the fraction of traffic the front resolves, a
+joint property of that model, the routing thresholds and the task distribution.
+End-to-end quality depends on what the system finally returns rather than on
+what the front returns alone. Resident memory under production context routinely
+exceeds what a parameter count implies. Each of these emerges from the assembled
+composition running on specific hardware, and none follows from a component's
+published figures.
 
-**Metric:** pass@1 (greedy), executed against hidden tests, scored on the
-system's **final** answer. Generated code runs in a sandbox and the score is
-the fraction of hidden tests that pass. One generation, decoded greedily at
-temperature 0. Computed, never judged.
+Established evaluation ranks single frozen models against a quality metric. That
+measures a well-defined property and is the right instrument for comparing
+models. Microtensor supplies the complementary instrument: it measures assembled
+systems on the hardware they will run on, and publishes each result as a signed
+certificate bound to the exact artifacts that produced it.
 
-**Payout:** no ranked list. Systems that are not beaten on both quality and
-cost sit on the frontier, and each earns in proportion to the region it alone
-covers. A system nobody else is near earns well even if something else is more
-accurate; a system sitting on top of an existing one earns almost nothing.
+---
 
-**Next track:** `detect` (vision). The registry in
-[`tracks.py`](microtensor/core/tracks.py) carries the full multimodal set as
-disabled stubs; tracks open by governance as corpora and reference benches come
-online.
+## How it works
 
-## What a system is
+Microtensor rewards miners for building inference systems and measures what they
+cost. The mechanism works as follows:
 
-| Component | Runs on | Job |
-|---|---|---|
-| **Front** | every query | Small enough for the class, good enough to resolve most traffic |
-| **Router** | every query | A pure function over the front's confidence. Threshold table or small ONNX head. No code executes. |
-| **Specialist** | escalated queries only | Catches what the front cannot. Its cost enters yours only in proportion to how often it is needed |
+1. **Miners** build up to three components: a **front model** compressed from a
+   pinned base to fit a hardware envelope, a **router** that decides when the
+   front is out of its depth, and an **escalation specialist** for what the
+   front cannot handle. They upload the artifacts and commit a pointer on chain
+   before the round closes.
 
-A front alone is a valid system. It will sit at the cheap end of the frontier
-and earn there. Adding a router and specialist buys quality at the cost of
-escalation, and whether that trade moves you forward is exactly what the
-frontier measures.
+2. **Validators** fetch every component and run the assembled system themselves.
+   They measure size, sustained peak memory and p95 latency on certified
+   reference hardware, gate on both the class ceiling and each component's own
+   declared envelope, then score the system end to end against a hidden task set
+   seeded from the block at which submissions closed.
 
-Two things worth knowing before you build a front model. Its accuracy is not
-the whole story: because escalation depends on the router reading the front's
-confidence, a front that is slightly less accurate but honest about its
-uncertainty beats one that is more accurate and overconfident. And aggressive
-quantisation degrades that confidence signal faster than it degrades accuracy,
-so the cheapest way to lose a competition is to compress until the front no
-longer knows when it is wrong.
+3. **The chain** aggregates validator weights through Yuma Consensus. Systems
+   earn in proportion to the region they uniquely cover on the cost-quality
+   frontier, and each component earns the measured difference it makes against a
+   published baseline for its role.
 
-## Constraints
+Miners train offline and come online once per round to commit a pointer.
+Validators run on commodity hardware with one certified reference device per
+class they serve.
 
-| | |
-|---|---|
-| Base models | Pinned allowlist (Qwen3 / Llama 3.2, 0.6B to 4B) in [`constants.py`](microtensor/core/constants.py). Exact HF revisions, published at corpus freeze. Enforced per component |
-| Corpus | Public train split and prompts published per version; hidden tests and the rotating draw are validator-side |
-| Reference completions | One vetted completion per train-split task ships with each corpus release, so miners train on prompt/completion pairs without running a large model |
-| Role baselines | A baseline front, router and specialist ship with the corpus. Your component is paid the measured difference against the baseline for its role |
-| Router forms | JSON threshold table, or ONNX over a published operator allowlist. Features are computed by the validator; the artifact supplies none |
-| Training provenance | Public W&B run in `microtensor/training-runs`, bound to each component's digest, required for admission |
-| Hardware class | A memory envelope, not a device. `mt-3g` means 3 GiB peak resident memory at your declared maximum input, 1.5 GiB on disk, 180 ms p95 first output |
-| Formats | safetensors, GGUF, ONNX |
-| Submission | One system per competition per round; chain rate-limits commits to one per 20 minutes |
-| Artifact hosting | `hf:` (repo@commit-sha), `ipfs:`, `s3:`, `r2:`, `https:`. All digest-verified after fetch |
+See the [Miner](docs/miner_setup.md) and [Validator](docs/validator_setup.md)
+docs for how each role works and how to set one up.
 
-## Rounds
+---
 
-A round is 7 200 blocks (about 24 h). Submissions close 600 blocks before the
-round ends, and the task set is seeded from the hash of that close block, so
-nobody can see the questions while submissions are open and anyone can
-reproduce the draw afterwards. Every component must be fetchable by validators
-at the close block.
+## Incentive mechanism
 
-## Getting started
+Each competition pairs a task track with a hardware class, and the class is a
+memory envelope rather than a device. A system is admissible only when every
+component fits both the class ceiling and the envelope its author declared for
+it, so a certificate reports figures that are binding rather than aspirational.
 
-```bash
-pip install -e .
-mt inspect tracks          # live competitions, ceilings, emission weight
-mt inspect engines         # what this host can execute; whether the jail binds
-mt inspect readiness       # which launch values are still unset
+Among admissible systems, reward follows position on the cost-quality frontier.
+A system that is not beaten on both axes sits on that frontier and earns in
+proportion to the region it alone covers. A system placed beside an existing one
+earns close to nothing, while a system opening an unoccupied trade-off earns in
+proportion to the ground it opens. There is no ranked list and no weighted
+composite score, so no arbitrary trade-off between quality and cost is imposed
+on participants.
 
-# Miner
-mt miner init --track code --class mt-3g \
-  --front ./front --router ./router.json --specialist ./specialist
-mt miner selfcheck         # per-component envelopes
-mt miner simulate          # resolve rate, expected cost, end-to-end quality
-mt miner package           # prints the digests to log to your training runs
-mt miner provenance        # confirm each run resolves and binds
-mt miner ship              # upload and commit
+Within a system, each component is settled by role-baseline ablation: the
+measured change in the system's value when that component is replaced by the
+published baseline for its role. A component the system does not need measures
+zero and earns nothing.
 
-# Validator
-mt validator loopback --rounds 3 --miners 4
-mt validator certify mt-3g
-mt validator run
-```
+Each class is a standing competition that opens and remains open, so a new class
+is an addition rather than a replacement. The target stays in motion through
+reference-model advance, corpus rotation, the combinatorial growth of the
+composition space, and incumbent decay, each of which keeps the frontier moving
+while preserving work already completed for an existing envelope.
 
-`mt miner simulate` is the one to spend time in. It runs the whole cascade over
-the public train split and reports what fraction resolves at the front, what
-the system costs per query, and the end-to-end quality, so router thresholds
-can be tuned locally rather than one round at a time.
+---
 
-Hardware guidance for miners and the enforced validator floor are in
-[`min_compute.yml`](min_compute.yml). The full mechanism, covering what is
-frozen, what is tunable and why every rule exists, is
+## Why measurement is the product
+
+Three properties distinguish a Microtensor certificate from a reported benchmark
+score.
+
+**The network holds the weights and runs them.** A miner submits artifacts and
+is absent at scoring time, supplying no measurements of its own. Because the
+network controls execution, every figure is generated by the measuring party
+rather than by the party being measured, and the system that earns a certificate
+is byte for byte the system a deployer receives.
+
+**Scoring is deterministic.** Generation decodes greedily at temperature zero
+under a pinned runtime, and the router is required to be a pure function of
+deterministic features. Independent validators evaluating the same system
+therefore obtain identical results, which makes disagreement between them a
+defect that can be attributed rather than variance that must be tolerated.
+
+**Evaluation is unobservable in advance.** The task set is seeded from the hash
+of the block at which submissions close, so the draw cannot be observed while
+submissions are open and can be reproduced by any party immediately afterwards.
+A rotating corpus partition defeats memorisation, and a fixed partition held
+constant across rounds makes improvement over time a claim about capability
+rather than an artefact of draw difficulty.
+
+The full specification, including what is frozen and what is tunable, is in
 [`docs/mechanism.md`](docs/mechanism.md).
+
+---
+
+## Rounds and releases
+
+A round settles daily. Every 30 rounds the frontier is frozen and published as a
+signed, immutable version, and that release is what interfaces serve until the
+next supersedes it, so a deployment can pin a version rather than track a
+surface that moves each day.
+
+Live competitions, their ceilings and current results are published on the
+[dashboard](https://microtensor.cloud). `mt inspect tracks` reports the same
+from a local checkout.
+
+---
 
 ## Status
 
-Subnet 92 on finney. The mechanism is complete and runs end to end today:
-`mt validator loopback` settles rounds on your own machine with no chain and
-no network.
+Subnet 92 on finney. The mechanism is complete and runs end to end:
+`mt validator loopback` settles rounds against a synthetic chain on a local
+machine, with no wallet and no network.
 
-Launch values are not yet published. The corpus, reference completions, role
-baselines, pinned base-model revisions and the `mt-3g` device profile land
-together at corpus freeze. Run `mt inspect readiness` for the current state of
-each gate.
+Launch values are published at corpus freeze. Run `mt inspect readiness` for the
+current state of each gate.
+
+---
+
+## License
+
+MIT
