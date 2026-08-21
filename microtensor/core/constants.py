@@ -129,7 +129,14 @@ ARTIFACT_CACHE_CAP_BYTES: Final[int] = 200 * 1024**3
 
 RELEASE_REPO: Final[str] = "microtensor-io/microtensor-subnet"
 RELEASE_CHANNELS: Final[tuple[str, ...]] = ("stable", "prerelease")
-RELEASE_SIGNING_KEY: Final[str] = ""
+# The public half of the release signing key. Public on purpose: a validator
+# needs it to verify a release before installing it, and a key only it holds
+# would verify nothing. The private seed lives in the repository's Actions
+# secrets as MT_RELEASE_SIGNING_SEED and is never committed — anyone holding
+# it can sign a release every auto-updating validator will run.
+RELEASE_SIGNING_KEY: Final[str] = (
+    "0x3d8ea239db66637d762ffedf71ad6c0c487c7bc73d5a50d9dd86a0fbc22bdb16"
+)
 UPDATE_POLL_SECONDS: Final[int] = 900
 UPDATE_HTTP_TIMEOUT_SECONDS: Final[int] = 60
 UPDATE_MAX_ASSET_BYTES: Final[int] = 64 * 1024**2
