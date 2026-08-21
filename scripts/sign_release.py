@@ -5,6 +5,7 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def sha256(path: Path) -> str:
@@ -24,23 +25,42 @@ def write_sums(directory: Path, patterns: list[str]) -> Path:
         raise SystemExit(f"no artifacts matching {patterns} under {directory}")
 
     sums = directory / "SHA256SUMS"
-    sums.write_text(
-        "\n".join(f"{sha256(p)}  {p.name}" for p in files) + "\n", encoding="utf-8"
-    )
+    sums.write_text("\n".join(f"{sha256(p)}  {p.name}" for p in files) + "\n", encoding="utf-8")
     for line in sums.read_text(encoding="utf-8").splitlines():
         print(line)
     return sums
 
 
-def sign(sums: Path, seed_hex: str) -> Path:
-    try:
-        from bittensor_wallet import Keypair, KeypairType
-    except ImportError:
-        from substrateinterface import Keypair, KeypairType
+# The substrate crypto type for ed25519. An integer, not a KeypairType
+# member: bittensor_wallet exports no such name, so asking for one sent every
+# signing attempt down the fallback and failed on hosts without
+# substrateinterface — which is what stopped the first release.
+ED25519 = 0
 
-    keypair = Keypair.create_from_seed(
+
+def _keypair_class() -> Any:
+    try:
+        from bittensor_wallet import Keypair as WalletKeypair
+
+        return WalletKeypair
+    except ImportError:
+        pass
+
+    try:
+        from substrateinterface import Keypair as SubstrateKeypair
+
+        return SubstrateKeypair
+    except ImportError as exc:
+        raise SystemExit(
+            "no keypair implementation is installed; pip install bittensor-wallet"
+        ) from exc
+
+
+def sign(sums: Path, seed_hex: str) -> Path:
+    keypair_class = _keypair_class()
+    keypair = keypair_class.create_from_seed(
         seed_hex if seed_hex.startswith("0x") else f"0x{seed_hex}",
-        crypto_type=KeypairType.ED25519,
+        crypto_type=ED25519,
     )
     signature = keypair.sign(sums.read_bytes())
     destination = sums.with_suffix(sums.suffix + ".sig")

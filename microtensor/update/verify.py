@@ -4,7 +4,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 log = logging.getLogger("microtensor.update.verify")
 
@@ -61,19 +61,43 @@ def check_digest(artifact: Path, sums: dict[str, str]) -> tuple[bool, str]:
     return True, ""
 
 
-def _keypair(public_key_hex: str) -> Any:
+# The substrate crypto type for ed25519, as an integer rather than through a
+# KeypairType enum. bittensor_wallet exports no such name, so importing it
+# raised ImportError, the fallback was tried, and on a host without
+# substrateinterface release verification failed for a reason that had
+# nothing to do with the signature.
+ED25519: Final[int] = 0
+
+
+def _keypair_class() -> Any:
+    """Whichever keypair implementation is installed.
+
+    Aliased on import rather than bound to one name twice: two imports of the
+    same name in one scope is a redefinition, and the type checker is right
+    to say so.
+    """
     try:
-        from bittensor_wallet import Keypair, KeypairType
+        from bittensor_wallet import Keypair as WalletKeypair
+
+        return WalletKeypair
     except ImportError:
-        try:
-            from substrateinterface import Keypair, KeypairType
-        except ImportError as exc:
-            raise VerificationError(
-                "no keypair implementation available to verify the release signature"
-            ) from exc
-    return Keypair(
+        pass
+
+    try:
+        from substrateinterface import Keypair as SubstrateKeypair
+
+        return SubstrateKeypair
+    except ImportError as exc:
+        raise VerificationError(
+            "no keypair implementation available to verify the release signature"
+        ) from exc
+
+
+def _keypair(public_key_hex: str) -> Any:
+    keypair = _keypair_class()
+    return keypair(
         public_key=bytes.fromhex(public_key_hex.removeprefix("0x")),
-        crypto_type=KeypairType.ED25519,
+        crypto_type=ED25519,
         ss58_format=42,
     )
 

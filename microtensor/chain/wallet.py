@@ -22,14 +22,24 @@ def _bittensor() -> Any:
 
 
 def _keypair_class() -> Any:
+    """Whichever keypair implementation is installed.
+
+    Aliased on import: binding the same name twice in one scope is a
+    redefinition, and the type checker is right to say so.
+    """
     try:
-        from bittensor_wallet import Keypair
+        from bittensor_wallet import Keypair as WalletKeypair
+
+        return WalletKeypair
     except ImportError:
-        try:
-            from substrateinterface import Keypair
-        except ImportError as exc:
-            raise WalletError("no keypair implementation is available") from exc
-    return Keypair
+        pass
+
+    try:
+        from substrateinterface import Keypair as SubstrateKeypair
+
+        return SubstrateKeypair
+    except ImportError as exc:
+        raise WalletError("no keypair implementation is available") from exc
 
 
 def load_wallet(config: ChainConfig) -> Any:
