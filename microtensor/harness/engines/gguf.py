@@ -44,14 +44,55 @@ SEED: Final[int] = 0
 GPU_LAYERS: Final[int] = 0
 DEFAULT_CONTEXT: Final[int] = 2048
 
+ARCH_KEY: Final[str] = "general.architecture"
+MAX_KV_SCAN: Final[int] = 64
+
+# What this engine will run, checked before llama.cpp opens the file.
+#
+# Declared rather than inferred, because "the pinned build happens to know
+# this one" is not a promise anybody can read. A pin that cannot load an
+# architecture named here fails tests/test_gguf_architectures.py, which is
+# the whole reason that file exists: `unknown model architecture: 'qwen3'`
+# was invisible until someone tried a real model.
+SUPPORTED_ARCHITECTURES: Final[frozenset[str]] = frozenset(
+    {
+        "qwen2",
+        "qwen3",
+        "qwen3moe",
+        "llama",
+        "gemma2",
+        "gemma3",
+        "phi3",
+    }
+)
+
+# GGUF metadata value types, by the tag written before each value.
+_UINT8, _INT8, _UINT16, _INT16, _UINT32, _INT32 = 0, 1, 2, 3, 4, 5
+_FLOAT32, _BOOL, _STRING, _ARRAY, _UINT64, _INT64, _FLOAT64 = 6, 7, 8, 9, 10, 11, 12
+
+_FIXED_WIDTH: Final[dict[int, int]] = {
+    _UINT8: 1,
+    _INT8: 1,
+    _BOOL: 1,
+    _UINT16: 2,
+    _INT16: 2,
+    _UINT32: 4,
+    _INT32: 4,
+    _FLOAT32: 4,
+    _UINT64: 8,
+    _INT64: 8,
+    _FLOAT64: 8,
+}
+
 INFO = EngineInfo(
     format=ArtifactFormat.GGUF,
     name="llama-cpp",
-    version="0.1.0",
+    version="0.2.0",
     deterministic=True,
     notes=(
-        f"gguf v{MIN_VERSION}-{MAX_VERSION}, greedy only, {THREADS} thread, "
-        "no gpu offload, seeded; numerics are pinned to the certified device"
+        f"gguf v{MIN_VERSION}-{MAX_VERSION}, {len(SUPPORTED_ARCHITECTURES)} architectures, "
+        f"greedy only, {THREADS} thread, no gpu offload, seeded; numerics are "
+        "pinned to the certified device"
     ),
 )
 
@@ -60,6 +101,79 @@ def _llama() -> Any:
     import llama_cpp
 
     return llama_cpp
+
+
+def _read(handle: Any, size: int) -> bytes:
+    raw: bytes = handle.read(size)
+    if len(raw) != size:
+        raise UnsupportedArtifact("artifact ends inside its own header")
+    return raw
+
+
+def _u32(handle: Any) -> int:
+    return int(struct.unpack("<I", _read(handle, 4))[0])
+
+
+def _u64(handle: Any) -> int:
+    return int(struct.unpack("<Q", _read(handle, 8))[0])
+
+
+def _string(handle: Any) -> str:
+    length = _u64(handle)
+    if length > 1 << 20:
+        raise UnsupportedArtifact("artifact declares an implausible metadata string")
+    return _read(handle, length).decode("utf-8", "replace")
+
+
+def _skip(handle: Any, kind: int) -> None:
+    """Step over one metadata value without materialising it."""
+    if kind in _FIXED_WIDTH:
+        _read(handle, _FIXED_WIDTH[kind])
+        return
+    if kind == _STRING:
+        _string(handle)
+        return
+    if kind == _ARRAY:
+        element = _u32(handle)
+        count = _u64(handle)
+        if element == _ARRAY:
+            raise UnsupportedArtifact("artifact nests metadata arrays")
+        if element == _STRING:
+            for _ in range(count):
+                _string(handle)
+            return
+        width = _FIXED_WIDTH.get(element)
+        if width is None:
+            raise UnsupportedArtifact(f"artifact uses metadata type {element}")
+        handle.seek(width * count, 1)
+        return
+    raise UnsupportedArtifact(f"artifact uses metadata type {kind}")
+
+
+def read_architecture(path: Path) -> str:
+    """The `general.architecture` the file declares, or "" if it names none.
+
+    Read here rather than left to the loader: llama.cpp answers an
+    architecture its build does not know with `unknown model architecture`
+    from deep inside the C++, which reaches a miner as a crash rather than as
+    a reason. Only the first few keys are scanned; the architecture is written
+    near the front and a full metadata walk would read the tensor table too.
+    """
+    with path.open("rb") as handle:
+        _read(handle, 8)
+        _u64(handle)
+        count = _u64(handle)
+
+        for _ in range(min(count, MAX_KV_SCAN)):
+            key = _string(handle)
+            kind = _u32(handle)
+            if key == ARCH_KEY:
+                if kind != _STRING:
+                    raise UnsupportedArtifact(f"{ARCH_KEY} is not a string")
+                return _string(handle)
+            _skip(handle, kind)
+
+    return ""
 
 
 def validate_artifact(path: Path) -> None:
@@ -81,6 +195,15 @@ def validate_artifact(path: Path) -> None:
     if not MIN_VERSION <= version <= MAX_VERSION:
         raise UnsupportedArtifact(
             f"artifact is GGUF v{version}, outside the pinned v{MIN_VERSION}-v{MAX_VERSION} range"
+        )
+
+    architecture = read_architecture(path)
+    if not architecture:
+        raise UnsupportedArtifact(f"artifact declares no {ARCH_KEY}")
+    if architecture not in SUPPORTED_ARCHITECTURES:
+        raise UnsupportedArtifact(
+            f"architecture {architecture!r} is not one this engine runs; "
+            f"supported: {sorted(SUPPORTED_ARCHITECTURES)}"
         )
 
 

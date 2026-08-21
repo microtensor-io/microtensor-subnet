@@ -245,6 +245,40 @@ jobs:
           print(text)
           PY
 
+  # The pin is the only thing a mock cannot exercise. 0.3.2 shipped a
+  # llama.cpp that predated Qwen3 and answered every allowlisted model with
+  # `unknown model architecture: 'qwen3'`; nothing caught it until someone
+  # ran a real file. This job runs real files.
+  gguf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install ".[validator,gguf,huggingface,dev]"
+      - name: Report what the build registers
+        run: mt inspect engines
+      - name: The gguf engine must actually register
+        run: |
+          python - <<'PY'
+          from microtensor.core.protocol import ArtifactFormat
+          from microtensor.harness.registry import available, load_builtin
+
+          load_builtin()
+          registered = available()
+          assert ArtifactFormat.GGUF in registered, (
+              f"the gguf extra is installed but no engine registered: {registered}"
+          )
+          print("gguf registered")
+          PY
+      - name: The pinned llama.cpp must load every architecture we claim
+        env:
+          MT_GGUF_ARCH_TEST: "1"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: pytest tests/test_gguf_architectures.py -q
+
   build-image:
     runs-on: ubuntu-latest
     steps:

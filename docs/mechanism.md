@@ -725,7 +725,12 @@ implementation detail.
   cannot be submitted against.
 - **ONNX**: standard opset only. **Custom operators are rejected at submission.**
 - **GGUF**: greedy decoding, one thread, no GPU offload, seeded, against an
-  exactly pinned llama.cpp build.
+  exactly pinned llama.cpp build. The architecture a file declares is checked
+  against the set the engine runs before llama.cpp opens it, so an
+  unsupported model is rejected by name rather than as a loader crash. Moving
+  the pin is a real change — the bundled llama.cpp decides which
+  architectures load at all — and CI loads one real model per declared
+  architecture on every push to prove the pin still can.
 - **safetensors**: defined in the protocol, **no engine**. Executing raw
   weights means a framework, and a framework's kernels are selected at runtime
   by host and build. Two workers would disagree on quality for reasons no

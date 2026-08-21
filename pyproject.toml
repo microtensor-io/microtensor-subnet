@@ -25,8 +25,13 @@ validator = [
 # Exactly pinned, not floored: the wheel carries the llama.cpp build, and the
 # build is where the numerics come from. A range here would let two validators
 # disagree on quality for no reason a miner could act on.
+#
+# Moving this pin is a real change: the bundled llama.cpp decides which
+# architectures load at all. 0.3.2 predated Qwen3 and answered every model on
+# the allowlist with `unknown model architecture: 'qwen3'`. Run
+# tests/test_gguf_architectures.py against a candidate before committing one.
 gguf = [
-    "llama-cpp-python==0.3.2",
+    "llama-cpp-python==0.3.35",
 ]
 coordinator = [
     "pynacl>=1.5",
