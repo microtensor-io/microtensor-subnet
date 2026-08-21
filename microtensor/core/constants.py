@@ -107,7 +107,11 @@ PROBE_SET_SIZE: Final[int] = 256
 
 PROVENANCE_ENTITY: Final[str] = "microtensor"
 PROVENANCE_PROJECT: Final[str] = "training-runs"
-PROVENANCE_REQUIRED: Final[bool] = True
+# Off until the run store can accept runs from arbitrary miners. The
+# microtensor W&B entity is a personal account, so an outside key cannot
+# write to it, and requiring a run nobody can create rejects every
+# submission. Turn back on once the entity is a team miners can write to.
+PROVENANCE_REQUIRED: Final[bool] = False
 PROVENANCE_RETRIES: Final[int] = 3
 PROVENANCE_BACKOFF_SECONDS: Final[float] = 3.0
 

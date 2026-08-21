@@ -14,7 +14,7 @@ from microtensor.core.constants import (
 )
 from microtensor.core.protocol import Role
 from microtensor.core.system import SystemManifest
-from microtensor.provenance.record import Verdict
+from microtensor.provenance.record import ProvenanceUnavailable, Verdict
 from microtensor.provenance.record import best_verdict as provenance_check
 from microtensor.registry.fetch import ArtifactMismatch, FetchError, fetch_manifest
 from microtensor.registry.manifest import ArtifactManifest
@@ -79,8 +79,19 @@ def _provenance_reason(
     Checking the submission alone would let an unprovenanced specialist ride in
     behind a compliant front, since the submission-level digest never names it.
     """
-    if not PROVENANCE_REQUIRED or context.runs is None:
+    if not PROVENANCE_REQUIRED:
         return "", None
+
+    # Not folded into the line above. Provenance being switched off is a
+    # decision; a validator that is required to check and holds no store is a
+    # misconfiguration, and skipping there would admit what its peers reject
+    # and produce a different participant set for the same round. The two
+    # cases arrive at the same branch and mean opposite things.
+    if context.runs is None:
+        raise ProvenanceUnavailable(
+            "provenance is required but this validator has no run store, so it "
+            "would admit submissions its peers reject"
+        )
 
     # Every run bearing this hotkey, not the most recent one: a miner must not
     # be rejectable by a stranger creating a run under their name.
