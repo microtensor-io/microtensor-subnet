@@ -247,8 +247,10 @@ jobs:
 
   # The pin is the only thing a mock cannot exercise. 0.3.2 shipped a
   # llama.cpp that predated Qwen3 and answered every allowlisted model with
-  # `unknown model architecture: 'qwen3'`; nothing caught it until someone
-  # ran a real file. This job runs real files.
+  # `unknown model architecture: 'qwen3'`; nothing caught it until someone ran
+  # a real file. This job runs real files, inline rather than through the
+  # suite, because tests/ is not published in this repository and a check that
+  # silently skips is exactly the hole this is filling.
   gguf:
     runs-on: ubuntu-latest
     steps:
@@ -275,9 +277,79 @@ jobs:
           PY
       - name: The pinned llama.cpp must load every architecture we claim
         env:
-          MT_GGUF_ARCH_TEST: "1"
           HF_HUB_DISABLE_TELEMETRY: "1"
-        run: pytest tests/test_gguf_architectures.py -q
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from huggingface_hub import hf_hub_download, list_repo_files
+
+          from microtensor.core.protocol import ArtifactFormat, LoadManifest
+          from microtensor.harness.contract import Request
+          from microtensor.harness.engines import gguf
+
+          # The smallest published GGUF per architecture: the question is
+          # whether the bundled llama.cpp knows the architecture at all, and a
+          # 0.6B answers that as well as a 70B would.
+          FIXTURES = {
+              "qwen3": ("Qwen/Qwen3-0.6B-GGUF", "q8_0"),
+              "qwen2": ("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "q8_0"),
+              "llama": ("unsloth/Llama-3.2-1B-Instruct-GGUF", "q4_k_m"),
+              "gemma3": ("unsloth/gemma-3-270m-it-GGUF", "q8_0"),
+          }
+          UNTESTED = {"qwen3moe", "gemma2", "phi3"}
+
+          uncovered = sorted(gguf.SUPPORTED_ARCHITECTURES - set(FIXTURES) - UNTESTED)
+          assert not uncovered, (
+              f"no fixture covers {uncovered}; add one here or drop the "
+              "architecture from SUPPORTED_ARCHITECTURES"
+          )
+
+          def fetch(repo: str, quant: str) -> Path:
+              names = [n for n in list_repo_files(repo) if n.lower().endswith(".gguf")]
+              wanted = [n for n in names if quant in n.lower()]
+              single = [n for n in (wanted or names) if "-00001-of-" not in n]
+              chosen = sorted(single or names, key=len)[0]
+              return Path(hf_hub_download(repo_id=repo, filename=chosen))
+
+          for architecture, (repo, quant) in sorted(FIXTURES.items()):
+              weights = fetch(repo, quant)
+
+              declared = gguf.read_architecture(weights)
+              assert declared == architecture, (
+                  f"{repo} declares {declared!r}, expected {architecture!r}"
+              )
+
+              # The engine's own gate must pass a file it claims to run.
+              gguf.validate_artifact(weights)
+
+              manifest = LoadManifest(
+                  format=ArtifactFormat.GGUF,
+                  quantization=quant,
+                  entrypoint=weights.name,
+                  max_input={"tokens": 256},
+              )
+              engine = gguf.GgufEngine()
+              engine.load(weights, manifest)
+              try:
+                  request = Request(
+                      task_ref=f"arch-{architecture}",
+                      prompt="2 + 2 =",
+                      max_output_tokens=16,
+                  )
+                  first = engine.generate(request)
+                  second = engine.generate(request)
+              finally:
+                  engine.unload()
+
+              assert first.ok, f"{architecture}: {first.error}"
+              assert first.output_tokens > 0, f"{architecture} produced nothing"
+              # Determinism on a real model, not a mock: greedy at temperature
+              # zero, one thread, fixed seed, so the same prompt must repeat.
+              assert first.output == second.output, f"{architecture} did not repeat"
+
+              print(f"{architecture:<8} {repo} loaded, ran and repeated")
+          PY
 
   build-image:
     runs-on: ubuntu-latest
