@@ -275,6 +275,56 @@ jobs:
           )
           print("gguf registered")
           PY
+      - name: Does llama.cpp reduce identically across thread counts
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python - <<'PY'
+          # THREADS = 1 is the single largest cost in the latency ceilings, and
+          # relaxing it is only safe if more threads give the same answer. This
+          # measures that rather than assuming it either way. Reported, not
+          # enforced: a difference here is a finding about llama.cpp, not a
+          # regression in this repository.
+          from pathlib import Path
+
+          from huggingface_hub import hf_hub_download, list_repo_files
+
+          from microtensor.core.protocol import ArtifactFormat, LoadManifest
+          from microtensor.harness.contract import Request
+          from microtensor.harness.engines import gguf
+
+          repo = "Qwen/Qwen3-0.6B-GGUF"
+          names = [n for n in list_repo_files(repo) if n.lower().endswith(".gguf")]
+          chosen = sorted([n for n in names if "q8_0" in n.lower()] or names, key=len)[0]
+          weights = Path(hf_hub_download(repo_id=repo, filename=chosen))
+
+          manifest = LoadManifest(
+              format=ArtifactFormat.GGUF,
+              quantization="q8_0",
+              entrypoint=weights.name,
+              max_input={"tokens": 256},
+          )
+          request = Request(task_ref="threads", prompt="2 + 2 =", max_output_tokens=24)
+
+          answers = {}
+          for threads in (1, 2, 4):
+              engine = gguf.GgufEngine(threads=threads)
+              engine.load(weights, manifest)
+              try:
+                  answers[threads] = engine.generate(request).output
+              finally:
+                  engine.unload()
+              print(f"threads={threads}: {answers[threads]!r}")
+
+          if len(set(answers.values())) == 1:
+              print("::notice::llama.cpp agreed across 1, 2 and 4 threads on this host")
+          else:
+              print(
+                  "::warning::llama.cpp disagreed across thread counts; the thread "
+                  "pin stays at 1 and the latency ceilings stand as measured"
+              )
+          PY
+
       - name: The pinned llama.cpp must load every architecture we claim
         env:
           HF_HUB_DISABLE_TELEMETRY: "1"

@@ -48,12 +48,33 @@ class Track:
 
 @dataclass(frozen=True, slots=True)
 class HardwareClass:
+    """One admission envelope, and where its numbers came from.
+
+    `derivation` is required, and required for a reason. Four constants in
+    this repository have gated admission on a plausible guess and been wrong
+    the first time something real ran against them: an empty allowlist that
+    admitted everything, certification bands nothing had been fitted to,
+    corpus floors that disagreed with the server's, and these latency
+    ceilings, which assumed accelerators the harness never uses. A value that
+    decides who is admitted has to say where it came from, or the next person
+    cannot tell a measurement from a guess.
+    """
+
     id: str
     max_size_bytes: int
     max_rss_bytes: int
     max_p95_ms: int
     reference: str
+    derivation: str
     device_profile: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.derivation.strip():
+            raise ValueError(
+                f"class {self.id!r} states no derivation for its ceilings; "
+                "say what was measured, on what, or the value is a guess "
+                "nobody can check"
+            )
 
     @property
     def ceilings(self) -> tuple[int, int, int]:
@@ -146,6 +167,25 @@ TRACKS: Final[dict[str, Track]] = {
 }
 
 
+# Latency ceilings, measured rather than assumed.
+#
+# The previous four values were unreachable by any permitted artifact. They
+# were written against accelerators — mt-4g read "consumer or embedded GPU"
+# and was tighter than mt-3g because of it — while the harness pins
+# GPU_LAYERS = 0 and THREADS = 1 on every class. The smallest model the
+# allowlist permits, Qwen3-0.6B Q8_0, measured 6,010 ms p95 at 512 input
+# tokens and 60,823 ms at 4096, against a 180 ms ceiling. p50 and p95 were
+# nearly equal, so that is flat prefill cost and not a tail worth tuning.
+#
+# These are set from that measurement at 512 tokens, scaled by the memory a
+# class permits, since a larger envelope admits a larger model and prefill
+# grows with it. They are honest about what single-threaded CPU inference
+# costs. If the thread pin is relaxed and llama.cpp proves invariant to
+# thread count, they should come down by roughly the core count — measured
+# again, not estimated.
+MEASURED_ON: Final[str] = "single-threaded cpu inference, Qwen3-0.6B Q8_0, 512 input tokens"
+
+
 CLASSES: Final[dict[str, HardwareClass]] = {
     c.id: c
     for c in (
@@ -153,29 +193,33 @@ CLASSES: Final[dict[str, HardwareClass]] = {
             id="mt-16g",
             max_size_bytes=8 * _GB,
             max_rss_bytes=16 * _GB,
-            max_p95_ms=400,
-            reference="x86-64 server, no accelerator",
+            max_p95_ms=30_000,
+            reference="x86-64 server, cpu only",
+            derivation=MEASURED_ON,
         ),
         HardwareClass(
             id="mt-4g",
             max_size_bytes=(5 * _GB) // 2,
             max_rss_bytes=4 * _GB,
-            max_p95_ms=120,
-            reference="consumer or embedded GPU",
+            max_p95_ms=15_000,
+            reference="x86-64 workstation, cpu only",
+            derivation=MEASURED_ON,
         ),
         HardwareClass(
             id="mt-3g",
             max_size_bytes=(3 * _GB) // 2,
             max_rss_bytes=3 * _GB,
-            max_p95_ms=180,
-            reference="developer workstation",
+            max_p95_ms=10_000,
+            reference="developer workstation, cpu only",
+            derivation=MEASURED_ON,
         ),
         HardwareClass(
             id="mt-1g",
             max_size_bytes=600 * _MB,
             max_rss_bytes=1 * _GB,
-            max_p95_ms=300,
-            reference="mobile SoC or NPU",
+            max_p95_ms=8_000,
+            reference="small host, cpu only",
+            derivation=MEASURED_ON,
         ),
     )
 }
@@ -246,6 +290,5 @@ def validate_registry() -> None:
     for cls in CLASSES.values():
         if not 0 < cls.max_size_bytes < cls.max_rss_bytes:
             raise ValueError(
-                f"class {cls.id!r}: size ceiling must be positive and below the "
-                "RSS ceiling"
+                f"class {cls.id!r}: size ceiling must be positive and below the RSS ceiling"
             )
