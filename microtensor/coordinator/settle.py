@@ -38,6 +38,7 @@ class Entry:
     stale_rounds: int = 0
     replication: int = 0
     contribution: dict[str, float] | None = None
+    components: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +144,7 @@ def to_entries(
                 stale_rounds=known.stale_rounds,
                 replication=len(agreed.agreed) + len(agreed.diverged),
                 contribution=agreed.ablation,
+                components=agreed.components or None,
             )
         )
     return entries
@@ -402,6 +404,7 @@ def build(
             "expected_ms": entry.expected_ms,
             "replication": entry.replication,
             "contribution": entry.contribution,
+            "components": entry.components or {},
             "share": combined.get(entry.miner_hotkey, 0.0),
         }
         for digest, entry in sorted(by_digest.items())

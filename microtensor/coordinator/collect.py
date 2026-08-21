@@ -43,6 +43,7 @@ class Reconciled:
     expected_j: float | None
     envelope: dict[str, Any]
     ablation: dict[str, float] | None
+    components: dict[str, str] = field(default_factory=dict)
     agreed: tuple[str, ...] = ()
     diverged: tuple[str, ...] = ()
     conforming_reports: int = 0
@@ -168,6 +169,7 @@ def reconcile(reports: Sequence[Report], advisory: Sequence[str] = ()) -> Reconc
         expected_ms=median([r.cost.expected_ms for r in envelope_source]),
         expected_j=median(energies) if energies else None,
         envelope=_median_envelope(envelope_source),
+        components=next((dict(r.components) for r in deciding if r.components), {}),
         ablation=_median_ablation(deciding),
         agreed=tuple(agreed),
         diverged=tuple(diverged),
@@ -194,14 +196,10 @@ def _median_ablation(reports: Sequence[Report]) -> dict[str, float] | None:
     if not contributed:
         return None
     roles = {role for a in contributed for role in a}
-    return {
-        role: median([a[role] for a in contributed if role in a]) for role in sorted(roles)
-    }
+    return {role: median([a[role] for a in contributed if role in a]) for role in sorted(roles)}
 
 
-def intake(
-    by_system: dict[str, list[Report]], advisory: Sequence[str] = ()
-) -> Intake:
+def intake(by_system: dict[str, list[Report]], advisory: Sequence[str] = ()) -> Intake:
     """Reconcile every system and collect what disagreed."""
     result = Intake()
 
@@ -221,9 +219,7 @@ def intake(
 
         for hotkey in agreed.diverged:
             reported = next(
-                quantise_quality(r.quality.combined)
-                for r in reports
-                if r.worker_hotkey == hotkey
+                quantise_quality(r.quality.combined) for r in reports if r.worker_hotkey == hotkey
             )
             log.warning(
                 "%s diverged on %s: reported %s against %s",

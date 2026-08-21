@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 4
+SCHEMA_VERSION: Final[int] = 5
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -216,6 +216,14 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
                 median_resolve_rate REAL    NOT NULL DEFAULT 0,
                 PRIMARY KEY (round_index, track, hardware_class)
             )
+            """,
+        ),
+    ),
+    (
+        5,
+        (
+            """
+            ALTER TABLE reports ADD COLUMN components TEXT NOT NULL DEFAULT '{}'
             """,
         ),
     ),

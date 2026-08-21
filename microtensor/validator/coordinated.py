@@ -148,8 +148,15 @@ def to_report(
     corpus_version: str,
     ablation: dict[str, float] | None = None,
     corpus_digest: str = "",
+    components: dict[str, str] | None = None,
 ) -> Report:
-    """One measurement, in the shape the coordinator reconciles."""
+    """One measurement, in the shape the coordinator reconciles.
+
+    `components` names each role's artifact digest from the manifest the
+    worker fetched. Deterministic across honest workers, and it is what lets
+    a settled winner's parts be promoted into a baseline later: the frontier
+    row that carries no component digests cannot ratchet.
+    """
     measured = evaluation.measured
     envelope: dict[str, dict[str, Any]] = {}
     if measured is not None:
@@ -176,6 +183,7 @@ def to_report(
             expected_j=evaluation.expected_j or None,
         ),
         envelope=envelope,
+        components=dict(components or {}),
         ablation=ablation,
         device_profile=measured.device_profile if measured else "",
         conforming=bool(measured.conforming) if measured else False,

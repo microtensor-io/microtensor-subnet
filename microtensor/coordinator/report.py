@@ -7,7 +7,7 @@ from typing import Any
 
 from microtensor.core.protocol import Fault
 
-REPORT_VERSION = 1
+REPORT_VERSION = 2
 
 
 def canonical(body: dict[str, Any]) -> bytes:
@@ -71,6 +71,7 @@ class Report:
     resolve_rate: float
     cost: CostBlock
     envelope: dict[str, dict[str, Any]] = field(default_factory=dict)
+    components: dict[str, str] = field(default_factory=dict)
     ablation: dict[str, float] | None = None
     device_profile: str = ""
     conforming: bool = False
@@ -91,6 +92,7 @@ class Report:
             "resolve_rate": self.resolve_rate,
             "cost": self.cost.to_dict(),
             "envelope": self.envelope,
+            "components": self.components,
             "ablation": self.ablation,
             "device_profile": self.device_profile,
             "conforming": self.conforming,
@@ -112,6 +114,7 @@ class Report:
             resolve_rate=self.resolve_rate,
             cost=self.cost,
             envelope=self.envelope,
+            components=self.components,
             ablation=self.ablation,
             device_profile=self.device_profile,
             conforming=self.conforming,
@@ -133,6 +136,7 @@ class Report:
             resolve_rate=float(raw.get("resolve_rate", 1.0)),
             cost=CostBlock.from_dict(dict(raw.get("cost", {}))),
             envelope=dict(raw.get("envelope", {})),
+            components={str(k): str(v) for k, v in dict(raw.get("components", {})).items()},
             ablation=raw.get("ablation"),
             device_profile=str(raw.get("device_profile", "")),
             conforming=bool(raw.get("conforming", False)),

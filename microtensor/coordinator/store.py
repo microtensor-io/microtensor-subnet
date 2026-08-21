@@ -490,10 +490,10 @@ class CoordinatorStore:
             INSERT INTO reports (
                 round_index, worker_hotkey, system_digest, quality,
                 quality_rotating, quality_fixed, resolve_rate, expected_ms,
-                expected_j, envelope, ablation, device_profile, conforming,
-                engine_version, corpus_version, fault, signature, body_hash,
-                received_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                expected_j, envelope, components, ablation, device_profile,
+                conforming, engine_version, corpus_version, fault, signature,
+                body_hash, received_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (round_index, worker_hotkey, system_digest) DO NOTHING
             """,
             (
@@ -507,6 +507,7 @@ class CoordinatorStore:
                 report.cost.expected_ms,
                 report.cost.expected_j,
                 json.dumps(report.envelope, sort_keys=True),
+                json.dumps(report.components, sort_keys=True),
                 json.dumps(report.ablation, sort_keys=True) if report.ablation else None,
                 report.device_profile,
                 int(report.conforming),
@@ -716,6 +717,7 @@ def _report_of(row: Any) -> Report:
             expected_j=None if row["expected_j"] is None else float(row["expected_j"]),
         ),
         envelope=json.loads(str(row["envelope"] or "{}")),
+        components=json.loads(str(row["components"] or "{}")),
         ablation=json.loads(str(row["ablation"])) if row["ablation"] else None,
         device_profile=str(row["device_profile"]),
         conforming=bool(row["conforming"]),

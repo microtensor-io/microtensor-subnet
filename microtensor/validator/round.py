@@ -316,16 +316,15 @@ def _run_round(
                     evaluation,
                     round_index=plan.round_index,
                     worker_hotkey=context.hotkey,
-                    system_digest=digest,
+                    system_digest=participant.commitment.manifest_digest,
                     engine_version=MECHANISM_VERSION,
                     corpus_version=context.config.corpus_version,
                     corpus_digest=context.corpus_digest,
+                    components={
+                        ref.role.value: ref.artifact_digest for ref in participant.system.components
+                    },
                 )
-                for evaluation, digest in zip(
-                    result.evaluations,
-                    [p.commitment.manifest_digest for p in participants],
-                    strict=True,
-                )
+                for evaluation, participant in zip(result.evaluations, participants, strict=True)
             )
 
     if expected and scored / expected < MIN_SCORED_FRACTION:
