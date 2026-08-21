@@ -6,11 +6,13 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from microtensor.chain.anchor import AnchorError, read_anchor
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round, round_for_block
 from microtensor.chain.weights import quantise_weights
 from microtensor.coordinator.report import Report
 from microtensor.core.constants import (
+    COORDINATOR_HOTKEY,
     MECHANISM_VERSION,
     MIN_SCORED_FRACTION,
     REFERENCE_COST_MS,
@@ -218,7 +220,15 @@ def _run_round(
         return _run_loopback_round(context, round_, snapshot, block_hash, started, abstain)
 
     try:
-        plan = plan_round(context.coordinator)
+        plan = plan_round(
+            context.coordinator,
+            anchor_source=lambda: read_anchor(context.client, COORDINATOR_HOTKEY),
+        )
+    except AnchorError as exc:
+        return abstain(
+            f"this validator cannot check the config against the chain, so it did not "
+            f"measure: {exc}"
+        )
     except SettlementRejected as exc:
         return abstain(
             f"the coordinator's competition config is not the one anchored on chain, "

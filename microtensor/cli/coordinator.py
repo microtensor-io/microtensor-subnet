@@ -104,6 +104,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     weights.set_defaults(handler=_weights)
 
+    anchor = inner.add_parser(
+        "anchor", help="commit this round's config hash on chain so workers can verify it"
+    )
+    add_common_arguments(anchor)
+    add_chain_arguments(anchor)
+    _add_server_arguments(anchor)
+    anchor.add_argument("--round", type=int, help="defaults to the latest open round")
+    anchor.add_argument(
+        "--dry-run", action="store_true", help="print what would be committed and stop"
+    )
+    anchor.set_defaults(handler=_anchor)
+
     cfg = inner.add_parser("config", help="print the served config and its hash")
     add_common_arguments(cfg)
     cfg.set_defaults(handler=_config)
@@ -324,6 +336,59 @@ def _open(args: argparse.Namespace) -> int:
 
     print("Commit the config hash on chain before workers measure against it:")
     print(f"  {_config_hash_for(source)}")
+    print(f"  mt coordinator anchor --round {round_.index}")
+    print("Until that lands, workers refuse the round rather than measure against it.")
+    return 0
+
+
+def _anchor(args: argparse.Namespace) -> int:
+    """Commit the open round's config hash on chain.
+
+    Separate from `open` on purpose: opening a round is a local bookkeeping
+    step this can be re-run, and committing is an on-chain write signed by the
+    coordinator's hotkey. Until this runs, workers have nothing to check the
+    served config against and refuse the round.
+    """
+    from microtensor.chain.anchor import ConfigAnchor
+    from microtensor.cli.common import chain_config, open_client, open_wallet
+
+    with _store(args) as store:
+        row = store.round(int(args.round)) if args.round is not None else store.latest_round()
+        if row is None:
+            return fail("no round is open, so there is no config to anchor")
+
+        round_index = int(row["round_index"])
+        stored = str(row["config_hash"] or "")
+        if not stored:
+            return fail(
+                f"round {round_index} was opened without a config hash, so there is "
+                "nothing to anchor; re-open it"
+            )
+
+        anchor = ConfigAnchor(round_index=round_index, config_hash=stored)
+        payload = anchor.encode()
+        print(f"round  {round_index}")
+        print(f"hash   {stored}")
+        print(f"commit {payload}")
+
+        if args.dry_run:
+            print()
+            print("dry run: nothing was committed")
+            return 0
+
+        chain = chain_config(args)
+        wallet = open_wallet(chain, required=True)
+        client = open_client(chain, wallet)
+        try:
+            if not client.publish(payload):
+                return fail("the chain refused the commitment; nothing was anchored")
+        finally:
+            client.close()
+
+        store.mark_anchored(round_index)
+
+    print()
+    print(f"anchored: workers will now verify the served config against {stored}")
     return 0
 
 

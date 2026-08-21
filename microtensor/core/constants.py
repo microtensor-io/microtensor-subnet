@@ -61,6 +61,11 @@ COORDINATOR_BACKOFF_SECONDS: Final[float] = 5.0
 COORDINATOR_TIMEOUT_SECONDS: Final[int] = 30
 COORDINATOR_URL: Final[str] = ""
 COORDINATOR_SERVER_URL: Final[str] = ""
+# The hotkey whose on-chain commitment counts as the config anchor. Empty
+# means this build cannot check that a served config is the one the chain was
+# told about, so a validator refuses the round rather than measuring against
+# ceilings nobody committed to.
+COORDINATOR_HOTKEY: Final[str] = ""
 PUBLIC_SERVER_URL: Final[str] = "https://api.microtensor.cloud"
 # The operator plane is bound to loopback on the server host, so the default
 # is what an operator reaches over an ssh tunnel rather than a public name.

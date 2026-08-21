@@ -7,10 +7,11 @@ from microtensor.chain.rounds import release_index, release_version
 from microtensor.cli.common import add_common_arguments, fail
 from microtensor.core.constants import (
     CLASS_WEIGHTS,
+    COORDINATOR_URL,
     MECHANISM_VERSION,
     RELEASE_ROUNDS,
 )
-from microtensor.core.readiness import audit, summary
+from microtensor.core.readiness import Served, audit, summary
 from microtensor.core.tracks import (
     CLASSES,
     TRACKS,
@@ -40,6 +41,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--probe",
         action="store_true",
         help="contact the run store rather than only checking that a key is set",
+    )
+    ready.add_argument(
+        "--coordinator",
+        default=COORDINATOR_URL,
+        help="read the arena and baseline gates from this coordinator's served config",
     )
     ready.set_defaults(handler=_readiness)
 
@@ -107,8 +113,32 @@ def _engines(args: argparse.Namespace) -> int:
     return 0 if formats else 1
 
 
+def _served(url: str) -> Served:
+    """What the coordinator serves, or the fact that it could not be asked.
+
+    Without a URL the local constants are the answer and there is nothing to
+    fetch. With one, an outage is reported as an outage: the alternative is
+    telling an operator their configured arena admits anything, which is the
+    opposite of true.
+    """
+    if not url:
+        return Served.local()
+
+    from microtensor.validator.client import CoordinatorClient, CoordinatorUnreachable
+
+    client = CoordinatorClient(base_url=url, hotkey="", retries=1, backoff=0.0, timeout=5)
+    try:
+        current = client.current_round()
+    except CoordinatorUnreachable:
+        return Served.unreachable()
+    if not current:
+        return Served.unreachable()
+    return Served.from_config(dict(current.get("config", {})))
+
+
 def _readiness(args: argparse.Namespace) -> int:
-    gates = audit(probe=getattr(args, "probe", False))
+    served = _served(getattr(args, "coordinator", "") or "")
+    gates = audit(probe=getattr(args, "probe", False), served=served)
     print(summary())
     print()
     width = max(len(gate.name) for gate in gates) + 2
@@ -123,12 +153,21 @@ def _readiness(args: argparse.Namespace) -> int:
         for gate in outstanding:
             print(f"  {gate.name}\n    {gate.fix}")
 
+    unknown = [gate for gate in gates if gate.unreadable]
+    if unknown:
+        print(
+            f"\n{len(unknown)} gate(s) could not be read: a coordinator is configured "
+            "and did not answer. This is not the same as those gates being open, and "
+            "not the same as them being satisfied."
+        )
+
     open_gates = [gate for gate in gates if gate.unenforced]
     if open_gates:
         print(
             f"\n{len(open_gates)} gate(s) currently accept anything. A round will still "
             "settle, but the guarantee those gates exist to make is not being made."
         )
+    if open_gates or unknown:
         return 2
     return 0
 

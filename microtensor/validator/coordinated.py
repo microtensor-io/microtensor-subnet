@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from microtensor.chain.anchor import ConfigAnchor
 from microtensor.coordinator.report import CostBlock, QualityBlock, Report
 from microtensor.core.protocol import Evaluation
 from microtensor.validator.client import (
@@ -26,6 +27,9 @@ HELD = (
 REFUSED = "the published settlement did not recompute, so it was not submitted"
 NO_ASSIGNMENT_DOC = "the coordinator returned no assignment for this worker and round"
 ROUND_DRIFT = "the coordinator disagrees with itself about which round is open"
+STALE_ANCHOR = (
+    "the coordinator's anchor on chain is for a different round than the one it is serving"
+)
 
 
 class CoordinatorDisagrees(RuntimeError):
@@ -91,6 +95,7 @@ def allowlists_from(config: Mapping[str, Any]) -> dict[tuple[str, str], frozense
 def plan_round(
     client: CoordinatorClient | None,
     *,
+    anchor_source: Callable[[], ConfigAnchor | None] | None = None,
     require_anchor: bool = True,
 ) -> Plan:
     """Ask the coordinator for work, or hold what already settled.
@@ -101,6 +106,12 @@ def plan_round(
     has no round to run. A config that does not match its on-chain anchor does
     not hold: it aborts the round on this worker, because measuring against
     ceilings nobody committed to produces numbers that look valid and are not.
+
+    The anchor comes from `anchor_source`, which reads the chain. It must not
+    come from the coordinator: checking a served config against a served hash
+    is self-consistent by construction and proves nothing about what anyone
+    committed to. Without a source there is nothing to check against, and the
+    round is refused rather than admitted.
     """
     if client is None:
         return Plan(mode=Mode.HOLD, reason="no coordinator is configured; holding weights")
@@ -114,8 +125,16 @@ def plan_round(
     if not current:
         return Plan(mode=Mode.IDLE, reason="no round is open; the network is idle")
 
+    round_index = int(current["round"])
+
     if require_anchor:
-        verify_config(current.get("config", {}), str(current.get("config_hash", "")))
+        anchor = anchor_source() if anchor_source is not None else None
+        if anchor is not None and anchor.round_index != round_index:
+            raise SettlementRejected(
+                f"{STALE_ANCHOR}: anchored round {anchor.round_index} against served "
+                f"round {round_index}"
+            )
+        verify_config(current.get("config", {}), anchor.config_hash if anchor else "")
 
     try:
         assigned_round, systems = client.assignment()
@@ -123,7 +142,6 @@ def plan_round(
         log.warning("%s (%s)", HELD, exc)
         return Plan(mode=Mode.HOLD, reason=HELD)
 
-    round_index = int(current["round"])
     config_hash = str(current.get("config_hash", ""))
     allowlists = allowlists_from(dict(current.get("config", {})))
 

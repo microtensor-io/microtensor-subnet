@@ -25,7 +25,18 @@ BUFFER_BYTES: Final[dict[str, int]] = {
     "mt-1g": 96 * 1024**2,
 }
 
-CERT_BANDS: Final[dict[str, dict[str, float]]] = {}
+# Fitted from 10 runs on the reference device dev:f1dc8bba84734f19. A host
+# outside this band is not certified for the class: the band is what makes
+# "reference device" a measurement rather than a claim.
+CERT_BANDS: Final[dict[str, dict[str, float]]] = {
+    "mt-3g": {
+        "p50_lo": 135.567,
+        "p50_hi": 204.994,
+        "p95_lo": 135.86,
+        "p95_hi": 220.451,
+        "rss_max": 271_724_000,
+    },
+}
 
 DEFAULT_POLICY: Final[dict[str, Any]] = {
     "cooling_mode": "active",

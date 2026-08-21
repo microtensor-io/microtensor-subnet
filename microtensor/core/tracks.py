@@ -212,6 +212,7 @@ CLASSES: Final[dict[str, HardwareClass]] = {
             max_p95_ms=10_000,
             reference="developer workstation, cpu only",
             derivation=MEASURED_ON,
+            device_profile="dev:f1dc8bba84734f19",
         ),
         HardwareClass(
             id="mt-1g",

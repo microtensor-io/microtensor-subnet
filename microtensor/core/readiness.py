@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import Final
+from dataclasses import dataclass, field
+from typing import Any, Final
 
 from microtensor.core.constants import (
     DEFAULT_NETUID,
@@ -13,6 +13,12 @@ from microtensor.core.tracks import CLASSES, enabled_tracks
 OPEN: Final[str] = "open"
 CLOSED: Final[str] = "closed"
 SET: Final[str] = "set"
+# A gate whose real state could not be read. Distinct from OPEN on purpose:
+# open means nothing is configured and everything is admitted, unknown means
+# something may well be configured and this host could not find out. Reporting
+# the second as the first is the same fail-open mistake as an empty allowlist
+# reading as "permit everything".
+UNKNOWN: Final[str] = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +33,52 @@ class Gate:
     def unenforced(self) -> bool:
         return not self.ready and self.posture == OPEN
 
+    @property
+    def unreadable(self) -> bool:
+        return self.posture == UNKNOWN
+
+
+@dataclass(frozen=True, slots=True)
+class Served:
+    """What a coordinator says the rules are, or why this host cannot tell.
+
+    Three states, and the third is why this exists. Without a coordinator the
+    local constants are the whole truth and an unset value really is an open
+    gate. With one reachable, the served config is the truth and a value this
+    build does not carry is still closed. With one configured but unreachable,
+    this host knows nothing either way, and saying "open" would report a
+    configured arena as an unguarded one.
+    """
+
+    configured: bool = False
+    reachable: bool = False
+    arenas: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    role_baselines: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def unknown(self) -> bool:
+        return self.configured and not self.reachable
+
+    @classmethod
+    def local(cls) -> Served:
+        return cls()
+
+    @classmethod
+    def unreachable(cls) -> Served:
+        return cls(configured=True, reachable=False)
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> Served:
+        arenas = {
+            str(key): [str(m) for m in dict(value).get("allowed_base_models", [])]
+            for key, value in dict(config.get("arenas", {})).items()
+        }
+        baselines = {
+            str(role): str(digest)
+            for role, digest in dict(config.get("role_baselines", {})).items()
+        }
+        return cls(configured=True, reachable=True, arenas=arenas, role_baselines=baselines)
+
 
 def launch_classes() -> tuple[str, ...]:
     seen: list[str] = []
@@ -37,13 +89,33 @@ def launch_classes() -> tuple[str, ...]:
     return tuple(seen)
 
 
-def _base_model_gates(arenas: Mapping[str, Sequence[str]] | None = None) -> list[Gate]:
+def _base_model_gates(
+    arenas: Mapping[str, Sequence[str]] | None = None,
+    served: Served | None = None,
+) -> list[Gate]:
     """One gate per arena, because the allowlist is per arena.
 
     Sourced from the arena records the control plane holds rather than from a
     constant. With no arena known there is nothing to report on: an empty
     audit is the honest answer, not a passing global gate.
     """
+    served = served or Served.local()
+    arenas = arenas or served.arenas
+
+    if served.unknown and not arenas:
+        return [
+            Gate(
+                name="base-model allowlist",
+                ready=False,
+                posture=UNKNOWN,
+                detail=(
+                    "a coordinator is configured but did not answer, so this host "
+                    "cannot tell what is admissible"
+                ),
+                fix="reach the coordinator, or check readiness where it is reachable",
+            )
+        ]
+
     if not arenas:
         return [
             Gate(
@@ -201,11 +273,29 @@ def _provenance_gate(probe: bool = False) -> Gate:
     )
 
 
-def _baseline_gates() -> list[Gate]:
+def _baseline_gates(served: Served | None = None) -> list[Gate]:
     from microtensor.core.constants import ROLE_BASELINES
 
+    served = served or Served.local()
+    if served.unknown:
+        return [
+            Gate(
+                name=f"role baseline / {role}",
+                ready=False,
+                posture=UNKNOWN,
+                detail=(
+                    "a coordinator is configured but did not answer, so this host "
+                    "cannot tell whether a baseline is published"
+                ),
+                fix="reach the coordinator, or check readiness where it is reachable",
+            )
+            for role in sorted(ROLE_BASELINES)
+        ]
+
+    published = dict(served.role_baselines) if served.reachable else dict(ROLE_BASELINES)
+
     gates: list[Gate] = []
-    for role, digest in sorted(ROLE_BASELINES.items()):
+    for role, digest in sorted(published.items()):
         if digest:
             gates.append(
                 Gate(
@@ -228,21 +318,49 @@ def _baseline_gates() -> list[Gate]:
     return gates
 
 
-def audit(arenas: Mapping[str, Sequence[str]] | None = None, *, probe: bool = False) -> list[Gate]:
+def audit(
+    arenas: Mapping[str, Sequence[str]] | None = None,
+    *,
+    probe: bool = False,
+    served: Served | None = None,
+) -> list[Gate]:
+    """Every launch gate and its posture.
+
+    `served` decides where the arena and baseline gates get their answer:
+    local constants when no coordinator is configured, the served config when
+    one answered, and neither when one is configured but silent.
+    """
     return [
-        *_base_model_gates(arenas),
+        *_base_model_gates(arenas, served),
         *_conformance_gates(),
         *_band_gates(),
         _signing_gate(),
         _provenance_gate(probe),
-        *_baseline_gates(),
+        *_baseline_gates(served),
     ]
 
 
 def unenforced(
-    arenas: Mapping[str, Sequence[str]] | None = None, *, probe: bool = False
+    arenas: Mapping[str, Sequence[str]] | None = None,
+    *,
+    probe: bool = False,
+    served: Served | None = None,
 ) -> list[Gate]:
-    return [gate for gate in audit(arenas, probe=probe) if gate.unenforced]
+    return [gate for gate in audit(arenas, probe=probe, served=served) if gate.unenforced]
+
+
+def unreadable(
+    arenas: Mapping[str, Sequence[str]] | None = None,
+    *,
+    probe: bool = False,
+    served: Served | None = None,
+) -> list[Gate]:
+    """Gates whose real state this host could not determine.
+
+    Kept apart from `unenforced` so an outage never reads as a permissive
+    gate, and never reads as a satisfied one either.
+    """
+    return [gate for gate in audit(arenas, probe=probe, served=served) if gate.unreadable]
 
 
 def summary() -> str:
