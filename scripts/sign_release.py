@@ -5,7 +5,6 @@ import hashlib
 import os
 import sys
 from pathlib import Path
-from typing import Any
 
 
 def sha256(path: Path) -> str:
@@ -31,42 +30,28 @@ def write_sums(directory: Path, patterns: list[str]) -> Path:
     return sums
 
 
-# The substrate crypto type for ed25519. An integer, not a KeypairType
-# member: bittensor_wallet exports no such name, so asking for one sent every
-# signing attempt down the fallback and failed on hosts without
-# substrateinterface — which is what stopped the first release.
-ED25519 = 0
-
-
-def _keypair_class() -> Any:
-    try:
-        from bittensor_wallet import Keypair as WalletKeypair
-
-        return WalletKeypair
-    except ImportError:
-        pass
-
-    try:
-        from substrateinterface import Keypair as SubstrateKeypair
-
-        return SubstrateKeypair
-    except ImportError as exc:
-        raise SystemExit(
-            "no keypair implementation is installed; pip install bittensor-wallet"
-        ) from exc
+# Signed with raw ed25519 rather than through a substrate keypair, because
+# the two are the same signature and only one of them needs a library that
+# may not be installed. Verified the equivalence against substrateinterface
+# before switching: same public key, same signature bytes, each verifying the
+# other's output.
 
 
 def sign(sums: Path, seed_hex: str) -> Path:
-    keypair_class = _keypair_class()
-    keypair = keypair_class.create_from_seed(
-        seed_hex if seed_hex.startswith("0x") else f"0x{seed_hex}",
-        crypto_type=ED25519,
-    )
-    signature = keypair.sign(sums.read_bytes())
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    seed = bytes.fromhex(seed_hex.removeprefix("0x"))
+    if len(seed) != 32:
+        raise SystemExit(f"the signing seed must be 32 bytes of hex, got {len(seed)}")
+
+    private = Ed25519PrivateKey.from_private_bytes(seed)
+    public = private.public_key().public_bytes_raw()
+
+    signature = private.sign(sums.read_bytes())
     destination = sums.with_suffix(sums.suffix + ".sig")
     destination.write_bytes(signature)
 
-    print(f"\npublic key  0x{keypair.public_key.hex()}")
+    print(f"\npublic key  0x{public.hex()}")
     print(f"signature   {destination.name} ({len(signature)} bytes)")
     return destination
 

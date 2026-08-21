@@ -23,10 +23,7 @@ jobs:
           cache: pip
 
       - name: Install
-        # bittensor-wallet explicitly: the signer needs a keypair and nothing
-        # earlier in the job imports one, so a missing wheel surfaces only at
-        # the moment of signing, after the build has already run.
-        run: pip install ".[validator,dev]" build bittensor-wallet
+        run: pip install ".[validator,dev]" build
 
       - name: Nothing is published unless the checks pass
         run: |

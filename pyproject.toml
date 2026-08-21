@@ -12,6 +12,10 @@ license = { text = "MIT" }
 
 dependencies = [
     "bittensor>=9.0.0,<12",
+    # Declared rather than leaned on through bittensor: this is what checks a
+    # release signature before auto-update runs the code, and a security check
+    # should not rest on another package's dependency list.
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]

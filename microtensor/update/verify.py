@@ -4,7 +4,6 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
 
 log = logging.getLogger("microtensor.update.verify")
 
@@ -61,45 +60,15 @@ def check_digest(artifact: Path, sums: dict[str, str]) -> tuple[bool, str]:
     return True, ""
 
 
-# The substrate crypto type for ed25519, as an integer rather than through a
-# KeypairType enum. bittensor_wallet exports no such name, so importing it
-# raised ImportError, the fallback was tried, and on a host without
-# substrateinterface release verification failed for a reason that had
-# nothing to do with the signature.
-ED25519: Final[int] = 0
-
-
-def _keypair_class() -> Any:
-    """Whichever keypair implementation is installed.
-
-    Aliased on import rather than bound to one name twice: two imports of the
-    same name in one scope is a redefinition, and the type checker is right
-    to say so.
-    """
-    try:
-        from bittensor_wallet import Keypair as WalletKeypair
-
-        return WalletKeypair
-    except ImportError:
-        pass
-
-    try:
-        from substrateinterface import Keypair as SubstrateKeypair
-
-        return SubstrateKeypair
-    except ImportError as exc:
-        raise VerificationError(
-            "no keypair implementation available to verify the release signature"
-        ) from exc
-
-
-def _keypair(public_key_hex: str) -> Any:
-    keypair = _keypair_class()
-    return keypair(
-        public_key=bytes.fromhex(public_key_hex.removeprefix("0x")),
-        crypto_type=ED25519,
-        ss58_format=42,
-    )
+# A release signature is a plain ed25519 signature over SHA256SUMS. Substrate
+# ed25519 is ed25519: for the same seed the keypair libraries produce the same
+# public key and the same signature, byte for byte. What they add on top is
+# ss58 formatting and a crypto-type enum, and verification uses neither.
+#
+# Going direct removes the whole class of failure this had. One library
+# exports no KeypairType, so asking for one always raised; the other wants a
+# hex string where the first wants bytes; and a validator with neither
+# installed could not verify a release at all, however good the signature.
 
 
 def check_signature(payload: bytes, signature: bytes, public_key_hex: str) -> tuple[bool, str]:
@@ -107,15 +76,25 @@ def check_signature(payload: bytes, signature: bytes, public_key_hex: str) -> tu
         return False, "no release signing key is pinned in this build"
     if not signature:
         return False, "release carries no signature"
+
     try:
-        keypair = _keypair(public_key_hex)
-        if keypair.verify(payload, signature):
-            return True, ""
-    except (VerificationError, ValueError, TypeError) as exc:
-        return False, f"signature could not be checked: {exc}"
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError as exc:
+        return False, f"no ed25519 implementation available to check the signature: {exc}"
+
+    try:
+        key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_hex.removeprefix("0x")))
+    except ValueError as exc:
+        return False, f"the pinned release key is not a valid ed25519 key: {exc}"
+
+    try:
+        key.verify(signature, payload)
+    except InvalidSignature:
+        return False, "signature does not verify against the pinned release key"
     except Exception as exc:
         return False, f"signature check failed: {exc}"
-    return False, "signature does not verify against the pinned release key"
+    return True, ""
 
 
 def verify_artifact(
