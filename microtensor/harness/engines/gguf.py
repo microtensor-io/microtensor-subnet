@@ -25,6 +25,8 @@ variation is pinned here rather than left to a default:
   * one thread, so floating-point reductions happen in a fixed order
   * no GPU offload, because kernel selection varies by driver and card
   * a seed on every context, so a build that consults the RNG still agrees
+  * a cache reset before every generation, so an answer never depends on
+    which task ran before it
   * an exact llama-cpp-python pin in the `gguf` extra, which pins the
     llama.cpp build the numerics come from
 
@@ -261,6 +263,15 @@ class GgufEngine:
         count = 0
 
         try:
+            # Clear the KV cache first. llama.cpp keeps it between calls and
+            # prefix-matches against it, so a generation would otherwise
+            # depend on whatever ran before it — the same prompt answered
+            # differently on its second evaluation, and a system's score
+            # depending on the order its tasks happened to run in. Two
+            # validators drawing tasks in different orders would then disagree
+            # for a reason no miner could act on.
+            self._model.reset()
+
             # Streamed so the first token can be timed. Sampling is fixed to
             # argmax: temperature zero with top_k one leaves nothing for the
             # RNG to decide, whatever the build's sampler chain does.
