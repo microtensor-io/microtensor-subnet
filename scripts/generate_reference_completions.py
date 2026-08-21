@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -69,9 +70,7 @@ def transformers_backend(model_spec: str):  # type: ignore[no-untyped-def]
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
     except ImportError as exc:
-        raise SystemExit(
-            "the transformers backend needs `pip install transformers torch`"
-        ) from exc
+        raise SystemExit("the transformers backend needs `pip install transformers torch`") from exc
 
     repo, _, revision = model_spec.partition("@")
     if not revision:
@@ -94,11 +93,36 @@ def transformers_backend(model_spec: str):  # type: ignore[no-untyped-def]
                 top_p=None,
                 pad_token_id=tokenizer.eos_token_id,
             )
-        return tokenizer.decode(
-            output[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True
-        )
+        return tokenizer.decode(output[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True)
 
     return complete
+
+
+def publish_reference(
+    control: str, credential: str, version: str, model: str, rows: list[dict[str, object]]
+) -> None:
+    """Attach the completions to the corpus so miners can actually read them.
+
+    Written locally first and posted second, so a run that dies halfway still
+    leaves the expensive part on disk to retry from.
+    """
+    import urllib.request
+
+    url = f"{control.rstrip('/')}/v1/operator/corpora/{version}/reference"
+    body = json.dumps({"model": model, "completions": rows}).encode()
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"content-type": "application/json", "x-mt-credential": credential},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as answer:  # noqa: S310
+            summary = json.loads(answer.read().decode("utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"{url} refused the reference set: {exc}") from exc
+
+    print(f"published: {summary.get('reference_count', 0)} completions on {version}")
 
 
 def main() -> int:
@@ -122,6 +146,16 @@ def main() -> int:
     parser.add_argument("--model", required=True, help="<hf-repo>@<revision-sha>")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--limit", type=int, default=0, help="stop after N tasks (smoke runs)")
+    parser.add_argument(
+        "--publish",
+        metavar="CONTROL_URL",
+        help="attach the result to the corpus, e.g. http://127.0.0.1:8081",
+    )
+    parser.add_argument(
+        "--credential",
+        default=os.environ.get("MTS_OPERATOR_SECRET", ""),
+        help="operator credential; defaults to MTS_OPERATOR_SECRET",
+    )
     args = parser.parse_args()
 
     if not args.train and not args.corpus_version:
@@ -155,6 +189,14 @@ def main() -> int:
 
     digest = digest_file(out)
     print(f"{out.name}  {digest}")
+
+    if args.publish:
+        if not args.corpus_version:
+            raise SystemExit("--publish needs --corpus-version to attach to")
+        if not args.credential:
+            raise SystemExit("--publish needs an operator credential")
+        rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line]
+        publish_reference(args.publish, args.credential, args.corpus_version, args.model, rows)
 
     manifest_path = (args.train.parent if args.train else out.parent) / MANIFEST_NAME
     if manifest_path.is_file():

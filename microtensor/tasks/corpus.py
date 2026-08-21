@@ -147,6 +147,12 @@ def load_corpus(path: Path, track: str, version: str = CORPUS_VERSION) -> Corpus
 
 SIDECAR_SUFFIXES = (".tests.jsonl", ".train.jsonl", ".reference.jsonl")
 
+# What the control plane will accept on upload, mirrored here so `mt corpus
+# check` reports against the authority that actually decides rather than
+# against a number of its own. Kept in step with MIN_TASKS in the server's
+# corpuscheck; a corpus below these cannot be attached to an arena at all.
+ADMISSION_MINIMUMS: Final[dict[str, int]] = {"train": 10, "fixed": 20, "rotating": 40}
+
 
 def load_tests(path: Path) -> dict[str, dict[str, Any]]:
     if not path.is_file():

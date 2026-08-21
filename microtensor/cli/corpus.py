@@ -9,7 +9,15 @@ from microtensor.cli.common import fail
 from microtensor.core.constants import CORPUS_VERSION, TASKS_PER_ROUND
 from microtensor.core.tracks import enabled_tracks, get_track
 from microtensor.tasks import bundle, contamination
-from microtensor.tasks.corpus import FIXED, ROTATING, Corpus, CorpusError, load_all, load_corpus
+from microtensor.tasks.corpus import (
+    ADMISSION_MINIMUMS,
+    FIXED,
+    ROTATING,
+    Corpus,
+    CorpusError,
+    load_all,
+    load_corpus,
+)
 from microtensor.tasks.selection import partition_sizes
 
 SEED_ROTATING = 240
@@ -58,20 +66,37 @@ def _check(args: argparse.Namespace) -> int:
     want_rotating, want_fixed = partition_sizes(args.tasks_per_round)
     open_tracks = {t.id for t in enabled_tracks()}
     problems: list[str] = []
+    advisories: list[str] = []
 
     print(f"{'track':<14}{'total':>8}{'rotating':>10}{'fixed':>8}  {'digest':<18}status")
     for name in sorted(corpora):
         corpus = corpora[name]
         notes: list[str] = []
+        soft: list[str] = []
+
         if name not in open_tracks:
             notes.append("track not open")
+
+        # A real failure: below this the control plane will not accept the
+        # corpus, so it can never be attached to an arena.
+        if len(corpus.rotating) < ADMISSION_MINIMUMS["rotating"]:
+            notes.append(f"rotating below the {ADMISSION_MINIMUMS['rotating']} upload minimum")
+        if len(corpus.fixed) < ADMISSION_MINIMUMS["fixed"]:
+            notes.append(f"fixed below the {ADMISSION_MINIMUMS['fixed']} upload minimum")
+
+        # Not a failure: the draw takes min(want, available), so a smaller
+        # corpus simply supplies a smaller round. Said separately because
+        # reporting it as a problem sends people chasing one that is not there.
         if len(corpus.rotating) < want_rotating:
-            notes.append(f"rotating short of {want_rotating}")
+            soft.append(f"rotating {len(corpus.rotating)} of {want_rotating} per round")
         if len(corpus.fixed) < want_fixed:
-            notes.append(f"fixed short of {want_fixed}")
+            soft.append(f"fixed {len(corpus.fixed)} of {want_fixed} per round")
 
         status = "ok" if not notes else "; ".join(notes)
+        if not notes and soft:
+            status = "ok, draws short"
         problems.extend(f"{name}: {n}" for n in notes)
+        advisories.extend(f"{name}: {n}" for n in soft)
         print(
             f"{name:<14}{len(corpus):>8}{len(corpus.rotating):>10}"
             f"{len(corpus.fixed):>8}  {_digest(corpus):<18}{status}"
@@ -91,10 +116,16 @@ def _check(args: argparse.Namespace) -> int:
     if missing:
         print(f"\nno corpus for open tracks: {', '.join(missing)} — they will not be scored")
 
+    if advisories:
+        print(f"\nsmaller than one round's draw at {args.tasks_per_round} tasks per round:")
+        for note in advisories:
+            print(f"  {note}")
+        print("  the draw takes what is there, so this is size, not a defect")
+
     if problems:
         print(f"\n{len(problems)} problem(s) found")
         return 1
-    print("\nevery corpus can fill a round")
+    print("\nevery corpus clears the upload minimums")
     return 0
 
 
@@ -149,9 +180,7 @@ def _contamination(corpora: dict[str, Corpus]) -> list[str]:
         problems.extend(
             _report(
                 "fixed/rotating overlap",
-                contamination.scan_partitions(
-                    _samples(corpus, ROTATING), _samples(corpus, FIXED)
-                ),
+                contamination.scan_partitions(_samples(corpus, ROTATING), _samples(corpus, FIXED)),
             )
         )
         problems.extend(
@@ -170,10 +199,14 @@ def _stats(args: argparse.Namespace) -> int:
         corpus = corpora[name]
         lengths = [len(t.prompt) for t in corpus]
         print(f"{name}  ({get_track(name).metric})")
-        print(f"  tasks        {len(corpus)}  ({len(corpus.rotating)} rotating, "
-              f"{len(corpus.fixed)} fixed)")
-        print(f"  prompt chars min {min(lengths)}, median {sorted(lengths)[len(lengths) // 2]}, "
-              f"max {max(lengths)}")
+        print(
+            f"  tasks        {len(corpus)}  ({len(corpus.rotating)} rotating, "
+            f"{len(corpus.fixed)} fixed)"
+        )
+        print(
+            f"  prompt chars min {min(lengths)}, median {sorted(lengths)[len(lengths) // 2]}, "
+            f"max {max(lengths)}"
+        )
         print(f"  digest       {_digest(corpus)}")
         print(f"  version      {corpus.version}")
     return 0
