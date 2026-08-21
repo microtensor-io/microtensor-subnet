@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
 
 from microtensor.core.constants import (
-    ALLOWED_BASE_MODELS,
     PROVENANCE_BACKOFF_SECONDS,
     PROVENANCE_ENTITY,
     PROVENANCE_PROJECT,
@@ -103,7 +102,7 @@ def check(
     track: str,
     hardware_class: str,
     commit_block: int = 0,
-    allowed_base_models: frozenset[str] = ALLOWED_BASE_MODELS,
+    allowed_base_models: frozenset[str] = frozenset(),
 ) -> Verdict:
     if run is None:
         return Verdict(False, NO_RUN)
@@ -118,6 +117,9 @@ def check(
     if str(run.config[CONFIG_TRACK]) != track or str(run.config[CONFIG_CLASS]) != hardware_class:
         return Verdict(False, WRONG_COMPETITION, run)
 
+    # An empty set here means the caller knows of no allowlist to check
+    # against, not that every model passes: discovery enforces the arena's own
+    # list separately and rejects when it is empty.
     base = str(run.config[CONFIG_BASE_MODEL])
     if allowed_base_models and base not in allowed_base_models:
         return Verdict(False, BASE_NOT_ALLOWED, run)

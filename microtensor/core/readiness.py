@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
 from microtensor.core.constants import (
-    ALLOWED_BASE_MODELS,
     DEFAULT_NETUID,
     RELEASE_SIGNING_KEY,
 )
@@ -37,21 +37,40 @@ def launch_classes() -> tuple[str, ...]:
     return tuple(seen)
 
 
-def _base_model_gate() -> Gate:
-    if ALLOWED_BASE_MODELS:
-        return Gate(
-            name="base-model allowlist",
-            ready=True,
-            posture=CLOSED,
-            detail=f"{len(ALLOWED_BASE_MODELS)} pinned revisions",
+def _base_model_gates(arenas: Mapping[str, Sequence[str]] | None = None) -> list[Gate]:
+    """One gate per arena, because the allowlist is per arena.
+
+    Sourced from the arena records the control plane holds rather than from a
+    constant. With no arena known there is nothing to report on: an empty
+    audit is the honest answer, not a passing global gate.
+    """
+    if not arenas:
+        return [
+            Gate(
+                name="base-model allowlist",
+                ready=False,
+                posture=CLOSED,
+                detail="no arena is configured, so nothing is admissible",
+                fix="create an arena and attach its allowlist through the operator API",
+            )
+        ]
+
+    gates: list[Gate] = []
+    for arena, entries in sorted(arenas.items()):
+        gates.append(
+            Gate(
+                name=f"base-model allowlist ({arena})",
+                ready=bool(entries),
+                posture=CLOSED,
+                detail=(
+                    f"{len(entries)} pinned revisions"
+                    if entries
+                    else "empty, so no submission is admissible"
+                ),
+                fix=("" if entries else f"POST /v1/operator/arenas/<id>/allowlist for {arena}"),
+            )
         )
-    return Gate(
-        name="base-model allowlist",
-        ready=False,
-        posture=OPEN,
-        detail="empty, so every declared base model is accepted",
-        fix="populate ALLOWED_BASE_MODELS with <repo>@<revision-sha> entries",
-    )
+    return gates
 
 
 def _conformance_gates() -> list[Gate]:
@@ -184,9 +203,9 @@ def _baseline_gates() -> list[Gate]:
     return gates
 
 
-def audit() -> list[Gate]:
+def audit(arenas: Mapping[str, Sequence[str]] | None = None) -> list[Gate]:
     return [
-        _base_model_gate(),
+        *_base_model_gates(arenas),
         *_conformance_gates(),
         *_band_gates(),
         _signing_gate(),
@@ -195,8 +214,8 @@ def audit() -> list[Gate]:
     ]
 
 
-def unenforced() -> list[Gate]:
-    return [gate for gate in audit() if gate.unenforced]
+def unenforced(arenas: Mapping[str, Sequence[str]] | None = None) -> list[Gate]:
+    return [gate for gate in audit(arenas) if gate.unenforced]
 
 
 def summary() -> str:

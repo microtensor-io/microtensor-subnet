@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from microtensor.core.constants import (
-    ALLOWED_BASE_MODELS,
     PROVENANCE_ENTITY,
     PROVENANCE_PROJECT,
     PROVENANCE_REQUIRED,
@@ -32,6 +31,7 @@ class Report:
     verdict: Verdict
     hotkey: str
     artifact_digest: str
+    allowlist: frozenset[str] = frozenset()
 
     def render(self) -> str:
         run = self.verdict.run
@@ -41,27 +41,21 @@ class Report:
         ]
         if run is not None:
             match = (
-                "matches submitted artifact"
-                if run.digest == self.artifact_digest
-                else "MISMATCH"
+                "matches submitted artifact" if run.digest == self.artifact_digest else "MISMATCH"
             )
             base = str(run.config.get(CONFIG_BASE_MODEL, "(absent)"))
             listed = (
-                "on allowlist"
-                if not ALLOWED_BASE_MODELS or base in ALLOWED_BASE_MODELS
-                else "NOT on allowlist"
+                "arena allowlist not read"
+                if not self.allowlist
+                else ("on allowlist" if base in self.allowlist else "NOT on allowlist")
             )
-            finished = (
-                f"block {run.finished_block:,}" if run.finished_block else "(not recorded)"
-            )
+            finished = f"block {run.finished_block:,}" if run.finished_block else "(not recorded)"
             lines += [
                 f"digest       {match}",
                 f"base model   {base}  ({listed})",
                 f"finished     {finished}",
             ]
-        lines.append(
-            f"verdict      {'ADMISSIBLE' if self.verdict.admissible else 'REJECTED'}"
-        )
+        lines.append(f"verdict      {'ADMISSIBLE' if self.verdict.admissible else 'REJECTED'}")
         if not self.verdict.admissible:
             lines.append(f"reason       {self.verdict.reason}")
         return "\n".join(lines)
@@ -105,6 +99,7 @@ def verify(
     artifact_digest: str,
     *,
     commit_block: int = 0,
+    allowlist: frozenset[str] = frozenset(),
 ) -> Report:
     """The same gate the validator runs, with the current head as the bound.
 
@@ -120,8 +115,14 @@ def verify(
         track=config.track,
         hardware_class=config.hardware_class,
         commit_block=commit_block,
+        allowed_base_models=allowlist,
     )
-    return Report(verdict=verdict, hotkey=hotkey, artifact_digest=artifact_digest)
+    return Report(
+        verdict=verdict,
+        hotkey=hotkey,
+        artifact_digest=artifact_digest,
+        allowlist=allowlist,
+    )
 
 
 def require(
@@ -131,12 +132,20 @@ def require(
     artifact_digest: str,
     *,
     commit_block: int = 0,
+    allowlist: frozenset[str] = frozenset(),
 ) -> Report:
     if not PROVENANCE_REQUIRED:
         return Report(Verdict(True, "provenance is not required"), hotkey, artifact_digest)
 
     try:
-        report = verify(store, config, hotkey, artifact_digest, commit_block=commit_block)
+        report = verify(
+            store,
+            config,
+            hotkey,
+            artifact_digest,
+            commit_block=commit_block,
+            allowlist=allowlist,
+        )
     except ProvenanceUnavailable as exc:
         raise ProvenanceMissing(
             f"the run store could not be reached, so your submission cannot be checked "

@@ -40,6 +40,11 @@ class ValidatorConfig:
     allow_unsandboxed: bool = False
     dry_run: bool = False
     loopback: bool = False
+    # Loopback and the end-to-end harness stand up a synthetic arena, so they
+    # carry their own allowlist rather than reaching for a constant. A real
+    # deployment leaves this empty and takes the arena's list from the config
+    # the chain anchored.
+    allowlists: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
     verify_signatures: bool = True
     degraded: bool = False
     coordinator_url: str = ""

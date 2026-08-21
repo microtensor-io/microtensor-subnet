@@ -27,12 +27,18 @@ log = logging.getLogger("microtensor.validator.loopback")
 VALIDATOR_HOTKEY = "5LoopbackValidator00000000000000000000000000000"
 REFERENCE_ENGINE = "microtensor.harness.engines.reference"
 
+# The synthetic arena declares its own base model and permits exactly it.
+# The allowlist lives in the arena record now, so a harness that stands up an
+# arena stands up its allowlist too rather than reaching for a constant.
+BASE_MODEL = "Qwen/Qwen3-4B@a1b2c3d4e5f6a7b8"
+
 LOAD = LoadManifest(
     format=ArtifactFormat.SAFETENSORS,
     quantization="int8",
     entrypoint="model.safetensors",
     max_input={"tokens": 512},
     preprocessing={"tokenizer": "tokenizer.json"},
+    base_model=BASE_MODEL,
 )
 DECLARED = DeclaredEnvelope(size_bytes=1 << 30, peak_rss_bytes=3 << 30, p95_latency_ms=170)
 
@@ -135,8 +141,7 @@ def build(
 
     _write_corpus(home / "corpus", [track], rotating=tasks_per_round, fixed=tasks_per_round)
     built = [
-        _make_miner(home / "miners", i, round_.index, track, hardware_class)
-        for i in range(miners)
+        _make_miner(home / "miners", i, round_.index, track, hardware_class) for i in range(miners)
     ]
     _install_fetcher(built)
 
@@ -175,6 +180,7 @@ def build(
         dry_run=False,
         verify_signatures=False,
         loopback=True,
+        allowlists={(track, hardware_class): frozenset({BASE_MODEL})},
     )
     context = ValidatorContext.build(config, client, hotkey=VALIDATOR_HOTKEY)
     return Loopback(context=context, client=client, round=round_, miners=tuple(built))
@@ -213,6 +219,4 @@ def advance(loop: Loopback) -> Loopback:
     loop.client.set_snapshot(
         snapshot_of(DEFAULT_NETUID, following.close_block, list(loop.client.snapshot().neurons))
     )
-    return Loopback(
-        context=loop.context, client=loop.client, round=following, miners=loop.miners
-    )
+    return Loopback(context=loop.context, client=loop.client, round=following, miners=loop.miners)

@@ -134,6 +134,25 @@ class ServerClient:
             or {}
         )
 
+    def arenas(self) -> dict[str, dict[str, Any]]:
+        """Per-arena configuration the anchored config carries.
+
+        Today the base-model allowlist. Read from the public listing because
+        it is public: a miner needs to know what they may build from before
+        they start, and the coordinator needs the same list to serve it.
+        """
+        answer = self._call("GET", "/v1/arenas") or {}
+        out: dict[str, dict[str, Any]] = {}
+        for arena in answer.get("arenas", []):
+            track = str(arena.get("track", ""))
+            hardware_class = str(arena.get("class", ""))
+            if not track or not hardware_class:
+                continue
+            out[f"{track}/{hardware_class}"] = {
+                "allowed_base_models": list(arena.get("allowed_base_models", []))
+            }
+        return out
+
     def milestone(self, track: str, hardware_class: str) -> dict[str, Any]:
         query = urllib.parse.urlencode({"track": track, "hardware_class": hardware_class})
         found = self._call("GET", f"/v1/control/milestone?{query}")

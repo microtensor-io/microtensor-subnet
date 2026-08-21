@@ -261,7 +261,7 @@ def _run_round(
 
     try:
         require_engines()
-        roster = discover(context, snapshot, round_)
+        roster = discover(context, snapshot, round_, plan.allowlists)
     except Abstain as exc:
         return abstain(str(exc))
     except ProvenanceUnavailable as exc:
@@ -408,7 +408,7 @@ def _run_loopback_round(
     """
     try:
         require_engines()
-        roster = discover(context, snapshot, round_)
+        roster = discover(context, snapshot, round_, context.config.allowlists)
     except Abstain as exc:
         return abstain(str(exc))
     except ProvenanceUnavailable as exc:

@@ -102,8 +102,6 @@ PARAM_DISTANCE_THRESHOLD: Final[float] = 0.02
 BEHAVIOUR_DISTANCE_THRESHOLD: Final[float] = 0.05
 PROBE_SET_SIZE: Final[int] = 256
 
-ALLOWED_BASE_MODELS: Final[frozenset[str]] = frozenset()
-
 PROVENANCE_ENTITY: Final[str] = "microtensor"
 PROVENANCE_PROJECT: Final[str] = "training-runs"
 PROVENANCE_REQUIRED: Final[bool] = True

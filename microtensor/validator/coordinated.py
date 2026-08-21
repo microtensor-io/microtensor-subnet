@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -57,6 +57,7 @@ class Plan:
     systems: tuple[str, ...] = ()
     config_hash: str = ""
     reason: str = ""
+    allowlists: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
 
     @property
     def coordinated(self) -> bool:
@@ -66,6 +67,25 @@ class Plan:
     @property
     def measures(self) -> bool:
         return self.mode is Mode.COORDINATED
+
+
+def allowlists_from(config: Mapping[str, Any]) -> dict[tuple[str, str], frozenset[str]]:
+    """Per-arena base-model allowlists, from the config the chain anchored.
+
+    Read from the verified config rather than a constant, so adding a
+    permitted base model is an operator action rather than a release. An
+    arena absent here has no allowlist and therefore admits nothing; the gate
+    treats that as "nothing permitted yet", never as "anything goes".
+    """
+    out: dict[tuple[str, str], frozenset[str]] = {}
+    for key, value in dict(config.get("arenas", {})).items():
+        track, _, hardware_class = str(key).partition("/")
+        if not track or not hardware_class:
+            continue
+        out[(track, hardware_class)] = frozenset(
+            str(entry) for entry in dict(value).get("allowed_base_models", [])
+        )
+    return out
 
 
 def plan_round(
@@ -105,6 +125,7 @@ def plan_round(
 
     round_index = int(current["round"])
     config_hash = str(current.get("config_hash", ""))
+    allowlists = allowlists_from(dict(current.get("config", {})))
 
     if systems is not None and assigned_round is not None and assigned_round != round_index:
         raise CoordinatorDisagrees(
@@ -128,6 +149,7 @@ def plan_round(
             round_index=round_index,
             config_hash=config_hash,
             reason="assigned no systems this round",
+            allowlists=allowlists,
         )
 
     return Plan(
@@ -135,6 +157,7 @@ def plan_round(
         round_index=round_index,
         systems=systems,
         config_hash=config_hash,
+        allowlists=allowlists,
     )
 
 

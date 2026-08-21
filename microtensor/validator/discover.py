@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from microtensor.chain.commitment import Commitment, decode_all
@@ -8,7 +9,6 @@ from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round
 from microtensor.chain.wallet import verify_payload
 from microtensor.core.constants import (
-    ALLOWED_BASE_MODELS,
     HOST_PROFILE,
     PROVENANCE_REQUIRED,
 )
@@ -102,22 +102,32 @@ def _provenance_reason(
     return "", verdict
 
 
-def _base_model_reason(system: SystemManifest) -> str:
-    """The allowlist applies to every component that carries weights."""
-    if not ALLOWED_BASE_MODELS:
-        return ""
+def _base_model_reason(system: SystemManifest, allowlist: frozenset[str]) -> str:
+    """The allowlist applies to every component that carries weights.
 
+    An empty allowlist rejects everything. It reads as "nothing has been
+    permitted here yet", never as "anything goes": the arena lifecycle refuses
+    to activate an arena without entries, and a gate that fails open when its
+    configuration is missing is worse than no gate.
+
+    The router carries no weights, so it declares no base model to check.
+    """
     for component in system.components:
         if component.role is Role.ROUTER:
             continue
-        if component.base_model not in ALLOWED_BASE_MODELS:
+        if component.base_model not in allowlist:
             if system.degenerate:
                 return "base model not on the allowlist"
             return f"{component.role.value} base model not on the allowlist"
     return ""
 
 
-def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Round) -> Roster:
+def discover(
+    context: ValidatorContext,
+    snapshot: MetagraphSnapshot,
+    round_: Round,
+    allowlists: Mapping[tuple[str, str], frozenset[str]] | None = None,
+) -> Roster:
     raw = context.client.commitments(list(snapshot.hotkeys))
     commitments = decode_all(raw)
     log.info("round %d: %d commitments readable", round_.index, len(commitments))
@@ -158,7 +168,14 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
             reason = _manifest_reason(manifest, hotkey, context.config.verify_signatures)
             if not reason:
                 system = _system_of(manifest, commitment.hardware_class)
-                reason = _base_model_reason(system)
+                reason = _base_model_reason(
+                    system,
+                    frozenset(
+                        (allowlists or {}).get(
+                            (commitment.track, commitment.hardware_class), frozenset()
+                        )
+                    ),
+                )
                 if not reason:
                     reason, verdict = _provenance_reason(
                         context, hotkey, system, commitment, commit_block

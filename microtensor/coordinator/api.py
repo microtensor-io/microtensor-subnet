@@ -118,6 +118,7 @@ class Coordinator:
     uid_by_hotkey: dict[str, int] = None  # type: ignore[assignment]
     reserve: Callable[[], dict[str, Any]] | None = None
     mirror_report: Callable[[int, list[dict[str, Any]]], Any] | None = None
+    arenas: dict[str, dict[str, Any]] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if not self.catalogue:
@@ -128,12 +129,14 @@ class Coordinator:
             self.uid_by_hotkey = {}
         if not self.corpora:
             self.corpora = {}
+        if not self.arenas:
+            self.arenas = {}
 
     def current_round(self) -> dict[str, Any]:
         row = self.store.latest_round()
         if row is None:
             return {}
-        config = served_config(self.corpus_version or "")
+        config = served_config(self.corpus_version or "", self.arenas)
         return {
             "corpus_digest": self.corpus_digest(),
             "round": row["round_index"],

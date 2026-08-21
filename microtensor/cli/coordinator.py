@@ -163,6 +163,23 @@ def _init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _arenas(server: ServerClient | None) -> dict[str, dict[str, Any]]:
+    """Per-arena configuration from the control plane, or nothing.
+
+    Nothing is the strict answer when the server cannot be reached: an empty
+    allowlist admits no submission, which is the safe reading of "the rules
+    could not be fetched". Falling back to a stale set nobody has reviewed is
+    exactly the failure the allowlist exists to prevent.
+    """
+    if server is None:
+        return {}
+    try:
+        return server.arenas()
+    except (ServerUnreachable, ServerRefused) as exc:
+        log.warning("the arena configuration was not read from the control plane: %s", exc)
+        return {}
+
+
 def _config(args: argparse.Namespace) -> int:
     config = served_config(CORPUS_VERSION)
     print(json.dumps(config, indent=2, sort_keys=True))
@@ -447,9 +464,7 @@ def _settle(args: argparse.Namespace) -> int:
     return 0
 
 
-def _push_telemetry(
-    store: CoordinatorStore, server: ServerClient | None, round_index: int
-) -> None:
+def _push_telemetry(store: CoordinatorStore, server: ServerClient | None, round_index: int) -> None:
     """Mirror who was training to the control plane.
 
     Best effort. Telemetry is observational, so failing to mirror it must never
@@ -614,6 +629,7 @@ def _serve(args: argparse.Namespace) -> int:
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
             mirror_report=server.push_reports if server is not None else None,
+            arenas=_arenas(server),
         )
         app = build_app(service)
         log.info("serving the coordinator on %s:%d", args.host, args.port)
