@@ -213,6 +213,43 @@ the state the check exists to refuse.
 
 ---
 
+## 7a · Checking a corpus
+
+`mt corpus check` answers two different questions, and which one it answers
+depends on what you point it at.
+
+**A validator's corpus directory** — the `fixed` and `rotating` partitions a
+worker loads, with their hidden tests:
+
+```bash
+mt corpus check /var/lib/microtensor/corpus
+```
+
+This is the validator split. It has no `train` partition, because a validator
+never sees one, and pointing it at an upload bundle fails: `train` is not a
+partition the worker's loader knows.
+
+**An upload bundle**, before you send it:
+
+```bash
+export MTS_OPERATOR_SECRET=...
+mt corpus check bundle.json --bundle --control http://127.0.0.1:8081
+```
+
+That posts to `/v1/operator/corpora/validate`, which runs the same checks the
+upload runs and **stores nothing**. You get the version the bundle would take,
+the per-partition counts, any contamination findings, and every failing check
+with the task refs involved — rather than learning the contract from a 422
+that leaves a draft behind.
+
+The two are separate because the authorities are separate. The control plane
+decides what may be uploaded and enforces the partition minimums; the worker
+decides what it can load and needs a corpus large enough to draw a round from.
+The check names which of those it is reporting on, and a corpus that is
+smaller than one round's draw is reported as size rather than as a defect.
+
+---
+
 ## 8 · When the coordinator is down
 
 **Coordinator availability is an operational requirement, not a convenience.**

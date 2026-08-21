@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import urllib.request
 from pathlib import Path
 
 from microtensor.cli.common import fail
-from microtensor.core.constants import CORPUS_VERSION, TASKS_PER_ROUND
+from microtensor.core.constants import CONTROL_URL, CORPUS_VERSION, TASKS_PER_ROUND
 from microtensor.core.tracks import enabled_tracks, get_track
 from microtensor.tasks import bundle, contamination
 from microtensor.tasks.corpus import (
@@ -28,8 +30,28 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser = subparsers.add_parser("corpus", help="check and seed task corpora")
     inner = parser.add_subparsers(dest="action", required=True)
 
-    check = inner.add_parser("check", help="verify every corpus a validator would load")
-    check.add_argument("directory", type=Path)
+    check = inner.add_parser(
+        "check",
+        help="verify a validator's corpus directory, or an upload bundle with --bundle",
+    )
+    check.add_argument(
+        "directory", type=Path, help="corpus directory, or bundle file with --bundle"
+    )
+    check.add_argument(
+        "--bundle",
+        action="store_true",
+        help="the path is an upload bundle; validate it against the control plane",
+    )
+    check.add_argument(
+        "--control",
+        default=CONTROL_URL,
+        help="control plane to validate the bundle against",
+    )
+    check.add_argument(
+        "--credential",
+        default=os.environ.get("MTS_OPERATOR_SECRET", ""),
+        help="operator credential; defaults to MTS_OPERATOR_SECRET",
+    )
     check.add_argument("--tasks-per-round", type=int, default=TASKS_PER_ROUND)
     check.add_argument(
         "--skip-contamination",
@@ -58,6 +80,9 @@ def _digest(corpus: Corpus) -> str:
 
 
 def _check(args: argparse.Namespace) -> int:
+    if args.bundle:
+        return _check_bundle(args)
+
     try:
         corpora = load_all(args.directory)
     except CorpusError as exc:
@@ -127,6 +152,82 @@ def _check(args: argparse.Namespace) -> int:
         return 1
     print("\nevery corpus clears the upload minimums")
     return 0
+
+
+def _check_bundle(args: argparse.Namespace) -> int:
+    """Validate an upload bundle against the control plane, storing nothing.
+
+    Asked of the server rather than reimplemented here on purpose. The local
+    loader reads the validator split, which has no train partition and no idea
+    what the upload minimums are; a second validator that could disagree with
+    the one that decides is worse than a round trip.
+    """
+    path: Path = args.directory
+    if not path.is_file():
+        return fail(f"{path} is not a file; --bundle expects the bundle json")
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return fail(f"{path} could not be read: {exc}")
+
+    if not isinstance(payload, dict) or "tasks" not in payload:
+        return fail(f"{path} is not a bundle; expected an object with a tasks array")
+
+    if not args.credential:
+        return fail("set MTS_OPERATOR_SECRET or pass --credential to validate a bundle")
+
+    body = json.dumps(
+        {
+            "track": str(payload.get("track", "")),
+            "description": str(payload.get("description", "")),
+            "manifest": payload.get("manifest", {}),
+            "tasks": payload.get("tasks", []),
+            "tests": payload.get("tests", []),
+        }
+    ).encode()
+
+    url = f"{str(args.control).rstrip('/')}/v1/operator/corpora/validate"
+    if not url.startswith(("http://", "https://")):
+        return fail(f"--control needs an http or https URL, got {args.control!r}")
+
+    request = urllib.request.Request(  # noqa: S310
+        url,
+        data=body,
+        headers={"content-type": "application/json", "x-mt-credential": args.credential},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as answer:  # noqa: S310
+            report = json.loads(answer.read().decode("utf-8"))
+    except Exception as exc:
+        return fail(f"{url} could not validate the bundle: {exc}")
+
+    counts = report.get("counts", {})
+    print(f"version   {report.get('version', '?')}")
+    print(
+        "counts    "
+        + ", ".join(f"{name} {counts.get(name, 0)}" for name in ("train", "fixed", "rotating"))
+    )
+
+    flagged = report.get("contamination", [])
+    print(f"overlap   {len(flagged)} flagged against public benchmarks")
+    for hit in flagged[:5]:
+        print(f"  {hit['ref']} overlaps {hit['against']} (via {hit['signal']})")
+
+    failures = report.get("failures", [])
+    if not failures:
+        print("\nthe bundle would upload")
+        return 0
+
+    print(f"\n{len(failures)} check(s) failed:")
+    for failure in failures:
+        refs = failure.get("refs", [])
+        shown = ", ".join(refs[:6]) + (f" (+{len(refs) - 6} more)" if len(refs) > 6 else "")
+        print(f"  [{failure['check']}] {failure['detail']}")
+        if shown:
+            print(f"    {shown}")
+    return 1
 
 
 def _samples(corpus: Corpus, partition: str | None = None) -> list[contamination.Sample]:

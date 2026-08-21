@@ -62,6 +62,9 @@ COORDINATOR_TIMEOUT_SECONDS: Final[int] = 30
 COORDINATOR_URL: Final[str] = ""
 COORDINATOR_SERVER_URL: Final[str] = ""
 PUBLIC_SERVER_URL: Final[str] = "https://api.microtensor.cloud"
+# The operator plane is bound to loopback on the server host, so the default
+# is what an operator reaches over an ssh tunnel rather than a public name.
+CONTROL_URL: Final[str] = "http://127.0.0.1:8081"
 COORDINATOR_PORT: Final[int] = 8443
 REPORT_MAX_BYTES: Final[int] = 256 * 1024
 REPUTATION_FLOOR: Final[float] = 0.80
