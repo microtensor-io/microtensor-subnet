@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from microtensor.core.protocol import Fault
+from microtensor.harness import progress
 from microtensor.harness.limits import (
     Limits,
     UnsupportedPlatform,
@@ -54,6 +55,10 @@ class JailResult:
     exit_code: int | None = None
     sandboxed: bool = True
     cpu_budget: float = 0.0
+    # What the worker finished before a ceiling stopped it. Empty on every
+    # other failure, because a crash mid-task proves nothing about the tasks
+    # around it, while a cpu budget running out says only "no further".
+    partial: tuple[Any, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -87,7 +92,10 @@ def _install_cpu_alarm(conn: Any, limits: Limits | None) -> None:
     """Turn SIGXCPU into a sentence rather than a signal number.
 
     The soft CPU limit fires a grace period before the hard one, so the
-    worker gets to say what happened before the kernel stops asking.
+    worker gets to say what happened before the kernel stops asking. It hands
+    back the work it finished as well: a run that answered 150 of 200 tasks
+    before the budget ran out has 150 real answers, and throwing them away
+    scores a slow miner the same as one that never ran.
     """
     if limits is None:
         return
@@ -96,13 +104,17 @@ def _install_cpu_alarm(conn: Any, limits: Limits | None) -> None:
 
         def _spent(signum: int, frame: Any) -> None:
             try:
+                done = progress.collected()
                 conn.send(
                     (
-                        "artifact",
-                        f"exhausted its {limits.cpu_seconds}s cpu budget after "
-                        f"{_cpu():.1f}s of cpu time",
+                        "partial",
+                        (
+                            f"exhausted its {limits.cpu_seconds}s cpu budget after "
+                            f"{_cpu():.1f}s of cpu time, having finished {len(done)}"
+                        ),
                         _cpu(),
                         _rss(),
+                        done,
                     )
                 )
                 conn.close()
@@ -229,7 +241,20 @@ def run_jailed(
             cpu_budget=float(limits.cpu_seconds),
         )
 
-    kind, value, cpu, rss = payload
+    kind, value, cpu, rss, *rest = payload
+    if kind == "partial":
+        return JailResult(
+            completed=False,
+            error=str(value),
+            cpu_seconds=max(float(cpu), consumed),
+            wall_seconds=elapsed,
+            peak_rss_bytes=rss,
+            exit_code=exit_code,
+            sandboxed=sandboxed,
+            cpu_budget=float(limits.cpu_seconds),
+            partial=tuple(rest[0]) if rest else (),
+        )
+
     if kind == "ok":
         return JailResult(
             completed=True,

@@ -114,6 +114,17 @@ def _limits(hardware: HardwareClass, seconds: int) -> Limits:
     return Limits.for_class(hardware, max(2, seconds))
 
 
+def _cpu_budget(context: ValidatorContext, cpu_seconds: int) -> int:
+    """The arena's budget when the anchored config carried one.
+
+    Zero means no arena budget reached this worker, which happens on the
+    standalone and loopback paths. The configured default stands in there
+    rather than in the coordinated path, where disagreeing with peers about
+    the budget would mean scoring a different competition from them.
+    """
+    return cpu_seconds or context.config.cpu_seconds_per_artifact
+
+
 def materialise(context: ValidatorContext, participant: Participant) -> Path:
     try:
         return fetch_artifact(
@@ -191,6 +202,8 @@ def run_system(
     artifact: Path,
     hardware: HardwareClass,
     tasks: RoundTasks,
+    *,
+    cpu_seconds: int = 0,
 ) -> tuple[CascadeResult | None, str]:
     """Execute the whole system, front then router then escalation."""
     system = participant.system
@@ -214,7 +227,7 @@ def run_system(
         list(system.router_features),
         specialist_path,
         load if specialist_path else None,
-        limits=_limits(hardware, context.config.cpu_seconds_per_artifact),
+        limits=_limits(hardware, _cpu_budget(context, cpu_seconds)),
         allow_unsandboxed=context.config.allow_unsandboxed,
     )
 
@@ -223,7 +236,16 @@ def run_system(
             raise Abstain(
                 f"{participant.hotkey}: execution infrastructure failed — {result.error}"
             )
-        return None, f"execution failed: {result.error}"
+        if not result.partial:
+            return None, f"execution failed: {result.error}"
+        log.info(
+            "%s ran out of budget after %d of %d tasks; the rest are forfeit, the "
+            "finished ones stand",
+            participant.hotkey,
+            len(result.partial),
+            len(tasks.all),
+        )
+        return CascadeResult(legs=tuple(result.partial)), ""
 
     return CascadeResult(legs=tuple(result.value)), ""
 
@@ -257,6 +279,8 @@ def score(
     artifact: Path,
     hardware: HardwareClass,
     tasks: RoundTasks,
+    *,
+    cpu_seconds: int = 0,
 ) -> tuple[tuple[TaskOutcome, ...], str]:
     metric = get_track(tasks.track).metric
     requests = to_requests(
@@ -267,16 +291,27 @@ def score(
         str(artifact),
         participant.manifest.load.to_dict(),
         requests,
-        limits=_limits(hardware, context.config.cpu_seconds_per_artifact),
+        limits=_limits(hardware, _cpu_budget(context, cpu_seconds)),
         allow_unsandboxed=context.config.allow_unsandboxed,
     )
 
     if not result.ok:
         if result.fault is Fault.INFRASTRUCTURE:
             raise Abstain(f"{participant.hotkey}: execution infrastructure failed — {result.error}")
-        return (), f"execution failed: {result.error}"
+        if not result.partial:
+            return (), f"execution failed: {result.error}"
+        log.info(
+            "%s ran out of budget after %d of %d tasks; the rest are forfeit, the "
+            "finished ones stand",
+            participant.hotkey,
+            len(result.partial),
+            len(tasks.all),
+        )
 
-    by_ref: dict[str, Response] = {r.task_ref: r for r in result.value}
+    # A task with no response scores as a failure further down, so the tasks
+    # the worker never reached are forfeit without any special case here.
+    answered: Sequence[Response] = result.value if result.ok else result.partial
+    by_ref: dict[str, Response] = {r.task_ref: r for r in answered}
     rotating = {t.ref for t in tasks.rotating}
     try:
         outcomes = tuple(
@@ -296,7 +331,11 @@ def score(
 
 
 def evaluate_participant(
-    context: ValidatorContext, participant: Participant, tasks: RoundTasks
+    context: ValidatorContext,
+    participant: Participant,
+    tasks: RoundTasks,
+    *,
+    cpu_seconds: int = 0,
 ) -> Evaluation:
     hardware = get_class(participant.competition[1])
     artifact = materialise(context, participant)
@@ -315,7 +354,9 @@ def evaluate_participant(
     front_only_score = 0.0
 
     if not participant.system.degenerate:
-        cascade, failure = run_system(context, participant, artifact, hardware, tasks)
+        cascade, failure = run_system(
+            context, participant, artifact, hardware, tasks, cpu_seconds=cpu_seconds
+        )
         if failure or cascade is None:
             log.info("%s scored zero: %s", participant.hotkey, failure)
             return _evaluation(participant, tasks, gate=gate, measured=measured)
@@ -323,7 +364,9 @@ def evaluate_participant(
         outcomes, front_outcomes = outcomes_from(cascade.legs, tasks, metric)
         front_only_score = combine_partitions(*partition_scores(front_outcomes)[:2])
     else:
-        outcomes, failure = score(context, participant, artifact, hardware, tasks)
+        outcomes, failure = score(
+            context, participant, artifact, hardware, tasks, cpu_seconds=cpu_seconds
+        )
         if failure:
             log.info("%s scored zero: %s", participant.hotkey, failure)
             return _evaluation(participant, tasks, gate=gate, measured=measured)
@@ -350,13 +393,19 @@ def require_engines() -> None:
 
 
 def evaluate_competition(
-    context: ValidatorContext, participants: tuple[Participant, ...], tasks: RoundTasks
+    context: ValidatorContext,
+    participants: tuple[Participant, ...],
+    tasks: RoundTasks,
+    *,
+    cpu_seconds: int = 0,
 ) -> CompetitionResult:
     evaluations: list[Evaluation] = []
 
     for participant in participants:
         try:
-            evaluation = evaluate_participant(context, participant, tasks)
+            evaluation = evaluate_participant(
+                context, participant, tasks, cpu_seconds=cpu_seconds
+            )
         except ArtifactMismatch as exc:
             log.info("%s scored zero: %s", participant.hotkey, exc)
             evaluation = _evaluation(participant, tasks)

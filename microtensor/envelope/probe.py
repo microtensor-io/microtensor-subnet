@@ -5,13 +5,41 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 CHARS_PER_TOKEN: Final[int] = 4
-MIN_PROBE_CHARS: Final[int] = 256
+
+# What a scoring round actually sends, measured across the corpus. The probe
+# is floored here rather than at some small round number because prefill is
+# most of the cost on single-threaded cpu inference, so a shorter probe does
+# not measure a faster machine, it measures a smaller job.
+#
+# The floor was 256 chars, about 64 tokens, against this. A miner profiled a
+# job an eighth the size of the one it would be scored on, declared the p95
+# that came back, and was then held to it at full length. The error ran in
+# the direction that zeroes honest miners.
+SCORING_PROMPT_TOKENS: Final[int] = 541
+
+CHARS_PER_TOKEN_SLACK: Final[int] = CHARS_PER_TOKEN
+MIN_PROBE_CHARS: Final[int] = SCORING_PROMPT_TOKENS * CHARS_PER_TOKEN_SLACK
 MAX_PROBE_CHARS: Final[int] = 1_000_000
 
 _WORDS: Final[tuple[str, ...]] = (
-    "ledger", "tensor", "quantise", "bandwidth", "residual", "throughput",
-    "checkpoint", "kernel", "latency", "manifest", "envelope", "gradient",
-    "attention", "embedding", "operator", "partition", "consensus", "artifact",
+    "ledger",
+    "tensor",
+    "quantise",
+    "bandwidth",
+    "residual",
+    "throughput",
+    "checkpoint",
+    "kernel",
+    "latency",
+    "manifest",
+    "envelope",
+    "gradient",
+    "attention",
+    "embedding",
+    "operator",
+    "partition",
+    "consensus",
+    "artifact",
 )
 
 

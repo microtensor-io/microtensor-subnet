@@ -62,6 +62,7 @@ class Plan:
     config_hash: str = ""
     reason: str = ""
     allowlists: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    budgets: dict[tuple[str, str], RoundBudget] = field(default_factory=dict)
 
     @property
     def coordinated(self) -> bool:
@@ -88,6 +89,44 @@ def allowlists_from(config: Mapping[str, Any]) -> dict[tuple[str, str], frozense
             continue
         out[(track, hardware_class)] = frozenset(
             str(entry) for entry in dict(value).get("allowed_base_models", [])
+        )
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class RoundBudget:
+    """What one artifact is allowed to spend on one round of one arena.
+
+    Carried in the anchored config rather than in each worker's constants,
+    because it describes the same model class the latency ceilings do and has
+    to move with them. A worker that used its own number would measure a
+    different competition from its peers and settle against them.
+    """
+
+    cpu_seconds_per_artifact: int
+    tasks_per_round: int
+
+
+def budgets_from(config: Mapping[str, Any]) -> dict[tuple[str, str], RoundBudget]:
+    """Per-arena round budgets, from the config the chain anchored.
+
+    An arena missing a budget is left out rather than defaulted here. The
+    coordinator writes a concrete number into every arena it serves, so a gap
+    means the arena was never configured, and inventing one locally is how
+    two workers end up scoring the same round differently.
+    """
+    out: dict[tuple[str, str], RoundBudget] = {}
+    for key, value in dict(config.get("arenas", {})).items():
+        track, _, hardware_class = str(key).partition("/")
+        if not track or not hardware_class:
+            continue
+        block = dict(value)
+        cpu = block.get("cpu_seconds_per_artifact")
+        tasks = block.get("tasks_per_round")
+        if not cpu or not tasks:
+            continue
+        out[(track, hardware_class)] = RoundBudget(
+            cpu_seconds_per_artifact=int(cpu), tasks_per_round=int(tasks)
         )
     return out
 
@@ -144,6 +183,7 @@ def plan_round(
 
     config_hash = str(current.get("config_hash", ""))
     allowlists = allowlists_from(dict(current.get("config", {})))
+    budgets = budgets_from(dict(current.get("config", {})))
 
     if systems is not None and assigned_round is not None and assigned_round != round_index:
         raise CoordinatorDisagrees(
@@ -168,6 +208,7 @@ def plan_round(
             config_hash=config_hash,
             reason="assigned no systems this round",
             allowlists=allowlists,
+            budgets=budgets,
         )
 
     return Plan(
@@ -176,6 +217,7 @@ def plan_round(
         systems=systems,
         config_hash=config_hash,
         allowlists=allowlists,
+        budgets=budgets,
     )
 
 

@@ -9,6 +9,7 @@ from microtensor.core.constants import (
     CLASS_WEIGHTS,
     COORDINATOR_REPLICATION,
     CORPUS_VERSION,
+    CPU_SECONDS_PER_ARTIFACT,
     MECHANISM_VERSION,
     ROLE_BASELINES,
     ROUND_BLOCKS,
@@ -20,6 +21,27 @@ from microtensor.core.tracks import CLASSES, competitions, enabled_tracks
 CONFIG_VERSION = 1
 
 MISMATCH = "the served config does not match the hash anchored on chain for this round"
+
+
+def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
+    """One arena's rules, with every number written out.
+
+    The budget is stamped here rather than left to each worker's constants.
+    An absent value must not mean "whatever your build happens to think": the
+    anchored document is what every worker measures against, so it carries a
+    concrete number and workers on different builds still agree.
+
+    These live with the arena because they describe the same model class the
+    ceilings do. A second class opening, or a ceiling moving, changes them
+    together, and none of it should need a release.
+    """
+    return {
+        "allowed_base_models": sorted(value.get("allowed_base_models", [])),
+        "cpu_seconds_per_artifact": int(
+            value.get("cpu_seconds_per_artifact") or CPU_SECONDS_PER_ARTIFACT
+        ),
+        "tasks_per_round": int(value.get("tasks_per_round") or TASKS_PER_ROUND),
+    }
 
 
 def served_config(
@@ -60,8 +82,7 @@ def served_config(
             for c in CLASSES.values()
         },
         "arenas": {
-            key: {"allowed_base_models": sorted(value.get("allowed_base_models", []))}
-            for key, value in sorted((arenas or {}).items())
+            key: _arena_block(value) for key, value in sorted((arenas or {}).items())
         },
         "role_baselines": dict(sorted(ROLE_BASELINES.items())),
     }

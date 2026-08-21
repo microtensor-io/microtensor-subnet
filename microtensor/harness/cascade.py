@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
+from microtensor.harness import progress
 from microtensor.harness.contract import Request, Response
 from microtensor.harness.engines.router import Decision, Router, decide, features_from, load_router
 from microtensor.harness.execute import rebuild_manifest
@@ -93,7 +94,13 @@ def run_cascade(
         router = load_router(Path(router_path), tuple(router_features))
 
     front, _ = _load(Path(front_path), front_manifest)
+    progress.reset()
     legs: list[Leg] = []
+
+    def record_leg(leg: Leg) -> None:
+        legs.append(leg)
+        progress.record(leg)
+
 
     specialist = None
     try:
@@ -104,7 +111,7 @@ def run_cascade(
                 response = Response.failed(request.task_ref, str(exc))
 
             if router is None or not response.ok:
-                legs.append(
+                record_leg(
                     Leg(
                         task_ref=request.task_ref,
                         response=response,
@@ -116,7 +123,7 @@ def run_cascade(
 
             features = features_from(response, prompt_tokens=_prompt_tokens(request))
             if decide(router, features) is Decision.RESOLVE:
-                legs.append(
+                record_leg(
                     Leg(
                         task_ref=request.task_ref,
                         response=response,
@@ -137,7 +144,7 @@ def run_cascade(
             except Exception as exc:
                 escalated = Response.failed(request.task_ref, str(exc))
 
-            legs.append(
+            record_leg(
                 Leg(
                     task_ref=request.task_ref,
                     response=escalated,

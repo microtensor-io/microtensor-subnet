@@ -20,6 +20,7 @@ from microtensor.core.constants import (
     ARTIFACT_CACHE_CAP_BYTES,
     COORDINATOR_URL,
     CORPUS_VERSION,
+    CPU_SECONDS_PER_ARTIFACT,
     GENESIS_BLOCK,
     PROVENANCE_REQUIRED,
     RELEASE_CHANNELS,
@@ -80,9 +81,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     loop.add_argument("--tasks", type=int, default=12)
     loop.set_defaults(handler=_loopback)
 
-    cert = inner.add_parser(
-        "certify", help="benchmark this host as a reference device for a class"
-    )
+    cert = inner.add_parser("certify", help="benchmark this host as a reference device for a class")
     add_common_arguments(cert)
     cert.add_argument("hardware_class", choices=list(LAUNCH_CLASSES))
     cert.add_argument("--cooling-mode", default=None)
@@ -114,7 +113,7 @@ def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--genesis-block", type=int, default=GENESIS_BLOCK)
     parser.add_argument("--tasks-per-round", type=int, default=TASKS_PER_ROUND)
     parser.add_argument("--cache-cap-bytes", type=int, default=ARTIFACT_CACHE_CAP_BYTES)
-    parser.add_argument("--cpu-seconds", type=int, default=900)
+    parser.add_argument("--cpu-seconds", type=int, default=CPU_SECONDS_PER_ARTIFACT)
     parser.add_argument("--profile-seconds", type=int, default=60)
     parser.add_argument(
         "--allow-unsandboxed",

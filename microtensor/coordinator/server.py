@@ -137,9 +137,14 @@ class ServerClient:
     def arenas(self) -> dict[str, dict[str, Any]]:
         """Per-arena configuration the anchored config carries.
 
-        Today the base-model allowlist. Read from the public listing because
-        it is public: a miner needs to know what they may build from before
-        they start, and the coordinator needs the same list to serve it.
+        The base-model allowlist and the round budget. Read from the public
+        listing because it is public: a miner needs to know what they may
+        build from and what a round will cost them before they start, and the
+        coordinator needs the same values to serve them.
+
+        A budget the arena does not set is left absent rather than filled in
+        here; served_config stamps the default once, so the anchored document
+        carries one number and every worker reads that one.
         """
         answer = self._call("GET", "/v1/arenas") or {}
         out: dict[str, dict[str, Any]] = {}
@@ -148,9 +153,14 @@ class ServerClient:
             hardware_class = str(arena.get("class", ""))
             if not track or not hardware_class:
                 continue
-            out[f"{track}/{hardware_class}"] = {
+            block: dict[str, Any] = {
                 "allowed_base_models": list(arena.get("allowed_base_models", []))
             }
+            for field_name in ("cpu_seconds_per_artifact", "tasks_per_round"):
+                value = arena.get(field_name)
+                if isinstance(value, int) and value > 0:
+                    block[field_name] = value
+            out[f"{track}/{hardware_class}"] = block
         return out
 
     def milestone(self, track: str, hardware_class: str) -> dict[str, Any]:

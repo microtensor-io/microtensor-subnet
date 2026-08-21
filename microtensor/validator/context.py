@@ -12,6 +12,7 @@ from microtensor.core.constants import (
     CORPUS_VERSION,
     GENESIS_BLOCK,
     ROUND_BLOCKS,
+    CPU_SECONDS_PER_ARTIFACT,
     TASKS_PER_ROUND,
 )
 from microtensor.core.readiness import unenforced
@@ -35,7 +36,7 @@ class ValidatorConfig:
     genesis_block: int = GENESIS_BLOCK
     tasks_per_round: int = TASKS_PER_ROUND
     cache_cap_bytes: int = ARTIFACT_CACHE_CAP_BYTES
-    cpu_seconds_per_artifact: int = 900
+    cpu_seconds_per_artifact: int = CPU_SECONDS_PER_ARTIFACT
     profile_seconds: int = 60
     allow_unsandboxed: bool = False
     dry_run: bool = False

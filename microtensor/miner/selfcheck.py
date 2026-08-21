@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from microtensor.core.constants import CPU_SECONDS_PER_ARTIFACT, TASKS_PER_ROUND
 from microtensor.core.protocol import (
     DeclaredEnvelope,
     GateResult,
@@ -54,6 +55,21 @@ class SelfCheck:
     def admissible(self) -> bool:
         return self.gate.admitted
 
+    @property
+    def round_cpu_seconds(self) -> float:
+        """What a full round of this artifact costs, at scoring prompt length.
+
+        Passing the envelope gate says one task fits its ceiling. It says
+        nothing about whether TASKS_PER_ROUND of them fit the round budget,
+        and a miner that runs out midway forfeits every task it did not
+        reach. Worth knowing before publishing rather than after a round.
+        """
+        return TASKS_PER_ROUND * (self.measured.ttft_p95_ms / 1000.0)
+
+    @property
+    def fits_round_budget(self) -> bool:
+        return self.round_cpu_seconds <= CPU_SECONDS_PER_ARTIFACT
+
     def report(self) -> str:
         hardware = get_class(self.hardware_class)
         lines = [
@@ -73,6 +89,21 @@ class SelfCheck:
             f"  peak_rss_bytes  {self.proposed.peak_rss_bytes}",
             f"  p95_latency_ms  {self.proposed.p95_latency_ms}",
         ]
+        scored = int(CPU_SECONDS_PER_ARTIFACT / max(0.001, self.measured.ttft_p95_ms / 1000.0))
+        lines += [
+            "",
+            f"round cost       {self.round_cpu_seconds:.0f} cpu-s for "
+            f"{TASKS_PER_ROUND} tasks   budget {CPU_SECONDS_PER_ARTIFACT} cpu-s",
+        ]
+        if not self.fits_round_budget:
+            over = self.round_cpu_seconds / CPU_SECONDS_PER_ARTIFACT
+            lines += [
+                "",
+                f"WARNING: a full round at this p95 costs about {over:.1f}x the "
+                f"budget, so this artifact would score on roughly the first "
+                f"{scored} of {TASKS_PER_ROUND} tasks and forfeit the rest. "
+                f"The envelope gate is per task and does not imply a round fits.",
+            ]
         if not self.admissible:
             lines += ["", f"INADMISSIBLE: {self.gate.reason}"]
         return "\n".join(lines)

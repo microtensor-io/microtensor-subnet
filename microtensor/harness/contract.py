@@ -7,6 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
 from microtensor.core.tracks import Decoding
+from microtensor.harness import progress
 
 
 class EngineError(RuntimeError):
@@ -97,10 +98,13 @@ class EngineInfo:
 
 
 def batch(requests: Sequence[Request], engine: Engine) -> list[Response]:
+    progress.reset()
     responses: list[Response] = []
     for request in requests:
         try:
-            responses.append(engine.generate(request))
+            response = engine.generate(request)
         except EngineError as exc:
-            responses.append(Response.failed(request.task_ref, str(exc)))
+            response = Response.failed(request.task_ref, str(exc))
+        responses.append(response)
+        progress.record(response)
     return responses

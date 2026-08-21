@@ -305,15 +305,25 @@ def _run_round(
             continue
         expected += len(participants)
 
+        # The arena's numbers, not this build's. They describe the same model
+        # class the latency ceilings do, so they travel with the anchored
+        # config and a worker on an older build still runs the round its
+        # peers are running.
+        arena = plan.budgets.get((track, hardware_class))
         tasks = select(
             context.corpus(track),
             competition_seed(block_hash, track, hardware_class),
             hardware_class,
-            budget=context.config.tasks_per_round,
+            budget=arena.tasks_per_round if arena else context.config.tasks_per_round,
             round_index=round_.index,
         )
         try:
-            result = evaluate_competition(context, participants, tasks)
+            result = evaluate_competition(
+                context,
+                participants,
+                tasks,
+                cpu_seconds=arena.cpu_seconds_per_artifact if arena else 0,
+            )
         except Abstain as exc:
             return abstain(str(exc), roster)
         scored += sum(1 for e in result.evaluations if e.measured is not None)

@@ -26,6 +26,27 @@ CHAIN_BACKOFF_SECONDS: Final[float] = 2.0
 ROTATING_FRACTION: Final[float] = 0.70
 FIXED_FRACTION: Final[float] = 0.30
 TASKS_PER_ROUND: Final[int] = 200
+
+# The default round budget, stamped into an arena that does not set its own.
+#
+# Not the binding value: cpu_seconds_per_artifact and tasks_per_round live in
+# the arena record and ride in the anchored config, because they describe the
+# same model class the latency ceilings do and have to move with them. This is
+# what served_config writes when the control plane leaves them unset, so the
+# anchored document always carries a concrete number and workers on different
+# builds still agree.
+#
+# Derived rather than chosen: a round runs TASKS_PER_ROUND tasks and each is
+# allowed up to its class's p95 ceiling, so a budget under the product forfeits
+# work the ceilings permit. The widest ceiling is mt-16g at 30 s, and 200 x 30 s
+# is this number. Threads are pinned to one, so cpu and wall time are the same
+# quantity here and the two limits compare directly.
+#
+# The previous 900 gave each task 4.5 cpu-seconds against ceilings written for
+# 10 to 30 — a fivefold contradiction between two numbers describing the same
+# model on the same hardware, resolving in the direction that scores honest
+# miners zero. test_budget_agrees_with_the_ceilings fails if they drift again.
+CPU_SECONDS_PER_ARTIFACT: Final[int] = 6000
 CORPUS_VERSION: Final[str] = "2026.1"
 
 CLASS_WEIGHTS: Final[dict[str, float]] = {"mt-3g": 1.0}
