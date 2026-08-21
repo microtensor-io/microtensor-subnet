@@ -23,6 +23,22 @@ log = logging.getLogger("microtensor.miner.selfcheck")
 DECLARATION_MARGIN = 0.10
 
 
+# Loading weights is cpu work that happens before a single token is produced:
+# a GGUF is mmapped and faulted in, an ONNX graph is parsed and optimised.
+# Budgeting only for generation kills the load on a large artifact, which is
+# how a model well inside its memory ceiling died with a bare exit -9.
+LOAD_CPU_SECONDS = 120
+
+
+def profiling_cpu_budget(profile_seconds: int) -> int:
+    """Cpu seconds for one profiling run: the load, then the generation.
+
+    Doubled over the wall duration because the profiler drives the artifact
+    continuously and a thread that never idles spends cpu at wall rate.
+    """
+    return LOAD_CPU_SECONDS + max(4, profile_seconds * 2)
+
+
 class SelfCheckError(RuntimeError):
     pass
 
@@ -107,7 +123,7 @@ def selfcheck(
             "sample_interval_ms": plan.sample_interval_ms,
             "max_output_tokens": plan.max_output_tokens,
         },
-        limits=Limits.for_class(hardware, max(4, profile_seconds * 2)),
+        limits=Limits.for_class(hardware, profiling_cpu_budget(profile_seconds)),
         allow_unsandboxed=allow_unsandboxed,
     )
 

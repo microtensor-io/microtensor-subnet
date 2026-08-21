@@ -25,11 +25,25 @@ def _resource() -> Any:
     return resource
 
 
+# The kernel kills on the hard CPU limit with no warning. A soft limit one
+# grace period below it delivers SIGXCPU first, which the worker turns into a
+# named failure — the difference between "the cpu budget ran out" and a bare
+# exit -9 that could be anything.
+CPU_GRACE_SECONDS: Final[int] = 5
+
+# Address space is not resident memory. A GGUF is mmapped, so its bytes count
+# against RLIMIT_AS while never being resident, and charging an artifact for
+# a mapping it never faults in would reject the memory-efficient path while
+# admitting the wasteful one. The RSS ceiling is enforced by measurement.
+ADDRESS_SLACK_BYTES: Final[int] = 2 * 1024**3
+
+
 @dataclass(frozen=True, slots=True)
 class Limits:
     cpu_seconds: int
     wall_seconds: int
     rss_bytes: int
+    address_bytes: int = 0
     open_files: int = 256
     processes: int = 0
     core_dumps: bool = False
@@ -42,6 +56,11 @@ class Limits:
         if self.rss_bytes < 1:
             raise ValueError("rss ceiling must be positive")
 
+    @property
+    def address_ceiling(self) -> int:
+        """What RLIMIT_AS gets: resident ceiling plus room to map the weights."""
+        return self.address_bytes or (self.rss_bytes + ADDRESS_SLACK_BYTES)
+
     @classmethod
     def for_class(
         cls,
@@ -51,10 +70,14 @@ class Limits:
         backstop: int = WALL_BACKSTOP_FACTOR,
         headroom: float = 1.10,
     ) -> Limits:
+        rss = int(hardware.max_rss_bytes * headroom)
         return cls(
             cpu_seconds=cpu_seconds,
             wall_seconds=cpu_seconds * max(2, backstop),
-            rss_bytes=int(hardware.max_rss_bytes * headroom),
+            rss_bytes=rss,
+            # The artifact may be mapped in full alongside what it makes
+            # resident, so the address ceiling carries the size ceiling too.
+            address_bytes=rss + int(hardware.max_size_bytes) + ADDRESS_SLACK_BYTES,
         )
 
 
@@ -79,8 +102,11 @@ def pin_threads() -> None:
 def apply(limits: Limits) -> None:
     resource = _resource()
 
-    resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
-    resource.setrlimit(resource.RLIMIT_AS, (limits.rss_bytes, limits.rss_bytes))
+    resource.setrlimit(
+        resource.RLIMIT_CPU,
+        (limits.cpu_seconds, limits.cpu_seconds + CPU_GRACE_SECONDS),
+    )
+    resource.setrlimit(resource.RLIMIT_AS, (limits.address_ceiling, limits.address_ceiling))
     resource.setrlimit(resource.RLIMIT_NOFILE, (limits.open_files, limits.open_files))
 
     if limits.processes > 0:
@@ -103,6 +129,20 @@ def children_cpu_seconds() -> float:
         return 0.0
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     return float(usage.ru_utime + usage.ru_stime)
+
+
+def children_peak_rss() -> int:
+    """Peak resident bytes across reaped children, or zero off POSIX.
+
+    A killed worker sends nothing back, so this is the only record of how
+    much memory it actually held.
+    """
+    try:
+        resource = _resource()
+    except UnsupportedPlatform:
+        return 0
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return maxrss_to_bytes(usage.ru_maxrss)
 
 
 def peak_rss_bytes() -> int:
