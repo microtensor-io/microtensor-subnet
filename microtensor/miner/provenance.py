@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from microtensor.core.constants import (
     ALLOWED_BASE_MODELS,
@@ -53,11 +52,7 @@ class Report:
                 else "NOT on allowlist"
             )
             finished = (
-                datetime.fromtimestamp(run.finished_at, timezone.utc).strftime(
-                    "%Y-%m-%d %H:%M:%S UTC"
-                )
-                if run.finished_at
-                else "(not recorded)"
+                f"block {run.finished_block:,}" if run.finished_block else "(not recorded)"
             )
             lines += [
                 f"digest       {match}",
@@ -88,10 +83,17 @@ def init_snippet(config: MinerConfig, corpus_version: str = "<corpus digest>") -
     )
 
 
-def digest_snippet(artifact_digest: str) -> str:
+def digest_snippet(artifact_digest: str, block: int | None = None) -> str:
+    """The exact lines a miner logs before shipping.
+
+    `mt_finished_at` is the chain block height at which training finished,
+    never a wall-clock time: validators compare it against the round's close
+    block, and heights compare exactly where clock conversions drift.
+    """
+    finished = str(block) if block else "<current block height>"
     return (
         f'wandb.run.summary["{SUMMARY_DIGEST}"] = "{artifact_digest}"\n'
-        f'wandb.run.summary["{SUMMARY_FINISHED}"] = int(time.time())\n'
+        f'wandb.run.summary["{SUMMARY_FINISHED}"] = {finished}\n'
         "wandb.finish()"
     )
 
@@ -102,15 +104,22 @@ def verify(
     hotkey: str,
     artifact_digest: str,
     *,
-    commit_time: int = 0,
+    commit_block: int = 0,
 ) -> Report:
+    """The same gate the validator runs, with the current head as the bound.
+
+    A local check that cannot fail where the remote one does is worse than no
+    local check — the unit bug in issue #1 hid behind exactly that gap — so
+    this passes a real block height instead of the old zero that
+    short-circuited the freshness comparison.
+    """
     verdict = check(
         store.fetch(hotkey),
         hotkey=hotkey,
         artifact_digest=artifact_digest,
         track=config.track,
         hardware_class=config.hardware_class,
-        commit_time=commit_time,
+        commit_block=commit_block,
     )
     return Report(verdict=verdict, hotkey=hotkey, artifact_digest=artifact_digest)
 
@@ -121,13 +130,13 @@ def require(
     hotkey: str,
     artifact_digest: str,
     *,
-    commit_time: int = 0,
+    commit_block: int = 0,
 ) -> Report:
     if not PROVENANCE_REQUIRED:
         return Report(Verdict(True, "provenance is not required"), hotkey, artifact_digest)
 
     try:
-        report = verify(store, config, hotkey, artifact_digest, commit_time=commit_time)
+        report = verify(store, config, hotkey, artifact_digest, commit_block=commit_block)
     except ProvenanceUnavailable as exc:
         raise ProvenanceMissing(
             f"the run store could not be reached, so your submission cannot be checked "

@@ -202,9 +202,16 @@ package. So the order is **package, then log the digest, then ship**.
 
 ```python
 wandb.run.summary["mt_artifact_digest"] = "sha256:3f9a1c04…c21b"
-wandb.run.summary["mt_finished_at"] = int(time.time())
+wandb.run.summary["mt_finished_at"] = 8894210   # the current block height
 wandb.finish()
 ```
+
+`mt_finished_at` is a **chain block height**, not a wall-clock time.
+Validators check that your run finished at or before the block the round's
+commitment window closes on, and block heights compare exactly where clock
+conversions drift. `mt miner package` prints these lines with the live
+height already filled in; a wall-clock timestamp here reads as a block far
+in the future and is rejected.
 
 Check it before committing anything:
 
@@ -217,7 +224,7 @@ run          microtensor/training-runs/5F3sa2TJ…
 status       resolvable
 digest       matches submitted artifact
 base model   Qwen/Qwen3-1.7B@a1b2c3d  (on allowlist)
-finished     2026-08-17 04:12:09 UTC
+finished     block 8,894,210
 verdict      ADMISSIBLE
 ```
 

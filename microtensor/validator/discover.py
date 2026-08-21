@@ -9,7 +9,6 @@ from microtensor.chain.rounds import Round
 from microtensor.chain.wallet import verify_payload
 from microtensor.core.constants import (
     ALLOWED_BASE_MODELS,
-    BLOCK_TIME_SECONDS,
     HOST_PROFILE,
     PROVENANCE_REQUIRED,
 )
@@ -73,7 +72,7 @@ def _provenance_reason(
     hotkey: str,
     system: SystemManifest,
     commitment: Commitment,
-    commit_time: int,
+    commit_block: int,
 ) -> tuple[str, Verdict | None]:
     """Every component needs its own run, not just the one named on chain.
 
@@ -93,7 +92,7 @@ def _provenance_reason(
             artifact_digest=component.artifact_digest,
             track=commitment.track,
             hardware_class=commitment.hardware_class,
-            commit_time=commit_time,
+            commit_block=commit_block,
         )
         if not verdict.admissible:
             if system.degenerate:
@@ -128,7 +127,10 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
     accepted: list[Participant] = []
     rejected: list[tuple[str, str]] = []
     provenance: dict[str, Verdict] = {}
-    commit_time = round_.close_block * BLOCK_TIME_SECONDS
+    # Heights, not seconds: the run must have finished at or before the block
+    # the commitment window closes on. Multiplying a height into fake seconds
+    # is the unit slip that once rejected every compliant miner (issue #1).
+    commit_block = round_.close_block
 
     for hotkey, commitment in sorted(commitments.items()):
         reason = _reject_reason(commitment, round_, open_competitions)
@@ -159,7 +161,7 @@ def discover(context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Rou
                 reason = _base_model_reason(system)
                 if not reason:
                     reason, verdict = _provenance_reason(
-                        context, hotkey, system, commitment, commit_time
+                        context, hotkey, system, commitment, commit_block
                     )
                 if verdict is not None and verdict.admissible:
                     provenance[hotkey] = verdict

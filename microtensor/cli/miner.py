@@ -340,6 +340,7 @@ def _package(args: argparse.Namespace) -> int:
     except (MinerConfigError, PackageError, ValueError) as exc:
         return fail(str(exc))
 
+    head = client.block()
     client.close()
     print(f"manifest    {config.manifest_path}")
     print(f"round       {manifest.round_index}")
@@ -349,7 +350,7 @@ def _package(args: argparse.Namespace) -> int:
     if PROVENANCE_REQUIRED:
         print(f"\nartifact digest  {manifest.artifact_digest}")
         print("log this to your training run before shipping:\n")
-        for line in provenance.digest_snippet(manifest.artifact_digest).splitlines():
+        for line in provenance.digest_snippet(manifest.artifact_digest, head).splitlines():
             print(f"  {line}")
 
     print("\nnext:  mt miner upload   (or `mt miner publish --upload`)")
@@ -364,10 +365,12 @@ def _store() -> RunStore:
     return WandbStore()
 
 
-def _require_provenance(config: MinerConfig, hotkey: str, artifact_digest: str) -> None:
+def _require_provenance(
+    config: MinerConfig, hotkey: str, artifact_digest: str, commit_block: int = 0
+) -> None:
     if not PROVENANCE_REQUIRED:
         return
-    provenance.require(_store(), config, hotkey, artifact_digest)
+    provenance.require(_store(), config, hotkey, artifact_digest, commit_block=commit_block)
 
 
 def _provenance(args: argparse.Namespace) -> int:
@@ -375,8 +378,12 @@ def _provenance(args: argparse.Namespace) -> int:
         config = _config(args)
         manifest = load_packaged(config)
         wallet = open_wallet(config.chain)
+        client = open_client(config.chain, wallet)
+        head = client.block()
+        client.close()
         report = provenance.verify(
-            _store(), config, hotkey_address(wallet), manifest.artifact_digest
+            _store(), config, hotkey_address(wallet), manifest.artifact_digest,
+            commit_block=head,
         )
     except (MinerConfigError, PackageError, ProvenanceUnavailable) as exc:
         return fail(str(exc))
@@ -423,7 +430,9 @@ def _publish(args: argparse.Namespace) -> int:
         if args.upload:
             _do_upload(config)
 
-        _require_provenance(config, hotkey, load_packaged(config).artifact_digest)
+        _require_provenance(
+            config, hotkey, load_packaged(config).artifact_digest, client.block()
+        )
         published = publish(config, client, round_.index)
     except (
         MinerConfigError,
@@ -467,7 +476,7 @@ def _ship(args: argparse.Namespace) -> int:
         print(f"packaged   {len(manifest.files)} files, {manifest.total_bytes / 1024**3:.2f} GiB")
 
         _do_upload(config)
-        _require_provenance(config, hotkey_address(wallet), manifest.artifact_digest)
+        _require_provenance(config, hotkey_address(wallet), manifest.artifact_digest, client.block())
         published = publish(config, client, round_.index, manifest)
     except (
         MinerConfigError,
