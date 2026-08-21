@@ -39,6 +39,10 @@ class Report:
             f"run          {run.path if run else '(none)'}",
             f"status       {'resolvable' if run else 'NOT FOUND'}",
         ]
+        if run is None:
+            lines.append(
+                "             the store answered and holds no run under this hotkey"
+            )
         if run is not None:
             match = (
                 "matches submitted artifact" if run.digest == self.artifact_digest else "MISMATCH"

@@ -15,7 +15,7 @@ from microtensor.core.constants import (
 from microtensor.core.protocol import Role
 from microtensor.core.system import SystemManifest
 from microtensor.provenance.record import Verdict
-from microtensor.provenance.record import check as provenance_check
+from microtensor.provenance.record import best_verdict as provenance_check
 from microtensor.registry.fetch import ArtifactMismatch, FetchError, fetch_manifest
 from microtensor.registry.manifest import ArtifactManifest
 from microtensor.validator.context import ValidatorContext
@@ -82,7 +82,9 @@ def _provenance_reason(
     if not PROVENANCE_REQUIRED or context.runs is None:
         return "", None
 
-    runs = context.runs.fetch(hotkey)
+    # Every run bearing this hotkey, not the most recent one: a miner must not
+    # be rejectable by a stranger creating a run under their name.
+    runs = context.runs.candidates(hotkey)
     verdict: Verdict | None = None
 
     for component in system.components:

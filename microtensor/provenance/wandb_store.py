@@ -11,6 +11,12 @@ log = logging.getLogger("microtensor.provenance")
 
 API_KEY_ENV = "WANDB_API_KEY"
 
+# A run name is not an identity: anyone with an account can create a run
+# called with somebody else's hotkey. So every run bearing the name is a
+# candidate and the checks decide, rather than one being picked by recency and
+# allowed to speak for the miner. Bounded because an attacker can create many.
+MAX_CANDIDATES = 25
+
 
 def credentials_present() -> bool:
     return bool(os.environ.get(API_KEY_ENV, "").strip())
@@ -61,29 +67,46 @@ class WandbStore:
             return False, f"{self.entity}/{self.project} is not readable: {exc}"
         return True, ""
 
-    def fetch(self, hotkey: str) -> Run | None:
+    def candidates(self, hotkey: str) -> list[Run]:
+        """Every run bearing this hotkey, for the checks to judge.
+
+        Not one run. The store cannot tell whose account created a run, so
+        selecting a single one by recency lets anybody shadow a miner: create
+        a run named with their hotkey, log a later finish block, and the real
+        submission is never the one examined. Returning the whole set means an
+        added run can only add a candidate, never hide one.
+
+        A multi-component system needs this anyway — each component is
+        checked against its own digest, and one run cannot carry three.
+        """
         path = f"{self.entity}/{self.project}"
         try:
             found = list(
-                self.api.runs(path, filters={"display_name": hotkey}, per_page=2)
-            )
+                self.api.runs(path, filters={"display_name": hotkey}, per_page=MAX_CANDIDATES)
+            )[:MAX_CANDIDATES]
         except ProvenanceUnavailable:
             raise
         except Exception as exc:
             raise ProvenanceUnavailable(f"{path} could not be queried: {exc}") from exc
 
+        return [
+            Run(
+                hotkey=hotkey,
+                run_id=str(getattr(run, "id", "")),
+                config=dict(getattr(run, "config", {}) or {}),
+                summary=_summary(run),
+                entity=self.entity,
+                project=self.project,
+            )
+            for run in found
+        ]
+
+    def fetch(self, hotkey: str) -> Run | None:
+        """One run, for reporting. The gate uses candidates()."""
+        found = self.candidates(hotkey)
         if not found:
             return None
-
-        latest = max(found, key=lambda r: _summary(r).get("mt_finished_at", 0) or 0)
-        return Run(
-            hotkey=hotkey,
-            run_id=str(getattr(latest, "id", "")),
-            config=dict(getattr(latest, "config", {}) or {}),
-            summary=_summary(latest),
-            entity=self.entity,
-            project=self.project,
-        )
+        return max(found, key=lambda r: r.finished_block)
 
 
 def _summary(run: Any) -> dict[str, Any]:

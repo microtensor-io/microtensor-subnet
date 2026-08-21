@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
 
@@ -68,6 +68,8 @@ class Run:
 class RunStore(Protocol):
     def fetch(self, hotkey: str) -> Run | None: ...
 
+    def candidates(self, hotkey: str) -> list[Run]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class Verdict:
@@ -87,6 +89,7 @@ class Verdict:
 
 
 NO_RUN: Final[str] = "no training run for this hotkey"
+STORE_UNREACHABLE: Final[str] = "the training run store could not be reached"
 DIGEST_MISMATCH: Final[str] = "training run digest does not match the submitted artifact"
 BASE_NOT_ALLOWED: Final[str] = "training run declares a base model not on the allowlist"
 WRONG_COMPETITION: Final[str] = "training run declares a different track or class"
@@ -130,6 +133,56 @@ def check(
     return Verdict(True, "", run)
 
 
+def best_verdict(
+    runs: Sequence[Run],
+    *,
+    hotkey: str,
+    artifact_digest: str,
+    track: str,
+    hardware_class: str,
+    commit_block: int = 0,
+    allowed_base_models: frozenset[str] = frozenset(),
+) -> Verdict:
+    """Admissible if any run bearing this hotkey passes. Otherwise the reason.
+
+    A run name is not an identity — anyone can create a run called with
+    another miner's hotkey — so a single wrong run must not be able to speak
+    for a submission. Judging the whole set means an added run can only add a
+    candidate, never displace the real one.
+
+    The reason returned when none passes is the one from the run that got
+    furthest, because "digest does not match" tells a miner more than
+    "no training run" when they have one that is simply stale.
+    """
+    if not runs:
+        return Verdict(False, NO_RUN)
+
+    failures: list[Verdict] = []
+    for run in runs:
+        verdict = check(
+            run,
+            hotkey=hotkey,
+            artifact_digest=artifact_digest,
+            track=track,
+            hardware_class=hardware_class,
+            commit_block=commit_block,
+            allowed_base_models=allowed_base_models,
+        )
+        if verdict.admissible:
+            return verdict
+        failures.append(verdict)
+
+    ranked = {
+        MISSING_FIELD: 0,
+        NO_RUN: 0,
+        WRONG_COMPETITION: 1,
+        DIGEST_MISMATCH: 2,
+        BASE_NOT_ALLOWED: 3,
+        FINISHED_LATE: 4,
+    }
+    return max(failures, key=lambda v: ranked.get(v.reason, 0))
+
+
 class CachedStore:
     def __init__(
         self,
@@ -143,10 +196,10 @@ class CachedStore:
         self._retries = max(1, retries)
         self._backoff = backoff
         self._sleep = sleep
-        self._cache: dict[str, Run | None] = {}
+        self._cache: dict[str, list[Run]] = {}
         self.calls = 0
 
-    def fetch(self, hotkey: str) -> Run | None:
+    def candidates(self, hotkey: str) -> list[Run]:
         if hotkey in self._cache:
             return self._cache[hotkey]
 
@@ -154,18 +207,24 @@ class CachedStore:
         for attempt in range(1, self._retries + 1):
             try:
                 self.calls += 1
-                run = self._store.fetch(hotkey)
+                runs = self._store.candidates(hotkey)
             except ProvenanceUnavailable as exc:
                 last = exc
                 if attempt < self._retries:
                     self._sleep(self._backoff * attempt)
                 continue
-            self._cache[hotkey] = run
-            return run
+            self._cache[hotkey] = runs
+            return runs
 
         raise ProvenanceUnavailable(
             f"the run store was unreachable after {self._retries} attempts: {last}"
         )
+
+    def fetch(self, hotkey: str) -> Run | None:
+        found = self.candidates(hotkey)
+        if not found:
+            return None
+        return max(found, key=lambda r: r.finished_block)
 
     def reset(self) -> None:
         self._cache.clear()

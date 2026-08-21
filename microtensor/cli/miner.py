@@ -62,9 +62,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     check.add_argument("--profile-seconds", type=int, default=60)
     check.set_defaults(handler=_selfcheck)
 
-    sim = inner.add_parser(
-        "simulate", help="run the cascade over the public training split"
-    )
+    sim = inner.add_parser("simulate", help="run the cascade over the public training split")
     _add_settings_arguments(sim)
     sim.add_argument("--corpus", type=Path, required=True, help="corpus directory")
     sim.add_argument("--limit", type=int, default=0, help="stop after this many tasks")
@@ -143,9 +141,7 @@ def _add_settings_arguments(parser: argparse.ArgumentParser, *, required: bool =
     add_common_arguments(parser)
     parser.add_argument("--artifact", type=Path, required=required, help="artifact directory")
     parser.add_argument("--track", required=required)
-    parser.add_argument(
-        "--hardware-class", "--class", dest="hardware_class", required=required
-    )
+    parser.add_argument("--hardware-class", "--class", dest="hardware_class", required=required)
     parser.add_argument("--source", required=required, help="scheme:locator validators fetch from")
     parser.add_argument("--entrypoint")
     parser.add_argument("--format", dest="artifact_format")
@@ -382,10 +378,24 @@ def _provenance(args: argparse.Namespace) -> int:
         head = client.block()
         client.close()
         report = provenance.verify(
-            _store(), config, hotkey_address(wallet), manifest.artifact_digest,
+            _store(),
+            config,
+            hotkey_address(wallet),
+            manifest.artifact_digest,
             commit_block=head,
         )
-    except (MinerConfigError, PackageError, ProvenanceUnavailable) as exc:
+    except ProvenanceUnavailable as exc:
+        # Told apart from "your run is missing" on purpose: one is the
+        # operator's outage and the other is the miner's to fix, and a miner
+        # who cannot tell them apart will hunt for a mistake they did not make.
+        print("run store   UNREACHABLE")
+        print(f"reason      {exc}")
+        print()
+        print("This is not your submission. The store the network reads is not")
+        print("answering, so nobody can be checked right now. Report it to the")
+        print("operator and retry later.")
+        return 3
+    except (MinerConfigError, PackageError) as exc:
         return fail(str(exc))
 
     print(report.render())
@@ -430,9 +440,7 @@ def _publish(args: argparse.Namespace) -> int:
         if args.upload:
             _do_upload(config)
 
-        _require_provenance(
-            config, hotkey, load_packaged(config).artifact_digest, client.block()
-        )
+        _require_provenance(config, hotkey, load_packaged(config).artifact_digest, client.block())
         published = publish(config, client, round_.index)
     except (
         MinerConfigError,
@@ -612,8 +620,7 @@ def _status(args: argparse.Namespace) -> int:
     version = release_version(manifest.track, manifest.hardware_class, release_index(index))
     print(f"release     {version}")
     print(
-        f"cutoff      {rounds_until_release(index)} round(s), "
-        f"block {release_cutoff_block(index)}"
+        f"cutoff      {rounds_until_release(index)} round(s), block {release_cutoff_block(index)}"
     )
 
     if getattr(args, "offline", False):

@@ -143,7 +143,7 @@ def _signing_gate() -> Gate:
     )
 
 
-def _provenance_gate() -> Gate:
+def _provenance_gate(probe: bool = False) -> Gate:
     from microtensor.core.constants import (
         PROVENANCE_ENTITY,
         PROVENANCE_PROJECT,
@@ -168,11 +168,36 @@ def _provenance_gate() -> Gate:
             detail=f"required against {where}, but WANDB_API_KEY is unset so rounds abstain",
             fix="export WANDB_API_KEY with read access to the project",
         )
+
+    # Credentials present is not the same as a store that answers. Reporting
+    # on the key alone leaves this gate green in precisely the case that
+    # matters: a key that works against a project which does not exist.
+    if not probe:
+        return Gate(
+            name="training provenance",
+            ready=False,
+            posture=CLOSED,
+            detail=f"required against {where}, credentials present but the store was not probed",
+            fix="run `mt inspect readiness --probe` to check the store answers",
+        )
+
+    from microtensor.provenance.wandb_store import WandbStore
+
+    reachable, why = WandbStore().reachable()
+    if not reachable:
+        return Gate(
+            name="training provenance",
+            ready=False,
+            posture=CLOSED,
+            detail=f"{where} did not answer: {why}",
+            fix=f"create the {where} project and confirm miners can write runs to it",
+        )
+
     return Gate(
         name="training provenance",
         ready=True,
         posture=CLOSED,
-        detail=f"required against {where}, credentials present",
+        detail=f"required against {where}, and it answers",
     )
 
 
@@ -203,19 +228,21 @@ def _baseline_gates() -> list[Gate]:
     return gates
 
 
-def audit(arenas: Mapping[str, Sequence[str]] | None = None) -> list[Gate]:
+def audit(arenas: Mapping[str, Sequence[str]] | None = None, *, probe: bool = False) -> list[Gate]:
     return [
         *_base_model_gates(arenas),
         *_conformance_gates(),
         *_band_gates(),
         _signing_gate(),
-        _provenance_gate(),
+        _provenance_gate(probe),
         *_baseline_gates(),
     ]
 
 
-def unenforced(arenas: Mapping[str, Sequence[str]] | None = None) -> list[Gate]:
-    return [gate for gate in audit(arenas) if gate.unenforced]
+def unenforced(
+    arenas: Mapping[str, Sequence[str]] | None = None, *, probe: bool = False
+) -> list[Gate]:
+    return [gate for gate in audit(arenas, probe=probe) if gate.unenforced]
 
 
 def summary() -> str:

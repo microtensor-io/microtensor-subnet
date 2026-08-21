@@ -36,6 +36,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     ready = inner.add_parser(
         "readiness", help="which launch values are still unset, and which gates that leaves open"
     )
+    ready.add_argument(
+        "--probe",
+        action="store_true",
+        help="contact the run store rather than only checking that a key is set",
+    )
     ready.set_defaults(handler=_readiness)
 
     rounds = inner.add_parser("rounds", help="show recent rounds from local state")
@@ -98,14 +103,12 @@ def _engines(args: argparse.Namespace) -> int:
         info = describe(fmt)
         detail = f"{info.name} {info.version} — {info.notes}" if info else "registered"
         print(f"{fmt.value:<14}{detail}")
-    print(
-        f"\nsandbox     {'enforced' if sandbox_available() else 'UNAVAILABLE on this host'}"
-    )
+    print(f"\nsandbox     {'enforced' if sandbox_available() else 'UNAVAILABLE on this host'}")
     return 0 if formats else 1
 
 
 def _readiness(args: argparse.Namespace) -> int:
-    gates = audit()
+    gates = audit(probe=getattr(args, "probe", False))
     print(summary())
     print()
     width = max(len(gate.name) for gate in gates) + 2
