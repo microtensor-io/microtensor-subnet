@@ -476,7 +476,9 @@ def _ship(args: argparse.Namespace) -> int:
         print(f"packaged   {len(manifest.files)} files, {manifest.total_bytes / 1024**3:.2f} GiB")
 
         _do_upload(config)
-        _require_provenance(config, hotkey_address(wallet), manifest.artifact_digest, client.block())
+        _require_provenance(
+            config, hotkey_address(wallet), manifest.artifact_digest, client.block()
+        )
         published = publish(config, client, round_.index, manifest)
     except (
         MinerConfigError,
