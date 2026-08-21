@@ -8,19 +8,60 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from microtensor.core.constants import PUBLIC_SERVER_URL  # noqa: E402
 from microtensor.core.hashing import digest_file  # noqa: E402
 
 MANIFEST_NAME = "corpus.manifest.json"
 
 
 def load_train(path: Path) -> list[dict[str, object]]:
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
+    """The train split from a local file: a bundle, or one task per line.
+
+    Accepts either shape because the same tasks live in both: an upload
+    bundle before it is sent, and the public split after it is published.
+    """
+    raw = path.read_text(encoding="utf-8")
+    rows: list[dict[str, object]] = []
+
+    stripped = raw.lstrip()
+    if stripped.startswith("{") and "\n" in raw and '"tasks"' in raw[:2048]:
+        payload = json.loads(raw)
+        rows = [t for t in payload.get("tasks", []) if t.get("partition", "train") == "train"]
+    else:
+        for line in raw.splitlines():
+            if line.strip():
+                task = json.loads(line)
+                if task.get("partition", "train") == "train":
+                    rows.append(task)
+
     if not rows:
-        raise SystemExit(f"{path} holds no tasks")
+        raise SystemExit(f"{path} holds no train tasks")
     return rows
+
+
+def fetch_train(api: str, version: str) -> list[dict[str, object]]:
+    """The published train split, straight from the read API.
+
+    The generator that used to write code.train.jsonl is gone; the train
+    partition is served by the corpus endpoint now, so a reference set is
+    produced against exactly what miners were given rather than against a
+    file somebody kept a copy of.
+    """
+    import urllib.request
+
+    url = f"{api.rstrip('/')}/v1/corpora/{version}/public"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as answer:  # noqa: S310
+            payload = json.loads(answer.read().decode("utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"{url} could not be read: {exc}") from exc
+
+    tasks = [t for t in payload.get("tasks", []) if t.get("partition") == "train"]
+    if not tasks:
+        raise SystemExit(f"corpus {version} publishes no train split")
+
+    print(f"{len(tasks)} train tasks from {url}", file=sys.stderr)
+    return tasks
 
 
 def transformers_backend(model_spec: str):  # type: ignore[no-untyped-def]
@@ -67,14 +108,33 @@ def main() -> int:
             "runs once per corpus version, never in the validator path."
         )
     )
-    parser.add_argument("train", type=Path, help="code.train.jsonl from mt corpus generate")
+    parser.add_argument(
+        "train",
+        type=Path,
+        nargs="?",
+        help="a bundle or train jsonl on disk; omit and pass --corpus-version instead",
+    )
+    parser.add_argument(
+        "--corpus-version",
+        help="published corpus version to read the train split from",
+    )
+    parser.add_argument("--api", default=PUBLIC_SERVER_URL, help="read API base URL")
     parser.add_argument("--model", required=True, help="<hf-repo>@<revision-sha>")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--limit", type=int, default=0, help="stop after N tasks (smoke runs)")
     args = parser.parse_args()
 
-    out = args.out or args.train.with_name("code.reference.jsonl")
-    tasks = load_train(args.train)
+    if not args.train and not args.corpus_version:
+        raise SystemExit("pass a train file or --corpus-version")
+
+    if args.train:
+        tasks = load_train(args.train)
+        default_out = args.train.with_name("code.reference.jsonl")
+    else:
+        tasks = fetch_train(args.api, args.corpus_version)
+        default_out = Path("code.reference.jsonl")
+
+    out = args.out or default_out
     if args.limit:
         tasks = tasks[: args.limit]
 
@@ -96,7 +156,7 @@ def main() -> int:
     digest = digest_file(out)
     print(f"{out.name}  {digest}")
 
-    manifest_path = args.train.parent / MANIFEST_NAME
+    manifest_path = (args.train.parent if args.train else out.parent) / MANIFEST_NAME
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["files"][out.name] = digest

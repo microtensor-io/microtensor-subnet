@@ -163,11 +163,28 @@ my-model/
 
 ### Training data
 
-Each corpus release ships a public train split (`code.train.jsonl`: prompts
-and public examples only) and one vetted reference completion per train task
-(`code.reference.jsonl`). Fine-tune on those prompt/completion pairs
-directly; nobody needs to run a large model over the corpus themselves. The
-hidden tests and the rotating draw never leave the validator bundle.
+Each corpus release publishes a train split — prompts and public examples
+only — from the read API:
+
+```bash
+curl https://api.microtensor.cloud/v1/corpora/<corpus-version>/public
+```
+
+The response carries the manifest, the per-partition counts, and the `train`
+tasks themselves. The `fixed` and `rotating` partitions and every hidden test
+stay on the control plane and are served only to validators, so what you can
+read is exactly what you may train on.
+
+Alongside it we publish one vetted reference completion per train task
+(`<track>.reference.jsonl`), so you can fine-tune on prompt/completion pairs
+without running a large model over the corpus yourself:
+
+```json
+{"ref": "code-000341", "model": "<repo>@<sha>", "completion": "def parse_ledger(text): ..."}
+```
+
+`model` names the pinned model that produced the completion, so you know what
+you are distilling from.
 
 ---
 
