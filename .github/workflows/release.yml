@@ -23,7 +23,10 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install ".[validator,dev]" build
+        # bittensor-wallet explicitly: the signer needs a keypair and nothing
+        # earlier in the job imports one, so a missing wheel surfaces only at
+        # the moment of signing, after the build has already run.
+        run: pip install ".[validator,dev]" build bittensor-wallet
 
       - name: Nothing is published unless the checks pass
         run: |
@@ -58,6 +61,31 @@ jobs:
         env:
           MT_RELEASE_SIGNING_SEED: ${{ secrets.MT_RELEASE_SIGNING_SEED }}
         run: python scripts/sign_release.py dist
+
+      - name: The signature must verify the way a validator verifies it
+        run: |
+          python - <<'PY'
+          # Through check_signature, not a lookalike: this has to prove the
+          # code a validator actually runs accepts the release, or the failure
+          # lands at install time on their machine instead of here.
+          from pathlib import Path
+
+          from microtensor.core.constants import RELEASE_SIGNING_KEY
+          from microtensor.update.verify import check_signature
+
+          assert RELEASE_SIGNING_KEY, "RELEASE_SIGNING_KEY is empty; nothing can verify this"
+
+          ok, why = check_signature(
+              Path("dist/SHA256SUMS").read_bytes(),
+              Path("dist/SHA256SUMS.sig").read_bytes(),
+              RELEASE_SIGNING_KEY,
+          )
+          assert ok, (
+              f"a validator would reject this release: {why}. The seed in Actions "
+              "secrets and the pinned public key are not a pair."
+          )
+          print(f"a validator verifies this release against {RELEASE_SIGNING_KEY}")
+          PY
 
       - name: Attest the build provenance
         uses: actions/attest-build-provenance@v1
