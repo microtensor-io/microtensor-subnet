@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import struct
+import time
+from pathlib import Path
+from typing import Any, Final
+
+from microtensor.core.protocol import ArtifactFormat, LoadManifest
+from microtensor.core.tracks import Decoding
+from microtensor.harness.contract import (
+    EngineInfo,
+    EngineLoadError,
+    Request,
+    Response,
+    UnsupportedArtifact,
+)
+
+"""GGUF execution through llama.cpp.
+
+Determinism is the whole difficulty. Two workers measuring the same system
+must produce the same quality to the published quantum, so every source of
+variation is pinned here rather than left to a default:
+
+  * greedy decoding only, temperature zero, top_k one, every penalty off
+  * one thread, so floating-point reductions happen in a fixed order
+  * no GPU offload, because kernel selection varies by driver and card
+  * a seed on every context, so a build that consults the RNG still agrees
+  * an exact llama-cpp-python pin in the `gguf` extra, which pins the
+    llama.cpp build the numerics come from
+
+What remains is CPU SIMD dispatch: llama.cpp selects AVX2 or AVX-512 kernels
+by host, and the two do not reduce identically. That is the same exposure
+onnxruntime carries and is answered the same way — the arena pins a certified
+reference device, and quality is only compared between workers measuring on
+it. An arena without a certified device has no business running either
+engine.
+"""
+
+MAGIC: Final[bytes] = b"GGUF"
+MIN_VERSION: Final[int] = 2
+MAX_VERSION: Final[int] = 3
+THREADS: Final[int] = 1
+SEED: Final[int] = 0
+GPU_LAYERS: Final[int] = 0
+DEFAULT_CONTEXT: Final[int] = 2048
+
+INFO = EngineInfo(
+    format=ArtifactFormat.GGUF,
+    name="llama-cpp",
+    version="0.1.0",
+    deterministic=True,
+    notes=(
+        f"gguf v{MIN_VERSION}-{MAX_VERSION}, greedy only, {THREADS} thread, "
+        "no gpu offload, seeded; numerics are pinned to the certified device"
+    ),
+)
+
+
+def _llama() -> Any:
+    import llama_cpp
+
+    return llama_cpp
+
+
+def validate_artifact(path: Path) -> None:
+    """Reject anything that is not a GGUF of a version the engine reads.
+
+    Cheap and done before llama.cpp touches the file: a clear rejection at
+    submission is worth more to a miner than a loader crash inside the jail.
+    """
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(8)
+    except OSError as exc:
+        raise UnsupportedArtifact(f"artifact could not be read: {exc}") from exc
+
+    if len(header) < 8 or header[:4] != MAGIC:
+        raise UnsupportedArtifact("artifact is not a GGUF file")
+
+    version = struct.unpack("<I", header[4:8])[0]
+    if not MIN_VERSION <= version <= MAX_VERSION:
+        raise UnsupportedArtifact(
+            f"artifact is GGUF v{version}, outside the pinned v{MIN_VERSION}-v{MAX_VERSION} range"
+        )
+
+
+class GgufEngine:
+    format = ArtifactFormat.GGUF
+
+    def __init__(self, *, threads: int = THREADS, validate: bool = True) -> None:
+        self._threads = threads
+        self._validate = validate
+        self._model: Any = None
+        self._manifest: LoadManifest | None = None
+
+    def load(self, artifact: Path, manifest: LoadManifest) -> None:
+        weights = artifact / manifest.entrypoint if artifact.is_dir() else artifact
+        if not weights.is_file():
+            raise EngineLoadError(
+                f"entrypoint {manifest.entrypoint!r} is missing from the artifact"
+            )
+
+        if self._validate:
+            validate_artifact(weights)
+
+        llama_cpp = _llama()
+        context = int(manifest.max_input.get("tokens", DEFAULT_CONTEXT))
+
+        try:
+            self._model = llama_cpp.Llama(
+                model_path=str(weights),
+                n_ctx=context,
+                n_threads=self._threads,
+                n_threads_batch=self._threads,
+                n_gpu_layers=GPU_LAYERS,
+                seed=SEED,
+                logits_all=False,
+                embedding=False,
+                verbose=False,
+            )
+        except Exception as exc:
+            raise EngineLoadError(f"model could not be loaded: {exc}") from exc
+
+        self._manifest = manifest
+
+    def generate(self, request: Request) -> Response:
+        if self._model is None:
+            return Response.failed(request.task_ref, "engine was asked to generate before load")
+        if request.decoding is not Decoding.GREEDY:
+            return Response.failed(
+                request.task_ref,
+                f"engine only supports greedy decoding, got {request.decoding.value}",
+            )
+
+        started = time.perf_counter()
+        first_token_at = 0.0
+        produced: list[str] = []
+        count = 0
+
+        try:
+            # Streamed so the first token can be timed. Sampling is fixed to
+            # argmax: temperature zero with top_k one leaves nothing for the
+            # RNG to decide, whatever the build's sampler chain does.
+            stream = self._model.create_completion(
+                request.prompt,
+                max_tokens=request.max_output_tokens,
+                temperature=0.0,
+                top_k=1,
+                top_p=1.0,
+                min_p=0.0,
+                typical_p=1.0,
+                repeat_penalty=1.0,
+                frequency_penalty=0.0,
+                presence_penalty=0.0,
+                mirostat_mode=0,
+                seed=SEED,
+                stream=True,
+            )
+
+            for chunk in stream:
+                piece = chunk["choices"][0].get("text", "")
+                if not piece:
+                    continue
+                if count == 0:
+                    first_token_at = time.perf_counter()
+                produced.append(piece)
+                count += 1
+
+            total = time.perf_counter()
+        except Exception as exc:
+            return Response.failed(
+                request.task_ref,
+                f"{type(exc).__name__}: {exc}",
+                (time.perf_counter() - started) * 1000.0,
+            )
+
+        return Response(
+            task_ref=request.task_ref,
+            output="".join(produced),
+            ttft_ms=(first_token_at - started) * 1000.0 if first_token_at else 0.0,
+            total_ms=(total - started) * 1000.0,
+            output_tokens=count,
+        )
+
+    def unload(self) -> None:
+        self._model = None
+        self._manifest = None
+
+
+def factory() -> Any:
+    return GgufEngine()
+
+
+def load() -> tuple[Any, EngineInfo]:
+    _llama()
+    return factory, INFO

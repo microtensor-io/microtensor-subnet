@@ -22,6 +22,12 @@ validator = [
     "numpy>=1.26",
     "psutil>=5.9",
 ]
+# Exactly pinned, not floored: the wheel carries the llama.cpp build, and the
+# build is where the numerics come from. A range here would let two validators
+# disagree on quality for no reason a miner could act on.
+gguf = [
+    "llama-cpp-python==0.3.2",
+]
 coordinator = [
     "pynacl>=1.5",
     "fastapi>=0.110",
@@ -75,6 +81,7 @@ module = [
     "boto3.*",
     "botocore.*",
     "huggingface_hub.*",
+    "llama_cpp.*",
     "onnx.*",
     "onnxruntime.*",
     "tokenizers.*",

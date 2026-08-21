@@ -153,7 +153,9 @@ my-model/
   manifest as `<repo>@<revision-sha>`. The candidate list is Qwen3 (0.6B,
   1.7B, 4B) and Llama 3.2 (1B, 3B); the exact revisions are published at
   corpus freeze, and until the allowlist is frozen the field is unchecked.
-- ONNX opset 13 to 21, standard domains only (`""`, `ai.onnx`, `ai.onnx.ml`). Custom
+- GGUF v2 to v3, or ONNX opset 13 to 21 with standard domains only (`""`,
+  `ai.onnx`, `ai.onnx.ml`). `safetensors` has no engine and is not accepted;
+  run `mt inspect engines` against a validator build to see what it will run. Custom
   operators are rejected, because a validator will not run code it cannot audit.
 - Greedy decoding. The track fixes it; temperature is not a knob you control.
 - Size is *total*: weights, tokenizer, config, everything in the directory.

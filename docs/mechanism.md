@@ -224,8 +224,9 @@ commitments and settles identically.
 
 Three parts, signed by the miner's hotkey and pinned by digest:
 
-**1 · Weights**, in a portable format appropriate to the class:
-`safetensors`, `onnx`, or `gguf`.
+**1 · Weights**, in a portable format the validator has an engine for:
+`onnx` or `gguf`. `safetensors` is defined in the protocol and not yet
+executable — see the engine list below.
 
 **2 · A load manifest**, declaring format, quantisation, preprocessing, the
 maximum input the artifact supports (context length, resolution, duration, frame
@@ -718,10 +719,27 @@ Because no miner code runs, the validator's engine defines what can be
 submitted. Stating that precisely is a mechanism obligation, not an
 implementation detail.
 
-- **Format**: `onnx` (opset pinned per mechanism version), `safetensors`, `gguf`.
+- **Format**: `onnx` (opset pinned per mechanism version) and `gguf` (file
+  version pinned). Both ship as optional extras; `mt inspect engines` reports
+  what a given validator actually registered, and a format with no engine
+  cannot be submitted against.
 - **ONNX**: standard opset only. **Custom operators are rejected at submission.**
+- **GGUF**: greedy decoding, one thread, no GPU offload, seeded, against an
+  exactly pinned llama.cpp build.
+- **safetensors**: defined in the protocol, **no engine**. Executing raw
+  weights means a framework, and a framework's kernels are selected at runtime
+  by host and build. Two workers would disagree on quality for reasons no
+  miner could act on, which is a reason to withhold the format rather than to
+  relax the determinism requirement. It stays in the enum because the protocol
+  is versioned and removing a value is a breaking change; submissions
+  declaring it are refused for want of an engine.
 - **Execution providers**: pinned per class in the device profile.
 - **Determinism flags**: mandatory, and part of the profile hash.
+
+Determinism across hosts rests on the certified reference device in every
+case: both engines dispatch CPU kernels by instruction set, and AVX2 and
+AVX-512 do not reduce identically. Quality is only ever compared between
+workers measuring on the arena's certified device.
 
 Architecture search is bounded by this. That is a real cost of refusing to run
 miner code, and it is stated rather than discovered.

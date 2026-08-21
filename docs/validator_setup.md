@@ -22,8 +22,12 @@ git clone https://github.com/microtensor-io/microtensor-subnet
 cd microtensor-subnet
 
 python -m venv .venv && source .venv/bin/activate
-pip install ".[validator,huggingface,s3]"
+pip install ".[validator,gguf,huggingface,s3]"
 ```
+
+`validator` carries the ONNX engine; `gguf` adds the llama.cpp one. Install
+the formats the arenas you measure accept — a format you skip simply does not
+register, and `mt inspect engines` shows what a build will run.
 
 `huggingface` and `s3` are fetch backends. Install the ones matching the source
 schemes miners use. `https` needs nothing extra.
