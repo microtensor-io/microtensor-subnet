@@ -51,6 +51,9 @@ def fetch_train(api: str, version: str) -> list[dict[str, object]]:
     import urllib.request
 
     url = f"{api.rstrip('/')}/v1/corpora/{version}/public"
+    if not url.startswith(("http://", "https://")):
+        raise SystemExit(f"--api needs an http or https URL, got {api!r}")
+
     try:
         with urllib.request.urlopen(url, timeout=60) as answer:  # noqa: S310
             payload = json.loads(answer.read().decode("utf-8"))
@@ -109,8 +112,11 @@ def publish_reference(
     import urllib.request
 
     url = f"{control.rstrip('/')}/v1/operator/corpora/{version}/reference"
+    if not url.startswith(("http://", "https://")):
+        raise SystemExit(f"--publish needs an http or https URL, got {control!r}")
+
     body = json.dumps({"model": model, "completions": rows}).encode()
-    request = urllib.request.Request(
+    request = urllib.request.Request(  # noqa: S310
         url,
         data=body,
         headers={"content-type": "application/json", "x-mt-credential": credential},

@@ -203,8 +203,8 @@ jobs:
           out = Path("/tmp/ci-corpus")
           out.mkdir(parents=True, exist_ok=True)
           tasks, tests = [], []
-          for i in range(24):
-              partition = "rotating" if i < 16 else "fixed"
+          for i in range(70):
+              partition = "rotating" if i < 45 else "fixed"
               ref = f"code-ci-{i:03d}"
               tasks.append({
                   "ref": ref,
