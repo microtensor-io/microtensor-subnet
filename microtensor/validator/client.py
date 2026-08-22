@@ -38,6 +38,14 @@ log = logging.getLogger("microtensor.validator")
 
 REPORTS_ROOT_MISMATCH = "the published reports do not hash to the settlement's reports_root"
 BAD_SCHEME = "the coordinator URL must be http or https"
+
+
+def _detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = json.loads(exc.read() or b"null")
+    except (ValueError, OSError):
+        return ""
+    return str(body.get("detail", "")) if isinstance(body, dict) else ""
 WEIGHTS_MISMATCH = "the settlement's weights do not recompute from the published reports"
 
 
@@ -115,10 +123,17 @@ class CoordinatorClient:
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
                     return None
-                if exc.code in (401, 403):
+                if exc.code == 401:
                     raise CoordinatorRefused(
-                        f"{url} refused this hotkey ({exc.code}); check the worker is "
-                        f"registered and its clock is correct"
+                        f"{url} does not recognise this hotkey (401); check it holds a "
+                        f"validator permit on this subnet and that the clock is correct"
+                    ) from exc
+                if exc.code == 403:
+                    detail = _detail(exc)
+                    raise CoordinatorRefused(
+                        f"{url} recognises this hotkey and refused it (403"
+                        f"{': ' + detail if detail else ''}); the hotkey is known, so this "
+                        f"is an authorisation rule rather than registration or the clock"
                     ) from exc
                 if exc.code == 429 or exc.code >= 500:
                     last = exc

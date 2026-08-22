@@ -752,6 +752,38 @@ def _status(args: argparse.Namespace) -> int:
 REGISTRY_REFRESH_SECONDS = 300
 
 
+def _worker_keyring(args: argparse.Namespace, server: ServerClient | None) -> KeyRing | None:
+    """The key worker tokens are checked against, when checking is switched on.
+
+    Off by default, and this is not a hardening setting waiting to be enabled.
+    The client half of the token flow does not exist: a validator builds its
+    coordinator client with no token and never calls the server's issuing
+    endpoint, so nothing can present one. Setting MT_REQUIRE_WORKER_TOKENS=1
+    today refuses every worker on the subnet, including your own.
+
+    Turn it on only once validators obtain and send tokens, and once each one
+    is registered on the control plane. Until then the gate that decides who
+    may talk to this coordinator is the permitted-validator registry, which
+    is always enforced and is not affected by this setting.
+    """
+    if os.environ.get("MT_REQUIRE_WORKER_TOKENS", "0") != "1":
+        log.warning(
+            "worker tokens are not being checked; the client side is unwired, so "
+            "enabling MT_REQUIRE_WORKER_TOKENS would refuse every worker"
+        )
+        return None
+
+    keyring = KeyRing(home=_home(args))
+    if server is not None:
+        keyring.refresh(server.token_key)
+    if not keyring.load():
+        log.warning(
+            "no control plane key is known, so worker tokens will not be checked; "
+            "point --server at the control plane once to record it"
+        )
+    return keyring
+
+
 def _permitted(client: Any) -> dict[str, int]:
     snapshot = client.snapshot(refresh=True)
     uids = dict(snapshot.uid_by_hotkey)
@@ -795,15 +827,8 @@ def _serve(args: argparse.Namespace) -> int:
     from microtensor.coordinator.api import build_app
 
     with _store(args) as store:
-        keyring = KeyRing(home=_home(args))
         server = _server(args)
-        if server is not None:
-            keyring.refresh(server.token_key)
-        if not keyring.load():
-            log.warning(
-                "no control plane key is known, so worker tokens will not be checked; "
-                "point --server at the control plane once to record it"
-            )
+        keyring = _worker_keyring(args, server)
 
         chain = chain_config(args)
         client = open_client(chain, open_wallet(chain, required=False))
