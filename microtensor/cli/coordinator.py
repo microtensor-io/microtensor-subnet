@@ -748,12 +748,44 @@ def _status(args: argparse.Namespace) -> int:
     return 0
 
 
+REGISTRY_REFRESH_SECONDS = 300
+
+
+def _permitted(client: Any) -> dict[str, int]:
+    snapshot = client.snapshot(refresh=True)
+    uids = dict(snapshot.uid_by_hotkey)
+    return {
+        hotkey: uids[hotkey]
+        for hotkey in snapshot.hotkeys
+        if hotkey in uids and snapshot.has_permit(hotkey)
+    }
+
+
+def _keep_registry_current(registry: Registry, client: Any) -> None:
+    import threading
+
+    def loop() -> None:
+        while True:
+            time.sleep(REGISTRY_REFRESH_SECONDS)
+            try:
+                found = _permitted(client)
+            except Exception as exc:
+                log.warning("the validator registry could not be refreshed: %s", exc)
+                continue
+            if found and found != registry.permitted:
+                registry.permitted = found
+                log.info("registry refreshed: %d permitted validators", len(found))
+
+    threading.Thread(target=loop, name="registry-refresh", daemon=True).start()
+
+
 def _serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
     except ImportError:
         return fail('the API needs the web stack: pip install ".[coordinator]"')
 
+    from microtensor.cli.common import chain_config, open_client, open_wallet
     from microtensor.coordinator.api import build_app
 
     with _store(args) as store:
@@ -767,9 +799,23 @@ def _serve(args: argparse.Namespace) -> int:
                 "point --server at the control plane once to record it"
             )
 
+        chain = chain_config(args)
+        client = open_client(chain, open_wallet(chain, required=False))
+        try:
+            permitted = _permitted(client)
+        except Exception as exc:
+            log.warning("the validator registry could not be read from chain: %s", exc)
+            permitted = {}
+        if not permitted:
+            log.warning("no permitted validator is known, so every signed request is refused")
+        else:
+            log.info("registry holds %d permitted validators", len(permitted))
+        registry = Registry(permitted)
+        _keep_registry_current(registry, client)
+
         service = Coordinator(
             store=store,
-            registry=Registry({}),
+            registry=registry,
             keyring=keyring,
             corpus_version=CORPUS_VERSION,
             corpora=_corpora(args, server),
