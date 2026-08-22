@@ -22,7 +22,7 @@ from microtensor.provenance.record import CachedStore
 from microtensor.registry.cache import ArtifactCache
 from microtensor.scoring import execution
 from microtensor.store.state import ValidatorState
-from microtensor.tasks.corpus import Corpus, load_all
+from microtensor.tasks.corpus import Corpus, CorpusError, load_all
 
 log = logging.getLogger("microtensor.validator")
 
@@ -114,7 +114,20 @@ class ValidatorContext:
 
         corpora = _corpora_for(config, coordinator)
         missing = sorted({track for track, _ in competitions()} - set(corpora))
-        if missing:
+
+        # A coordinated worker with nothing yet is waiting, not misconfigured.
+        # The coordinator serves a corpus once an arena is live, so before then
+        # there is nothing to have, and refusing to start makes an operator
+        # debug a validator that is behaving correctly. It holds each round and
+        # looks again instead. Standing alone with no corpus is still fatal:
+        # there is nothing to wait for.
+        if missing and config.coordinated and not corpora:
+            log.warning(
+                "no corpus yet for %s; the coordinator serves one when an arena is "
+                "live, so this validator will hold and look again each round",
+                ", ".join(missing),
+            )
+        elif missing:
             raise RuntimeError(
                 f"no corpus for enabled track(s) {missing}. "
                 f"A validator that skips a track publishes a vector missing that "
@@ -154,6 +167,22 @@ class ValidatorContext:
     def corpus(self, track: str) -> Corpus:
         return self.corpora[track]
 
+    def refresh_corpora(self) -> bool:
+        """Look again for a corpus this worker did not have at startup.
+
+        Called at the top of a round rather than on a timer, because the round
+        is when it matters and the coordinator publishes one when an arena
+        goes live. Returns whether anything is held now, so the caller can say
+        what it is waiting for rather than failing.
+        """
+        if self.corpora:
+            return True
+        found = _corpora_for(self.config, self.coordinator)
+        if found:
+            self.corpora.update(found)
+            log.info("the coordinator now serves %s", ", ".join(sorted(found)))
+        return bool(self.corpora)
+
     def close(self) -> None:
         self.state.close()
         self.client.close()
@@ -184,4 +213,16 @@ def _corpora_for(config: Any, coordinator: Any) -> dict[str, Corpus]:
             log.warning("the coordinator serves no corpus yet; using the local one")
 
     log.info("loading the corpus from %s", config.corpus_dir)
-    return load_all(config.corpus_dir, config.corpus_version)
+    try:
+        return load_all(config.corpus_dir, config.corpus_version)
+    except CorpusError:
+        # Nothing served and nothing local. For a coordinated worker that is a
+        # wait, not a fault: the coordinator publishes a corpus when an arena
+        # goes live. Standing alone it is fatal, because nothing is coming.
+        if not config.coordinated:
+            raise
+        log.warning(
+            "no corpus from the coordinator and none at %s; holding until one is served",
+            config.corpus_dir,
+        )
+        return {}

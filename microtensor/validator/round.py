@@ -219,6 +219,21 @@ def _run_round(
     if context.config.loopback:
         return _run_loopback_round(context, round_, snapshot, block_hash, started, abstain)
 
+    # Looked for again each round rather than only at startup: a worker
+    # brought up before an arena is live has none, and the coordinator serves
+    # one the moment there is something to measure.
+    if not context.refresh_corpora():
+        return abstain(
+            "no corpus is being served yet, so there is nothing to measure; "
+            "this resolves when an arena is live and the coordinator serves its "
+            "corpus, and is rechecked every round"
+        )
+
+    if not context.refresh_corpora():
+        return abstain(
+            "no corpus served yet; waiting for an arena to go live, rechecked every round"
+        )
+
     try:
         plan = plan_round(
             context.coordinator,

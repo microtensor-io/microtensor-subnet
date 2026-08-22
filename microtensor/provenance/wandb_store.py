@@ -41,7 +41,21 @@ def credentials_present() -> bool:
     try:
         found = wandb.setup()
         settings = getattr(found, "settings", None)
-        return bool(getattr(settings, "api_key", "") or "")
+        if getattr(settings, "api_key", ""):
+            return True
+    except Exception:
+        pass
+
+    # netrc directly, because `wandb login` writes there and asking the sdk
+    # what it resolved did not surface it. Reading the file the documented
+    # command writes is less clever and actually true: a validator that had
+    # logged in correctly was being told it had no credentials.
+    try:
+        import netrc
+        from urllib.parse import urlparse
+
+        host = urlparse(os.environ.get("WANDB_BASE_URL", "https://api.wandb.ai")).hostname
+        return bool(host and netrc.netrc().authenticators(host))
     except Exception:
         return False
 

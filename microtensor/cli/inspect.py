@@ -168,9 +168,9 @@ def _readiness(args: argparse.Namespace) -> int:
     unknown = [gate for gate in gates if gate.unreadable]
     if unknown:
         print(
-            f"\n{len(unknown)} gate(s) could not be read: a coordinator is configured "
-            "and did not answer. This is not the same as those gates being open, and "
-            "not the same as them being satisfied."
+            f"\n{len(unknown)} gate(s) could not be read. This is not the same as "
+            "those gates being open, and not the same as them being satisfied; the "
+            "reason is on each line above."
         )
 
     open_gates = [gate for gate in gates if gate.unenforced]
