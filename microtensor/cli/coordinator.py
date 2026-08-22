@@ -365,12 +365,12 @@ def _open(args: argparse.Namespace) -> int:
                 seed_block=round_.seed_block,
                 close_block=round_.close_block,
                 block_hash=seed,
-                config_hash=_config_hash_for(source),
+                config_hash=_config_hash_for(source, server),
             )
             store.record_metagraph(round_.index, source.uids())
         print(f"round {round_.index} opened with nothing to measure; it settles on the hold")
         print("Commit the config hash on chain before workers verify against it:")
-        print(f"  {_config_hash_for(source)}")
+        print(f"  {_config_hash_for(source, server)}")
         print(f"  mt coordinator anchor --round {round_.index}")
         return 0
     if not workers:
@@ -384,7 +384,7 @@ def _open(args: argparse.Namespace) -> int:
             seed_block=round_.seed_block,
             close_block=round_.close_block,
             block_hash=seed,
-            config_hash=_config_hash_for(source),
+            config_hash=_config_hash_for(source, server),
         )
         store.record_assignment(
             round_.index,
@@ -413,7 +413,7 @@ def _open(args: argparse.Namespace) -> int:
             log.warning("the assignment map was not mirrored to the control plane: %s", exc)
 
     print("Commit the config hash on chain before workers measure against it:")
-    print(f"  {_config_hash_for(source)}")
+    print(f"  {_config_hash_for(source, server)}")
     print(f"  mt coordinator anchor --round {round_.index}")
     print("Until that lands, workers refuse the round rather than measure against it.")
     return 0
@@ -552,15 +552,19 @@ def _weights(args: argparse.Namespace) -> int:
         time.sleep(args.interval)
 
 
-def _config_hash_for(source: RoundSource) -> str:
+def _config_hash_for(source: RoundSource, server: ServerClient | None = None) -> str:
     """The hash workers will verify against.
 
     The control plane's when it published one, because that is the document it
-    is serving to workers; the locally derived one otherwise. Anchoring a hash
-    nobody is serving would make the anchor unverifiable.
+    is serving to workers; otherwise the same document the serving API builds,
+    arenas included. Hashing the config without the arena list anchored one
+    document while the API served another, and every worker refused the round
+    as a mismatch.
     """
     published = getattr(source, "config_hash", "")
-    return str(published) if published else config_hash(served_config(CORPUS_VERSION))
+    if published:
+        return str(published)
+    return config_hash(served_config(CORPUS_VERSION, _arenas(server)))
 
 
 def _settle(args: argparse.Namespace) -> int:
