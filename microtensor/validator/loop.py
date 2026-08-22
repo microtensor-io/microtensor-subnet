@@ -122,9 +122,7 @@ class RoundLoop:
                 log.warning("weight refresh failed, continuing the round: %s", exc)
             remaining = round_.close_block - block
             delay = min(self.poll_seconds, max(1, remaining * BLOCK_TIME_SECONDS))
-            log.info(
-                "round %d open: %d blocks until submissions close", round_.index, remaining
-            )
+            log.info("round %d open: %d blocks until submissions close", round_.index, remaining)
             self._sleep(delay)
         raise Stopped
 
@@ -149,6 +147,9 @@ class RoundLoop:
 
     def run(self, max_rounds: int | None = None) -> int:
         self._running = True
+        from microtensor.cli.common import reclaim_logging
+
+        reclaim_logging()
         log.info(
             "validator up on netuid %d across %d competitions",
             self.context.config.chain.netuid,

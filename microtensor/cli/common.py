@@ -29,9 +29,22 @@ def configure_logging(level: str = "INFO") -> None:
     ours = logging.getLogger("microtensor")
     ours.setLevel(resolved)
     ours.propagate = False
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%H:%M:%S"))
-    ours.addHandler(handler)
+    if not ours.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%H:%M:%S"))
+        ours.addHandler(handler)
+
+
+def reclaim_logging() -> None:
+    """Undo what bittensor does to process-wide logging.
+
+    A dedicated handler was not enough: bittensor also raises the global
+    logging.disable() threshold, which gates every logger in the process
+    regardless of handlers or levels. Called after anything that imports
+    bittensor, because a validator counting down a 24-hour round in silence
+    is indistinguishable from a hung one.
+    """
+    logging.disable(logging.NOTSET)
 
 
 def add_chain_arguments(parser: argparse.ArgumentParser) -> None:

@@ -15,6 +15,7 @@ from microtensor.cli.common import (
     fail,
     open_client,
     open_wallet,
+    reclaim_logging,
 )
 from microtensor.core.constants import (
     ARTIFACT_CACHE_CAP_BYTES,
@@ -212,9 +213,11 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
 
     wallet = open_wallet(chain, required=not args.dry_run)
     client = open_client(chain, wallet)
+    reclaim_logging()
     hotkey = hotkey_address(wallet) if wallet is not None else ""
 
     snapshot = client.snapshot()
+    reclaim_logging()
     if hotkey and not snapshot.is_registered(hotkey):
         raise SystemExit(f"hotkey {hotkey} is not registered on netuid {chain.netuid}")
     if hotkey and not snapshot.has_permit(hotkey):
