@@ -133,11 +133,18 @@ PROBE_SET_SIZE: Final[int] = 256
 
 PROVENANCE_ENTITY: Final[str] = "microtensor"
 PROVENANCE_PROJECT: Final[str] = "training-runs"
-# Off until the run store can accept runs from arbitrary miners. The
-# microtensor W&B entity is a personal account, so an outside key cannot
-# write to it, and requiring a run nobody can create rejects every
-# submission. Turn back on once the entity is a team miners can write to.
-PROVENANCE_REQUIRED: Final[bool] = False
+# On. The microtensor entity is a W&B team and training-runs is set to Open
+# visibility, so a miner writes from their own account without an invitation
+# and a validator reads with any W&B key. Both directions were checked with an
+# account outside the team before this was turned on: refused under Team
+# visibility, accepted under Open.
+#
+# What this gate is: an audit trail. Every field it reads is written by the
+# miner, so it makes a claim public and checkable against the artifact digest,
+# the competition and the allowlist. It does not prove a training run happened.
+# The store assumes exactly that, which is why every run bearing a hotkey is a
+# candidate and the checks decide rather than authorship.
+PROVENANCE_REQUIRED: Final[bool] = True
 PROVENANCE_RETRIES: Final[int] = 3
 PROVENANCE_BACKOFF_SECONDS: Final[float] = 3.0
 

@@ -12,6 +12,7 @@ from microtensor.core.constants import (
     CORPUS_VERSION,
     CPU_SECONDS_PER_ARTIFACT,
     GENESIS_BLOCK,
+    PROVENANCE_REQUIRED,
     ROUND_BLOCKS,
     TASKS_PER_ROUND,
 )
@@ -47,6 +48,13 @@ class ValidatorConfig:
     # the chain anchored.
     allowlists: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
     verify_signatures: bool = True
+    # Defaults to the constant and is not exposed on the command line. Only
+    # the synthetic modes turn it off, the same way they turn off signature
+    # verification: loopback has no W&B and no real miners, so requiring a
+    # training run there would test the absence of a network rather than the
+    # gate. An operator flag here would let one validator admit what its peers
+    # reject, which is the divergence the gate exists to prevent.
+    require_provenance: bool = PROVENANCE_REQUIRED
     degraded: bool = False
     coordinator_url: str = ""
 

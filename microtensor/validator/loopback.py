@@ -179,6 +179,7 @@ def build(
         allow_unsandboxed=True,
         dry_run=False,
         verify_signatures=False,
+        require_provenance=False,
         loopback=True,
         allowlists={(track, hardware_class): frozenset({BASE_MODEL})},
     )

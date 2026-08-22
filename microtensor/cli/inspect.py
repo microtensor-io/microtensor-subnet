@@ -167,7 +167,11 @@ def _readiness(args: argparse.Namespace) -> int:
             f"\n{len(open_gates)} gate(s) currently accept anything. A round will still "
             "settle, but the guarantee those gates exist to make is not being made."
         )
-    if open_gates or unknown:
+    # Any unmet gate, not only the ones that accept everything. Provenance was
+    # the last OPEN gate, and keying the exit code on OPEN alone meant closing
+    # it made this command report success with the arena unconfigured and no
+    # baseline published. Zero here means ready to launch.
+    if outstanding:
         return 2
     return 0
 

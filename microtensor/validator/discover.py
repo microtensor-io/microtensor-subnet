@@ -8,10 +8,7 @@ from microtensor.chain.commitment import Commitment, decode_all
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round
 from microtensor.chain.wallet import verify_payload
-from microtensor.core.constants import (
-    HOST_PROFILE,
-    PROVENANCE_REQUIRED,
-)
+from microtensor.core.constants import HOST_PROFILE
 from microtensor.core.protocol import Role
 from microtensor.core.system import SystemManifest
 from microtensor.provenance.record import ProvenanceUnavailable, Verdict
@@ -79,7 +76,7 @@ def _provenance_reason(
     Checking the submission alone would let an unprovenanced specialist ride in
     behind a compliant front, since the submission-level digest never names it.
     """
-    if not PROVENANCE_REQUIRED:
+    if not context.config.require_provenance:
         return "", None
 
     # Not folded into the line above. Provenance being switched off is a

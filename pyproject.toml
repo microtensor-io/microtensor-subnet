@@ -31,6 +31,11 @@ validator = [
     "tokenizers>=0.19",
     "numpy>=1.26",
     "psutil>=5.9",
+    # Not optional while PROVENANCE_REQUIRED is on: a validator builds a run
+    # store every round, so without wandb it raises before it measures
+    # anything. Leaving it in the provenance extra meant the documented
+    # install produced a validator that could not run a round.
+    "wandb>=0.17",
 ]
 # Exactly pinned, not floored: the wheel carries the llama.cpp build, and the
 # build is where the numerics come from. A range here would let two validators
