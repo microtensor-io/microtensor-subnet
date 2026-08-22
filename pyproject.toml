@@ -4,7 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "microtensor-subnet"
-version = "0.1.0"
+# Taken from MECHANISM_VERSION rather than written twice. The tag, the constant
+# validators derive version_key from, and the version pip sees are the same
+# number, and a wheel that kept saying 0.1.0 while the tag moved would have
+# every release install over itself.
+dynamic = ["version"]
 description = "Microtensor — a Bittensor subnet for compressing frontier models into hardware-constrained specialists under a verified deployment envelope."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -68,6 +72,9 @@ dev = [
 mt = "microtensor.cli.main:main"
 mt-validator = "neurons.validator:run"
 mt-miner = "neurons.miner:run"
+
+[tool.setuptools.dynamic]
+version = { attr = "microtensor.core.constants.MECHANISM_VERSION" }
 
 [tool.setuptools.packages.find]
 include = ["microtensor*", "neurons*"]

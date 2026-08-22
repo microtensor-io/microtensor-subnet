@@ -51,6 +51,31 @@ jobs:
           print(f"tag {tag} matches MECHANISM_VERSION {MECHANISM_VERSION}")
           PY
 
+      - name: Refuse artifacts that disagree with the tag
+        run: |
+          python - <<'PY'
+          # The wheel carried a version of its own once, and stayed at 0.1.0
+          # while the tag and the constant moved. Every release then installed
+          # over itself under the same version. Built here rather than trusted.
+          import subprocess, sys
+          from pathlib import Path
+
+          from microtensor.core.constants import MECHANISM_VERSION
+
+          subprocess.run([sys.executable, "-m", "build", "--wheel"], check=True)
+          built = sorted(Path("dist").glob("*.whl"))
+          if not built:
+              sys.exit("nothing was built")
+          for wheel in built:
+              version = wheel.name.split("-")[1]
+              if version != MECHANISM_VERSION:
+                  sys.exit(
+                      f"{wheel.name} packages {version} but MECHANISM_VERSION is "
+                      f"{MECHANISM_VERSION}; pip would see a release that never moves"
+                  )
+              print(f"{wheel.name} packages {MECHANISM_VERSION}")
+          PY
+
       - name: Build the wheel
         run: python -m build --wheel --sdist
 
