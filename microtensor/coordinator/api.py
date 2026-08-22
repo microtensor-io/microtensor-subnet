@@ -119,6 +119,13 @@ class Coordinator:
     reserve: Callable[[], dict[str, Any]] | None = None
     mirror_report: Callable[[int, list[dict[str, Any]]], Any] | None = None
     arenas: dict[str, dict[str, Any]] = None  # type: ignore[assignment]
+    # Re-reads the arena list and corpora so an arena activated after this
+    # process started reaches the served config without a restart. A snapshot
+    # taken at startup served an empty allowlist forever.
+    arena_source: Callable[[], dict[str, dict[str, Any]]] | None = None
+    corpora_source: Callable[[], dict[str, Any]] | None = None
+    refresh_seconds: float = 300.0
+    _refreshed_at: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.catalogue:
@@ -132,7 +139,31 @@ class Coordinator:
         if not self.arenas:
             self.arenas = {}
 
+    def _maybe_refresh(self) -> None:
+        import time as _time
+
+        if self.arena_source is None:
+            return
+        now = _time.monotonic()
+        if self._refreshed_at and now - self._refreshed_at < self.refresh_seconds:
+            return
+        self._refreshed_at = now
+        try:
+            found = self.arena_source() or {}
+        except Exception as exc:
+            log.warning("the arena list could not be refreshed: %s", exc)
+            return
+        if found != self.arenas:
+            self.arenas = found
+            log.info("arena list refreshed: %s", sorted(found) or "none")
+            if self.corpora_source is not None:
+                try:
+                    self.corpora = self.corpora_source() or {}
+                except Exception as exc:
+                    log.warning("the corpus could not be refreshed: %s", exc)
+
     def current_round(self) -> dict[str, Any]:
+        self._maybe_refresh()
         row = self.store.latest_round()
         if row is None:
             return {}

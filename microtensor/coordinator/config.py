@@ -23,6 +23,21 @@ CONFIG_VERSION = 1
 MISMATCH = "the served config does not match the hash anchored on chain for this round"
 
 
+def _role_baselines(arenas: Mapping[str, Mapping[str, Any]] | None) -> dict[str, str]:
+    """The arena's published baselines when it carries them, else the constants.
+
+    Baselines are published through the control plane per arena; the constants
+    are the pre-arena fallback. Without this, an arena with all three roles
+    published still anchored a config saying none were.
+    """
+    merged = dict(ROLE_BASELINES)
+    for value in (arenas or {}).values():
+        found = value.get("role_baselines")
+        if isinstance(found, Mapping):
+            merged.update({str(k): str(v) for k, v in found.items() if v})
+    return merged
+
+
 def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
     """One arena's rules, with every number written out.
 
@@ -84,7 +99,7 @@ def served_config(
         "arenas": {
             key: _arena_block(value) for key, value in sorted((arenas or {}).items())
         },
-        "role_baselines": dict(sorted(ROLE_BASELINES.items())),
+        "role_baselines": dict(sorted(_role_baselines(arenas).items())),
     }
 
 

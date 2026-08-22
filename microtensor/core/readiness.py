@@ -144,6 +144,17 @@ def _base_model_gates(
             )
         ]
 
+    if served.reachable and not arenas:
+        return [
+            Gate(
+                name="base-model allowlist",
+                ready=False,
+                posture=CLOSED,
+                detail="the coordinator serves no arena, so nothing is admissible",
+                fix="activate an arena; the coordinator refreshes within a few minutes",
+            )
+        ]
+
     if not arenas:
         return [
             Gate(

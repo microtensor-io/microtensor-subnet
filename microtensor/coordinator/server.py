@@ -177,6 +177,9 @@ class ServerClient:
                 value = arena.get(field_name)
                 if isinstance(value, int) and value > 0:
                     block[field_name] = value
+            baselines = arena.get("role_baselines")
+            if isinstance(baselines, dict) and baselines:
+                block["role_baselines"] = {str(k): str(v) for k, v in baselines.items()}
             out[f"{track}/{hardware_class}"] = block
         return out
 

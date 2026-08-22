@@ -773,6 +773,8 @@ def _serve(args: argparse.Namespace) -> int:
             reserve=server.reserved if server is not None else None,
             mirror_report=server.push_reports if server is not None else None,
             arenas=_arenas(server),
+            arena_source=(lambda: _arenas(server)) if server is not None else None,
+            corpora_source=(lambda: _corpora(args, server)) if server is not None else None,
         )
         app = build_app(service)
         log.info("serving the coordinator on %s:%d", args.host, args.port)
