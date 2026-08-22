@@ -355,7 +355,23 @@ def _open(args: argparse.Namespace) -> int:
     seed = source.seed(round_)
 
     if not systems:
-        print(f"round {round_.index}: nothing committed on chain yet")
+        # An empty round is still a round: it settles on the reserved hold,
+        # and workers adopt that settlement, so it is stored rather than
+        # skipped. Skipping meant no round, no recorded metagraph, and no
+        # uid the hold could resolve against, so nobody set weights.
+        with _store(args) as store:
+            store.open_round(
+                round_.index,
+                seed_block=round_.seed_block,
+                close_block=round_.close_block,
+                block_hash=seed,
+                config_hash=_config_hash_for(source),
+            )
+            store.record_metagraph(round_.index, source.uids())
+        print(f"round {round_.index} opened with nothing to measure; it settles on the hold")
+        print("Commit the config hash on chain before workers verify against it:")
+        print(f"  {_config_hash_for(source)}")
+        print(f"  mt coordinator anchor --round {round_.index}")
         return 0
     if not workers:
         return fail("no worker holds a validator permit, so nothing can be assigned")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -229,11 +230,6 @@ def _run_round(
             "corpus, and is rechecked every round"
         )
 
-    if not context.refresh_corpora():
-        return abstain(
-            "no corpus served yet; waiting for an arena to go live, rechecked every round"
-        )
-
     try:
         plan = plan_round(
             context.coordinator,
@@ -259,6 +255,13 @@ def _run_round(
 
     if plan.mode is Mode.IDLE:
         log.info("round %d: %s", round_.index, plan.reason)
+        # No round open still has a settlement to adopt: the coordinator
+        # settles a round with nothing to measure on the reserved hold alone,
+        # minted on request. Asking for the chain-derived round keeps this
+        # worker setting weights before an arena is live, through the same
+        # verified adoption path.
+        if not plan.round_index:
+            plan = dataclasses.replace(plan, round_index=round_.index)
         if plan.round_index:
             weights, why = adopt_settlement(
                 context.coordinator, plan.round_index, uid_by_hotkey=snapshot.uid_by_hotkey
@@ -282,6 +285,11 @@ def _run_round(
             f"the coordinator is on round {plan.round_index} but this validator derived "
             f"{round_.index} from the chain; measuring across that gap would file reports "
             f"against one round and weights against another"
+        )
+
+    if not context.refresh_corpora():
+        return abstain(
+            "no corpus served yet; waiting for an arena to go live, rechecked every round"
         )
 
     try:
