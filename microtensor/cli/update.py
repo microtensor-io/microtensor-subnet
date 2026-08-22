@@ -16,6 +16,7 @@ from microtensor.core.constants import (
     RELEASE_CHANNELS,
     RELEASE_REPO,
     RELEASE_SIGNING_KEY,
+    RELEASE_VERSION,
     ROUND_BLOCKS,
 )
 from microtensor.update.apply import apply_release
@@ -93,7 +94,7 @@ def _check(args: argparse.Namespace) -> int:
     except ReleaseError as exc:
         return fail(str(exc))
 
-    print(f"running      {MECHANISM_VERSION}")
+    print(f"running      {RELEASE_VERSION}  (mechanism {MECHANISM_VERSION})")
     print(f"channel      {args.channel}")
     print(f"block        {block}  (round {round_.index})")
     if decision.release is not None:

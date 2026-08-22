@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from microtensor.chain.rounds import Round
-from microtensor.core.constants import MECHANISM_VERSION
+from microtensor.core.constants import RELEASE_VERSION
 from microtensor.update.release import Release, Version
 
 
@@ -40,7 +40,11 @@ def decide(
     round_: Round,
     block: int,
     *,
-    current: str = MECHANISM_VERSION,
+    # The release version, not the mechanism. "Is this newer" and "does this
+    # change the rules" are different questions, and answering the first with
+    # the mechanism version made a validator reinstall the same release on
+    # every poll once the two stopped moving together.
+    current: str = RELEASE_VERSION,
     allow_mechanism_change: bool = False,
     allow_major: bool = False,
 ) -> Decision:

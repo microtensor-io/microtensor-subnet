@@ -2,6 +2,17 @@ from __future__ import annotations
 
 from typing import Final
 
+# What is packaged, tagged and compared to decide whether a release is newer.
+# Moves every release, including one that only fixes a bug.
+RELEASE_VERSION: Final[str] = "0.1.3"
+
+# What the rules are. Moves only when admission or scoring changes, because
+# validators on different values here measure the same round differently, and
+# an update that changes it has to land on every host at the same block.
+#
+# These were one constant. That made every release read as a rule change, so
+# auto-update held all of them forever waiting for an activation block that a
+# bug fix has no reason to declare.
 MECHANISM_VERSION: Final[str] = "0.1.2"
 DEFAULT_NETUID: Final[int] = 92
 GENESIS_BLOCK: Final[int] = 0
@@ -170,7 +181,7 @@ RELEASE_CHANNELS: Final[tuple[str, ...]] = ("stable", "prerelease")
 RELEASE_SIGNING_KEY: Final[str] = (
     "0x3d8ea239db66637d762ffedf71ad6c0c487c7bc73d5a50d9dd86a0fbc22bdb16"
 )
-UPDATE_POLL_SECONDS: Final[int] = 900
+UPDATE_POLL_SECONDS: Final[int] = 300
 UPDATE_HTTP_TIMEOUT_SECONDS: Final[int] = 60
 UPDATE_MAX_ASSET_BYTES: Final[int] = 64 * 1024**2
 

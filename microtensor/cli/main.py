@@ -10,7 +10,7 @@ from microtensor.cli import miner as miner_cmd
 from microtensor.cli import update as update_cmd
 from microtensor.cli import validator as validator_cmd
 from microtensor.cli.common import configure_logging
-from microtensor.core.constants import MECHANISM_VERSION
+from microtensor.core.constants import MECHANISM_VERSION, RELEASE_VERSION
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,7 +18,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="mt",
         description="Microtensor subnet: package, publish, evaluate and settle.",
     )
-    parser.add_argument("--version", action="version", version=f"microtensor {MECHANISM_VERSION}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"microtensor {RELEASE_VERSION} (mechanism {MECHANISM_VERSION})",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     validator_cmd.register(subparsers)

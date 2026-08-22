@@ -40,15 +40,16 @@ jobs:
         run: |
           python - <<'PY'
           import os, re, sys
-          from microtensor.core.constants import MECHANISM_VERSION
+          from microtensor.core.constants import MECHANISM_VERSION, RELEASE_VERSION
           tag = os.environ["GITHUB_REF_NAME"]
           version = re.sub(r"^(?:[a-z]+-)?v", "", tag)
-          if version != MECHANISM_VERSION:
+          if version != RELEASE_VERSION:
               sys.exit(
-                  f"tag {tag} claims {version} but MECHANISM_VERSION is {MECHANISM_VERSION}; "
-                  "validators derive version_key from the constant, not the tag"
+                  f"tag {tag} claims {version} but RELEASE_VERSION is {RELEASE_VERSION}; "
+                  "an updater compares the tag against that constant"
               )
-          print(f"tag {tag} matches MECHANISM_VERSION {MECHANISM_VERSION}")
+          print(f"tag {tag} matches RELEASE_VERSION {RELEASE_VERSION}")
+          print(f"mechanism stays {MECHANISM_VERSION}")
           PY
 
       - name: Refuse artifacts that disagree with the tag
@@ -60,7 +61,7 @@ jobs:
           import subprocess, sys
           from pathlib import Path
 
-          from microtensor.core.constants import MECHANISM_VERSION
+          from microtensor.core.constants import RELEASE_VERSION
 
           subprocess.run([sys.executable, "-m", "build", "--wheel"], check=True)
           built = sorted(Path("dist").glob("*.whl"))
@@ -68,12 +69,12 @@ jobs:
               sys.exit("nothing was built")
           for wheel in built:
               version = wheel.name.split("-")[1]
-              if version != MECHANISM_VERSION:
+              if version != RELEASE_VERSION:
                   sys.exit(
-                      f"{wheel.name} packages {version} but MECHANISM_VERSION is "
-                      f"{MECHANISM_VERSION}; pip would see a release that never moves"
+                      f"{wheel.name} packages {version} but RELEASE_VERSION is "
+                      f"{RELEASE_VERSION}; pip would see a release that never moves"
                   )
-              print(f"{wheel.name} packages {MECHANISM_VERSION}")
+              print(f"{wheel.name} packages {RELEASE_VERSION}")
           PY
 
       - name: Build the wheel
