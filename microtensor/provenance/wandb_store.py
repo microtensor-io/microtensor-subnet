@@ -43,8 +43,8 @@ def credentials_present() -> bool:
         settings = getattr(found, "settings", None)
         if getattr(settings, "api_key", ""):
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("wandb setup did not resolve a key: %s", exc)
 
     # netrc directly, because `wandb login` writes there and asking the sdk
     # what it resolved did not surface it. Reading the file the documented
