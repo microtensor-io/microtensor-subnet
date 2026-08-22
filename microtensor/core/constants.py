@@ -4,7 +4,7 @@ from typing import Final
 
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
-RELEASE_VERSION: Final[str] = "0.1.5"
+RELEASE_VERSION: Final[str] = "0.1.6"
 
 # What the rules are. Moves only when admission or scoring changes, because
 # validators on different values here measure the same round differently, and

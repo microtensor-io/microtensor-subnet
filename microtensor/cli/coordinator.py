@@ -32,6 +32,7 @@ from microtensor.core.constants import (
     COORDINATOR_REPLICATION,
     COORDINATOR_SERVER_URL,
     CORPUS_VERSION,
+    PUBLIC_SERVER_URL,
     WEIGHT_INTERVAL_SECONDS,
 )
 from microtensor.core.role import COORDINATOR, RoleConflict, claim, require
@@ -305,6 +306,11 @@ def _add_server_arguments(parser: argparse.ArgumentParser) -> None:
         help="ingest credential issued by the control plane",
     )
     parser.add_argument(
+        "--public-server",
+        default=os.environ.get("MT_PUBLIC_SERVER_URL", PUBLIC_SERVER_URL),
+        help="public API base URL; the arena list is read from there, not the control plane",
+    )
+    parser.add_argument(
         "--no-server",
         action="store_true",
         help="ignore a configured control plane and derive everything from chain",
@@ -320,7 +326,11 @@ def _server(args: argparse.Namespace) -> ServerClient | None:
     url = getattr(args, "server", "") or ""
     if not url or getattr(args, "no_server", False):
         return None
-    return ServerClient(base_url=url, credential=getattr(args, "server_credential", "") or "")
+    return ServerClient(
+        base_url=url,
+        credential=getattr(args, "server_credential", "") or "",
+        public_url=getattr(args, "public_server", "") or PUBLIC_SERVER_URL,
+    )
 
 
 def _open(args: argparse.Namespace) -> int:

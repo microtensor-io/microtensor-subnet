@@ -14,6 +14,7 @@ from microtensor.chain.rounds import Round
 from microtensor.coordinator.assign import System, Worker
 from microtensor.coordinator.chain import ChainSource
 from microtensor.coordinator.settle import Entry, Settlement
+from microtensor.core.constants import PUBLIC_SERVER_URL
 
 log = logging.getLogger("microtensor.coordinator")
 
@@ -49,11 +50,26 @@ class ServerClient:
     timeout: int = 30
     retries: int = 3
     backoff: float = 2.0
+    # The public surface, which is a different plane and often a different
+    # host. The arena list lives there by design: a miner has to be able to
+    # read what they may build from, and a coordinator anchoring a different
+    # list from the one miners can see would admit nothing they submitted.
+    # The control surface serves no arena list at all, so pointing one url at
+    # both meant the allowlist never reached the anchored config.
+    public_url: str = PUBLIC_SERVER_URL
 
-    def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
-        url = self.base_url.rstrip("/") + path
+    def _call(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        public: bool = False,
+    ) -> Any:
+        base = self.public_url if public else self.base_url
+        url = base.rstrip("/") + path
         if urllib.parse.urlparse(url).scheme not in ("http", "https"):
-            raise ValueError(f"{BAD_SCHEME}: {self.base_url!r}")
+            raise ValueError(f"{BAD_SCHEME}: {base!r}")
 
         raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode() if body else b""
         headers = {"content-type": "application/json", "accept": "application/json"}
@@ -146,7 +162,7 @@ class ServerClient:
         here; served_config stamps the default once, so the anchored document
         carries one number and every worker reads that one.
         """
-        answer = self._call("GET", "/v1/arenas") or {}
+        answer = self._call("GET", "/v1/arenas", public=True) or {}
         out: dict[str, dict[str, Any]] = {}
         for arena in answer.get("arenas", []):
             track = str(arena.get("track", ""))
