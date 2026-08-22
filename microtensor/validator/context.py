@@ -10,9 +10,9 @@ from microtensor.chain.config import ChainConfig
 from microtensor.core.constants import (
     ARTIFACT_CACHE_CAP_BYTES,
     CORPUS_VERSION,
+    CPU_SECONDS_PER_ARTIFACT,
     GENESIS_BLOCK,
     ROUND_BLOCKS,
-    CPU_SECONDS_PER_ARTIFACT,
     TASKS_PER_ROUND,
 )
 from microtensor.core.readiness import unenforced
