@@ -13,7 +13,7 @@ Netuid **92** on finney.
 | GPU | none |
 | Network | 1 Gbps, 500 GB to 1 TB monthly transfer |
 | Uptime | continuous. Weights are submitted every 300 blocks (about 60 min); a full measurement round completes every 7200 blocks (about 24 h) |
-| Credentials | a W&B read key for `microtensor/training-runs` |
+| Credentials | any W&B account (`wandb login`); no key is issued by us |
 
 ## 1. Install
 
@@ -47,17 +47,22 @@ Weights are only counted if your hotkey holds a validator permit.
 export MT_NETWORK=finney
 export MT_WALLET_NAME=<coldkey>
 export MT_WALLET_HOTKEY=<hotkey>
-export MT_HOME=~/.microtensor
-export WANDB_API_KEY=<read key>
+export MT_COORDINATOR_URL=https://coordinator.microtensor.cloud
 ```
 
-`MT_NETUID` defaults to 92. The coordinator and control plane default to
-`https://coordinator.microtensor.cloud` and `https://api.microtensor.cloud`;
-override with `MT_COORDINATOR_URL` and `MT_SERVER_URL`.
+`MT_NETUID` defaults to 92. Flags override environment; `--coordinator` and
+`MT_COORDINATOR_URL` are the same setting.
 
-`WANDB_API_KEY` is required. Every submission carries a public training run in
-`microtensor/training-runs` bound to its artifact digest, and a validator that
-cannot read that project admits nobody. A read key is enough.
+W&B credentials are required, from **any** W&B account — we issue nothing:
+
+```bash
+wandb login
+```
+
+`wandb login` writes `~/.netrc` and that is enough; `WANDB_API_KEY` works too.
+Every submission carries a public training run in `microtensor/training-runs`
+bound to its artifact digest, and a validator that cannot read that project
+admits nobody. The project is world-readable, so any valid key can.
 
 ## 4. Corpus
 
@@ -115,10 +120,46 @@ mt validator run
 Coordinated (measures an assigned subset, adopts a settlement it recomputes):
 
 ```bash
-mt validator run --coordinator https://coordinator.microtensor.cloud
+mt validator run --coordinator https://coordinator.microtensor.cloud --auto-update
 ```
 
-Pass `--standalone` to ignore a configured coordinator.
+To run standalone, leave `--coordinator` unset and `MT_COORDINATOR_URL` empty.
+`--auto-update` installs signed releases between rounds and exits for the
+supervisor to restart it, so only use it under systemd or docker — backgrounded
+in a shell, the first update leaves it down.
+
+## What the logs show
+
+Startup, in order — each line is a stage completing:
+
+```
+training run store reachable at microtensor/training-runs
+Enabling default logging (Warning level)        ← bittensor, during wallet load
+taking assignments from the coordinator at …    ← metagraph fetched, hotkey checked
+validator up on netuid 92 across N competitions
+round 1236 open: 5400 blocks until submissions close
+```
+
+The metagraph fetch between the second and third lines takes a minute or two
+and prints nothing. It is not stuck.
+
+**The long wait is normal.** A round is 7200 blocks — about 24 hours — and a
+validator acts when the round closes, not before. Until then it repeats
+`round N open: M blocks until submissions close` every few minutes, refreshing
+weights on the way. A silent process here is a broken one; a chatty one
+counting down blocks is healthy.
+
+Before an arena is live there is nothing to measure, and the round settles on
+the reserved hold. The validator fetches that settlement, recomputes it,
+checks the reserved uid against its own metagraph, and submits the same
+weights the coordinator would — verified rather than relayed. You still set
+weights every round from day one.
+
+`no corpus served yet; waiting for an arena to go live` is likewise a wait,
+not a fault, and is rechecked every round.
+
+Versions before 0.1.10 lost every log line after wallet load — bittensor
+resets the root logger to WARNING. Upgrade rather than debug the silence.
 
 ### systemd
 
