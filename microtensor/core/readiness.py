@@ -52,12 +52,22 @@ class Served:
 
     configured: bool = False
     reachable: bool = False
+    # Whether the coordinator responded at all. Separate from `reachable`,
+    # which means it responded *with a config*. A coordinator with no round
+    # open answers 200 with an empty body, and reading that as silence sends
+    # an operator to debug a healthy service.
+    answered: bool = False
     arenas: Mapping[str, Sequence[str]] = field(default_factory=dict)
     role_baselines: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def unknown(self) -> bool:
         return self.configured and not self.reachable
+
+    @property
+    def idle(self) -> bool:
+        """Answered, but publishing nothing to read yet."""
+        return self.configured and self.answered and not self.reachable
 
     @classmethod
     def local(cls) -> Served:
@@ -66,6 +76,11 @@ class Served:
     @classmethod
     def unreachable(cls) -> Served:
         return cls(configured=True, reachable=False)
+
+    @classmethod
+    def silent(cls) -> Served:
+        """Reachable, with no round open, so no config is served."""
+        return cls(configured=True, answered=True, reachable=False)
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> Served:
@@ -77,7 +92,13 @@ class Served:
             str(role): str(digest)
             for role, digest in dict(config.get("role_baselines", {})).items()
         }
-        return cls(configured=True, reachable=True, arenas=arenas, role_baselines=baselines)
+        return cls(
+            configured=True,
+            answered=True,
+            reachable=True,
+            arenas=arenas,
+            role_baselines=baselines,
+        )
 
 
 def launch_classes() -> tuple[str, ...]:
@@ -109,10 +130,17 @@ def _base_model_gates(
                 ready=False,
                 posture=UNKNOWN,
                 detail=(
-                    "a coordinator is configured but did not answer, so this host "
-                    "cannot tell what is admissible"
+                    "the coordinator answered but has no round open, so it is not "
+                    "serving a config to read"
+                    if served.idle
+                    else "a coordinator is configured but did not answer, so this "
+                    "host cannot tell what is admissible"
                 ),
-                fix="reach the coordinator, or check readiness where it is reachable",
+                fix=(
+                    "open a round, or check readiness once one is open"
+                    if served.idle
+                    else "reach the coordinator, or check readiness where it is reachable"
+                ),
             )
         ]
 
@@ -284,10 +312,17 @@ def _baseline_gates(served: Served | None = None) -> list[Gate]:
                 ready=False,
                 posture=UNKNOWN,
                 detail=(
-                    "a coordinator is configured but did not answer, so this host "
-                    "cannot tell whether a baseline is published"
+                    "the coordinator answered but has no round open, so it is not "
+                    "serving a config to read"
+                    if served.idle
+                    else "a coordinator is configured but did not answer, so this "
+                    "host cannot tell whether a baseline is published"
                 ),
-                fix="reach the coordinator, or check readiness where it is reachable",
+                fix=(
+                    "open a round, or check readiness once one is open"
+                    if served.idle
+                    else "reach the coordinator, or check readiness where it is reachable"
+                ),
             )
             for role in sorted(ROLE_BASELINES)
         ]

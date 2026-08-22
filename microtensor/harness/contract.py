@@ -92,9 +92,15 @@ class Engine(Protocol):
 class EngineInfo:
     format: ArtifactFormat
     name: str
+    # This adapter's own version, not the library's. The two were printed as
+    # one string, so `mt inspect engines` read "llama-cpp 0.2.0" while the
+    # pinned dependency was 0.3.35 — and the library version is exactly what
+    # decides which architectures load at all.
     version: str
     deterministic: bool
     notes: str = ""
+    # The installed library, resolved when asked rather than written down.
+    runtime: str = ""
 
 
 def batch(requests: Sequence[Request], engine: Engine) -> list[Response]:

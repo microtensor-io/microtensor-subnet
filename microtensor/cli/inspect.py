@@ -107,8 +107,14 @@ def _engines(args: argparse.Namespace) -> int:
         print("no engine is available; this host cannot score a round")
     for fmt in formats:
         info = describe(fmt)
-        detail = f"{info.name} {info.version} — {info.notes}" if info else "registered"
-        print(f"{fmt.value:<14}{detail}")
+        if info is None:
+            print(f"{fmt.value:<14}registered")
+            continue
+        # The library first, because it is the one that decides whether an
+        # artifact loads at all, and the adapter version after it so the two
+        # can never be read as one number again.
+        library = f"{info.name} {info.runtime}" if info.runtime else f"{info.name} (not installed)"
+        print(f"{fmt.value:<14}{library}  [adapter {info.version}]  {info.notes}")
     print(f"\nsandbox     {'enforced' if sandbox_available() else 'UNAVAILABLE on this host'}")
     return 0 if formats else 1
 
@@ -131,9 +137,15 @@ def _served(url: str) -> Served:
         current = client.current_round()
     except CoordinatorUnreachable:
         return Served.unreachable()
+
+    # An empty body is a 200. The coordinator publishes the config alongside
+    # an open round, so between rounds it answers with nothing to read, and
+    # calling that silence sends an operator to debug a healthy service.
     if not current:
-        return Served.unreachable()
-    return Served.from_config(dict(current.get("config", {})))
+        return Served.silent()
+
+    config = dict(current.get("config", {}))
+    return Served.from_config(config) if config else Served.silent()
 
 
 def _readiness(args: argparse.Namespace) -> int:

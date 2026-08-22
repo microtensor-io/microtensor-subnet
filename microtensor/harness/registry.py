@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import replace
+from typing import Final
 
 from microtensor.core.protocol import ArtifactFormat
 from microtensor.harness.contract import Engine, EngineError, EngineInfo
@@ -50,8 +52,40 @@ def available() -> tuple[ArtifactFormat, ...]:
     return tuple(sorted(_FACTORIES, key=lambda f: f.value))
 
 
+# The distribution behind each engine. Named here because the import name and
+# the package name differ, and the package name is what an operator installs
+# and what a bug report needs to quote.
+RUNTIME_PACKAGES: Final[dict[str, str]] = {
+    "llama-cpp": "llama-cpp-python",
+    "onnxruntime": "onnxruntime",
+}
+
+
+def runtime_version(name: str) -> str:
+    """The installed version of the library behind an engine, or nothing.
+
+    Absent is a real answer: the reference engine has no library behind it,
+    and an engine can be registered on a host where its package is not
+    importable. Reporting an empty string beats reporting a stale literal.
+    """
+    package = RUNTIME_PACKAGES.get(name)
+    if package is None:
+        return ""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:
+        return ""
+    try:
+        return str(version(package))
+    except PackageNotFoundError:
+        return ""
+
+
 def describe(fmt: ArtifactFormat) -> EngineInfo | None:
-    return _INFO.get(fmt)
+    found = _INFO.get(fmt)
+    if found is None:
+        return None
+    return replace(found, runtime=runtime_version(found.name))
 
 
 def engine_for(fmt: ArtifactFormat) -> Engine:
