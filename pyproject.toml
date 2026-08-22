@@ -116,6 +116,23 @@ module = [
 ]
 ignore_missing_imports = true
 
+# Opaque whether or not it is installed. ignore_missing_imports only applies
+# when a module is absent, so mypy saw bittensor as Any on a developer machine
+# without it and followed the real package in CI, and the two disagreed about
+# which ignores were needed. bittensor also exposes much of its surface through
+# a module __getattr__, so static checking of it is unreliable in any case.
+# Skipping makes both environments agree instead of one of them being right by
+# accident.
+[[tool.mypy.overrides]]
+module = [
+    "bittensor",
+    "bittensor.*",
+    "bittensor_wallet",
+    "bittensor_wallet.*",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+
 [[tool.mypy.overrides]]
 module = ["microtensor.coordinator.api"]
 disallow_untyped_decorators = false
