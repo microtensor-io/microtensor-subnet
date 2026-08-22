@@ -29,30 +29,10 @@ def configure_logging(level: str = "INFO") -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("botocore").setLevel(logging.WARNING)
 
-    # Own handler, no propagation. bittensor reconfigures the root logger to
-    # WARNING when a wallet loads, which silently swallowed every INFO line
-    # after startup: a validator waiting hours for a round close looked hung.
     reclaim_logging()
 
 
 def reclaim_logging() -> None:
-    """Undo what bittensor does to process-wide logging.
-
-    bittensor silences us three separate ways, and clearing one is not enough:
-
-    1. It raises the global logging.disable() threshold, which gates every
-       logger in the process regardless of handler or level.
-    2. When it enables its own default logging it walks every logger that
-       already exists and sets each one to CRITICAL. Our module loggers are
-       created at import, so each is pinned individually. Restoring the parent
-       does nothing, because a child's own level wins over the parent's.
-    3. It can leave our handler detached.
-
-    Only the first was being undone, which is why this looked correct and
-    changed nothing. Cheap enough to call on every poll, and it has to be,
-    because bittensor re-runs that sweep whenever it re-enters its default
-    state, not only at startup.
-    """
     logging.disable(logging.NOTSET)
 
     ours = logging.getLogger(ROOT_LOGGER)

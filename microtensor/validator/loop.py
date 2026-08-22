@@ -114,10 +114,6 @@ class RoundLoop:
 
         while self._running:
             block = self.context.client.block()
-            # Every chain call can send bittensor back through its default
-            # logging state, which re-silences our loggers. Reclaiming once at
-            # startup is not enough: this is the loop an operator watches for
-            # hours, and it is the one that went quiet.
             reclaim_logging()
             if block >= round_.close_block:
                 return

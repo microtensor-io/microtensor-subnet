@@ -26,6 +26,11 @@ from microtensor.core.constants import (
     REPORT_MAX_BYTES,
 )
 
+try:
+    from fastapi import FastAPI, HTTPException, Request
+except ImportError:
+    FastAPI = HTTPException = Request = None  # type: ignore[assignment,misc]
+
 log = logging.getLogger("microtensor.coordinator")
 
 SIGNATURE_HEADER = "x-mt-signature"
@@ -533,14 +538,10 @@ class Coordinator:
 
 
 def build_app(coordinator: Coordinator) -> Any:
-    """The HTTP surface. FastAPI is imported here so the module stays usable,
-    and testable, on a host that has no web stack installed."""
-    try:
-        from fastapi import FastAPI, HTTPException, Request
-    except ImportError as exc:  # pragma: no cover - exercised by the extra
+    if FastAPI is None:
         raise RuntimeError(
             'the coordinator API needs the web stack: pip install ".[coordinator]"'
-        ) from exc
+        )
 
     app = FastAPI(title="Microtensor coordinator", version="1")
 
