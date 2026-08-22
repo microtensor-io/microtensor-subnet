@@ -19,7 +19,31 @@ MAX_CANDIDATES = 25
 
 
 def credentials_present() -> bool:
-    return bool(os.environ.get(API_KEY_ENV, "").strip())
+    """Whether wandb can find credentials, by any route it accepts.
+
+    Not only the environment variable. `wandb login` writes a netrc entry and
+    the sdk reads env, netrc and its own config in turn, so testing the
+    variable alone told a validator that had logged in the documented way
+    that the store was unreachable. Under PROVENANCE_REQUIRED that is fatal,
+    which made a correctly configured host look like a broken one.
+
+    Asking the sdk rather than reimplementing its search order, because the
+    order is its business and a second copy of it would drift.
+    """
+    if os.environ.get(API_KEY_ENV, "").strip():
+        return True
+
+    try:
+        import wandb
+    except ImportError:
+        return False
+
+    try:
+        found = wandb.setup()
+        settings = getattr(found, "settings", None)
+        return bool(getattr(settings, "api_key", "") or "")
+    except Exception:
+        return False
 
 
 def _api() -> Any:
@@ -30,15 +54,13 @@ def _api() -> Any:
             'wandb is required to read training runs; pip install ".[provenance]"'
         ) from exc
 
-    if not credentials_present():
-        raise ProvenanceUnavailable(
-            f"{API_KEY_ENV} is not set; a validator cannot read the run store without it"
-        )
-
     try:
         return wandb.Api(timeout=30)
     except Exception as exc:
-        raise ProvenanceUnavailable(f"the run store rejected our credentials: {exc}") from exc
+        raise ProvenanceUnavailable(
+            f"the run store rejected our credentials: {exc}; set {API_KEY_ENV} or "
+            "run wandb login"
+        ) from exc
 
 
 class WandbStore:

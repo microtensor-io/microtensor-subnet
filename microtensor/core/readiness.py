@@ -237,8 +237,8 @@ def _provenance_gate(probe: bool = False) -> Gate:
             name="training provenance",
             ready=False,
             posture=CLOSED,
-            detail=f"required against {where}, but WANDB_API_KEY is unset so rounds abstain",
-            fix="export WANDB_API_KEY with read access to the project",
+            detail=f"required against {where}, but no wandb credentials so rounds abstain",
+            fix="export WANDB_API_KEY with read access to the project, or run wandb login",
         )
 
     # Credentials present is not the same as a store that answers. Reporting
