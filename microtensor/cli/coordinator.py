@@ -126,21 +126,73 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     status.set_defaults(handler=_status)
 
 
-def _corpora(args: argparse.Namespace) -> dict[str, Any]:
+def _corpora(args: argparse.Namespace, server: ServerClient | None = None) -> dict[str, Any]:
     """The corpus this coordinator serves to its workers.
 
-    Absent is allowed and logged rather than fatal: a coordinator with no corpus
-    yet still schedules rounds, and its workers fall back to their own until it
-    has one.
+    A directory when one is given, because a local file is an explicit
+    instruction. Otherwise the control plane, which is where a corpus is
+    uploaded, checked and published, and which holds the scored partitions
+    that never appear on the public split.
+
+    Absent is allowed and logged rather than fatal: a coordinator with no
+    corpus yet still schedules rounds, and its workers fall back to their own
+    until it has one.
     """
     from microtensor.tasks.corpus import CorpusError, load_all
 
-    root = getattr(args, "corpus", None) or (_home(args) / "corpus")
+    explicit = getattr(args, "corpus", None)
+    root = Path(explicit) if explicit else (_home(args) / "corpus")
     try:
-        return dict(load_all(Path(root), CORPUS_VERSION))
+        found = dict(load_all(root, CORPUS_VERSION))
+        if found:
+            log.info("serving %d corpora from %s", len(found), root)
+            return found
     except (CorpusError, OSError) as exc:
-        log.warning("no corpus is being served to workers (%s)", exc)
+        log.info("no corpus on disk at %s (%s)", root, exc)
+
+    if explicit or server is None:
+        log.warning("no corpus is being served to workers")
         return {}
+
+    return _corpora_from_server(server)
+
+
+def _corpora_from_server(server: ServerClient) -> dict[str, Any]:
+    """Every published corpus the configured arenas name.
+
+    Keyed by track, because that is how a worker asks for one. An arena that
+    names a version the control plane cannot serve is logged and skipped
+    rather than failing the others: one unpublished corpus should not stop a
+    coordinator serving the arenas that are ready.
+    """
+    from microtensor.validator.corpus import parse
+
+    try:
+        arenas = server.arenas()
+    except (ServerUnreachable, ServerRefused) as exc:
+        log.warning("the arena list could not be read, so no corpus is served (%s)", exc)
+        return {}
+
+    versions = sorted(
+        {str(a.get("corpus_version", "")) for a in arenas.values() if a.get("corpus_version")}
+    )
+    found: dict[str, Any] = {}
+    for version in versions:
+        try:
+            served = server.corpus(version)
+        except (ServerUnreachable, ServerRefused) as exc:
+            log.warning("corpus %s could not be read (%s)", version, exc)
+            continue
+        if not served or not served.get("track"):
+            log.warning("corpus %s is not published, so it is not being served", version)
+            continue
+        found[str(served["track"])] = parse(served)
+
+    if found:
+        log.info("serving %d corpora from the control plane: %s", len(found), sorted(found))
+    else:
+        log.warning("no corpus is being served to workers")
+    return found
 
 
 def _home(args: argparse.Namespace) -> Path:
@@ -492,7 +544,7 @@ def _settle(args: argparse.Namespace) -> int:
             store=store,
             registry=Registry({}),
             corpus_version=CORPUS_VERSION,
-            corpora=_corpora(args),
+            corpora=_corpora(args, server),
             catalogue=store.catalogue(args.round),
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
@@ -690,7 +742,7 @@ def _serve(args: argparse.Namespace) -> int:
             registry=Registry({}),
             keyring=keyring,
             corpus_version=CORPUS_VERSION,
-            corpora=_corpora(args),
+            corpora=_corpora(args, server),
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
             mirror_report=server.push_reports if server is not None else None,

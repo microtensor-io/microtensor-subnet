@@ -154,7 +154,8 @@ class ServerClient:
             if not track or not hardware_class:
                 continue
             block: dict[str, Any] = {
-                "allowed_base_models": list(arena.get("allowed_base_models", []))
+                "allowed_base_models": list(arena.get("allowed_base_models", [])),
+                "corpus_version": str(arena.get("corpus_version", "")),
             }
             for field_name in ("cpu_seconds_per_artifact", "tasks_per_round"):
                 value = arena.get(field_name)
@@ -162,6 +163,17 @@ class ServerClient:
                     block[field_name] = value
             out[f"{track}/{hardware_class}"] = block
         return out
+
+    def corpus(self, version: str) -> dict[str, Any]:
+        """The scored partitions and their hidden tests, for one corpus version.
+
+        Read from the control surface, not the public one. The public split is
+        the train partition alone, by design: a hidden test that reaches it
+        stops being hidden. A coordinator serving that to its workers would
+        have them measure on the tasks miners train against.
+        """
+        found = self._call("GET", f"/v1/control/corpus/{version}")
+        return dict(found) if found else {}
 
     def milestone(self, track: str, hardware_class: str) -> dict[str, Any]:
         query = urllib.parse.urlencode({"track": track, "hardware_class": hardware_class})
