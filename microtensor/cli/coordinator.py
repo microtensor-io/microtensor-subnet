@@ -53,6 +53,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     serve = inner.add_parser("serve", help="serve the coordinator API")
     serve.add_argument("--corpus", type=Path, help="directory of <track>.jsonl corpora to serve")
+    add_chain_arguments(serve)
     add_common_arguments(serve)
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=COORDINATOR_PORT)
