@@ -11,7 +11,13 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 
 dependencies = [
-    "bittensor>=9.0.0,<12",
+    # Capped below 11 because the chain client is not adapted to it. bittensor
+    # 11 dropped the flat Subtensor methods for lazily-constructed namespaces;
+    # the metagraph read handles both, block reads and set_weights do not. The
+    # ceiling was <12, so a fresh install resolved to 11.1.0 and every miner
+    # hit AttributeError on the first block read. Raise this when the three
+    # remaining call sites are adapted and verified against 11.
+    "bittensor>=9.0.0,<11",
     # Declared rather than leaned on through bittensor: this is what checks a
     # release signature before auto-update runs the code, and a security check
     # should not rest on another package's dependency list.

@@ -23,6 +23,17 @@ class ChainError(RuntimeError):
     pass
 
 
+# Named once, because three call sites hit it and a bare AttributeError from
+# inside a retry wrapper tells a validator nothing about what to do. The
+# dependency ceiling keeps a fresh install off 11; this is for a host that
+# already had it.
+UNADAPTED = (
+    "this bittensor build exposes no {what}; microtensor supports bittensor "
+    "9.x and 10.x, and 11 moved these onto namespaces the chain client does "
+    "not use yet"
+)
+
+
 @runtime_checkable
 class ChainClient(Protocol):
     @property
@@ -108,10 +119,26 @@ class SubtensorClient:
         )
 
     def block(self) -> int:
-        return int(with_retry("get_current_block", self.subtensor.get_current_block))
+        """The current block, from whichever surface this build exposes.
+
+        bittensor 11 dropped get_current_block but kept `block` as a property,
+        so both are tried for the same reason the metagraph read tries both.
+        """
+        reader = getattr(self.subtensor, "get_current_block", None)
+        if callable(reader):
+            return int(with_retry("get_current_block", reader))
+
+        carried = getattr(self.subtensor, "block", None)
+        if isinstance(carried, int):
+            return int(carried)
+
+        raise ChainError(UNADAPTED.format(what="block reader"))
 
     def block_hash(self, block: int) -> str:
-        return str(with_retry("get_block_hash", lambda: self.subtensor.get_block_hash(block)))
+        reader = getattr(self.subtensor, "get_block_hash", None)
+        if not callable(reader):
+            raise ChainError(UNADAPTED.format(what="block hash reader"))
+        return str(with_retry("get_block_hash", lambda: reader(block)))
 
     def snapshot(self, *, refresh: bool = False) -> MetagraphSnapshot:
         age = time.monotonic() - self._cached_at
@@ -246,7 +273,10 @@ class SubtensorClient:
             return submitted
 
         def call() -> Any:
-            return self.subtensor.set_weights(
+            writer = getattr(self.subtensor, "set_weights", None)
+            if not callable(writer):
+                raise ChainError(UNADAPTED.format(what="set_weights"))
+            return writer(
                 wallet=self.wallet,
                 netuid=self._config.netuid,
                 uids=uids,
