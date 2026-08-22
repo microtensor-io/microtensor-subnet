@@ -786,7 +786,12 @@ def _serve(args: argparse.Namespace) -> int:
     except ImportError:
         return fail('the API needs the web stack: pip install ".[coordinator]"')
 
-    from microtensor.cli.common import chain_config, open_client, open_wallet
+    from microtensor.cli.common import (
+        chain_config,
+        open_client,
+        open_wallet,
+        reclaim_logging,
+    )
     from microtensor.coordinator.api import build_app
 
     with _store(args) as store:
@@ -802,6 +807,7 @@ def _serve(args: argparse.Namespace) -> int:
 
         chain = chain_config(args)
         client = open_client(chain, open_wallet(chain, required=False))
+        reclaim_logging()
         try:
             permitted = _permitted(client)
         except Exception as exc:
