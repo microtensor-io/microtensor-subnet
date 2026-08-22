@@ -47,7 +47,14 @@ def load_wallet(config: ChainConfig) -> Any:
     kwargs: dict[str, Any] = {"name": config.wallet_name, "hotkey": config.wallet_hotkey}
     if config.wallet_path:
         kwargs["path"] = config.wallet_path
-    wallet = bittensor.wallet(**kwargs)
+    # bittensor 10 dropped the lowercase module aliases and kept only the
+    # classes, so the name that worked on 9 raises AttributeError on 10. The
+    # subtensor factory in chain/client.py already picks whichever exists;
+    # this path did not, and it is the one every wallet-using command needs.
+    factory = getattr(bittensor, "wallet", None) or getattr(bittensor, "Wallet", None)
+    if factory is None:
+        raise WalletError("this bittensor build exposes no wallet class")
+    wallet = factory(**kwargs)
     try:
         _ = wallet.hotkey.ss58_address
     except Exception as exc:

@@ -68,7 +68,10 @@ def serve(daemon: Any, port: int = DEFAULT_PORT, wallet: Any = None) -> Any:
             setattr(synapse, key, value)
         return synapse
 
-    axon = bt.axon(wallet=wallet, port=port)
+    serve_axon = getattr(bt, "axon", None) or getattr(bt, "Axon", None)
+    if serve_axon is None:
+        raise AxonUnavailable("this bittensor build exposes no axon class")
+    axon = serve_axon(wallet=wallet, port=port)
     axon.attach(forward_fn=answer)
     axon.start()
     log.info("serving training status on port %d", port)
