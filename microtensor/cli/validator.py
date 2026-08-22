@@ -211,17 +211,32 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
         coordinator_url=args.coordinator,
     )
 
+    log.info(
+        "wallet %s/%s on %s, netuid %d",
+        chain.wallet_name,
+        chain.wallet_hotkey,
+        chain.network,
+        chain.netuid,
+    )
     wallet = open_wallet(chain, required=not args.dry_run)
     client = open_client(chain, wallet)
     reclaim_logging()
     hotkey = hotkey_address(wallet) if wallet is not None else ""
+    if hotkey:
+        log.info("hotkey %s", hotkey)
 
+    log.info(
+        "fetching the metagraph from %s; the first fetch can take a few minutes", chain.network
+    )
     snapshot = client.snapshot()
     reclaim_logging()
+    log.info("metagraph: %d neurons at block %d", len(snapshot), snapshot.block)
     if hotkey and not snapshot.is_registered(hotkey):
         raise SystemExit(f"hotkey {hotkey} is not registered on netuid {chain.netuid}")
     if hotkey and not snapshot.has_permit(hotkey):
         log.warning("hotkey %s holds no validator permit; weights may be ignored", hotkey)
+    elif hotkey:
+        log.info("registered with a validator permit")
 
     coordinator = None
     if config.coordinated:
