@@ -18,14 +18,20 @@ def default_home() -> Path:
 
 
 def configure_logging(level: str = "INFO") -> None:
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format=LOG_FORMAT,
-        datefmt="%H:%M:%S",
-        stream=sys.stderr,
-    )
+    resolved = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(level=resolved, format=LOG_FORMAT, datefmt="%H:%M:%S", stream=sys.stderr)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("botocore").setLevel(logging.WARNING)
+
+    # Own handler, no propagation. bittensor reconfigures the root logger to
+    # WARNING when a wallet loads, which silently swallowed every INFO line
+    # after startup: a validator waiting hours for a round close looked hung.
+    ours = logging.getLogger("microtensor")
+    ours.setLevel(resolved)
+    ours.propagate = False
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%H:%M:%S"))
+    ours.addHandler(handler)
 
 
 def add_chain_arguments(parser: argparse.ArgumentParser) -> None:
