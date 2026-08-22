@@ -59,6 +59,12 @@ class JailResult:
     # other failure, because a crash mid-task proves nothing about the tasks
     # around it, while a cpu budget running out says only "no further".
     partial: tuple[Any, ...] = ()
+    # Whether the cpu budget is what stopped this run. Not the same as being
+    # killed by a signal: the SIGXCPU handler catches the soft limit and exits
+    # cleanly so it can say what happened, which leaves a positive exit code
+    # behind. Asking "how did it die" instead of "what stopped it" made a
+    # working limit look like an absent one.
+    cpu_exhausted: bool = False
 
     @property
     def ok(self) -> bool:
@@ -239,6 +245,10 @@ def run_jailed(
             exit_code=None if timed_out else exit_code,
             sandboxed=sandboxed,
             cpu_budget=float(limits.cpu_seconds),
+            # The hard limit, where the kernel kills before the handler can
+            # speak. Attributed by usage rather than by signal number, the
+            # same way _died names the ceiling.
+            cpu_exhausted=not timed_out and consumed >= float(limits.cpu_seconds),
         )
 
     kind, value, cpu, rss, *rest = payload
@@ -253,6 +263,7 @@ def run_jailed(
             sandboxed=sandboxed,
             cpu_budget=float(limits.cpu_seconds),
             partial=tuple(rest[0]) if rest else (),
+            cpu_exhausted=True,
         )
 
     if kind == "ok":
@@ -335,8 +346,13 @@ def cpu_limit_binds(probe_seconds: int = 1, slack: float = 2.0) -> bool:
             rss_bytes=1 << 30,
         ),
     )
+    # Asks what stopped the run, not how it died. The soft limit is caught by
+    # the SIGXCPU handler so the worker can report the cause, and that exits
+    # with a positive code; requiring death by signal here reported a limit
+    # that binds exactly on budget as one that does not bind at all, and
+    # refused to start on any host where the handler is installed.
     return (
-        result.killed
+        result.cpu_exhausted
         and not result.timed_out
         and result.wall_seconds <= probe_seconds * slack + SPAWN_ALLOWANCE_SECONDS
     )
