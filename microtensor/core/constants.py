@@ -4,7 +4,7 @@ from typing import Final
 
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
-RELEASE_VERSION: Final[str] = "0.1.8"
+RELEASE_VERSION: Final[str] = "0.1.9"
 
 # What the rules are. Moves only when admission or scoring changes, because
 # validators on different values here measure the same round differently, and
@@ -97,7 +97,7 @@ COORDINATOR_SERVER_URL: Final[str] = ""
 # means this build cannot check that a served config is the one the chain was
 # told about, so a validator refuses the round rather than measuring against
 # ceilings nobody committed to.
-COORDINATOR_HOTKEY: Final[str] = ""
+COORDINATOR_HOTKEY: Final[str] = "5FeHbWK12HHMLY4AtnWkKk8jtQajhQZMLCenGd96Hhs4UJGc"
 PUBLIC_SERVER_URL: Final[str] = "https://api.microtensor.cloud"
 # The operator plane is bound to loopback on the server host, so the default
 # is what an operator reaches over an ssh tunnel rather than a public name.
