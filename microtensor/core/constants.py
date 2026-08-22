@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-MECHANISM_VERSION: Final[str] = "0.1.0"
+MECHANISM_VERSION: Final[str] = "0.1.1"
 DEFAULT_NETUID: Final[int] = 92
 GENESIS_BLOCK: Final[int] = 0
 
