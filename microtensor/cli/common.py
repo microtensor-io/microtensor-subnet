@@ -17,34 +17,56 @@ def default_home() -> Path:
     return Path(os.environ.get("MT_HOME", Path.home() / ".microtensor"))
 
 
+ROOT_LOGGER = "microtensor"
+
+_level = logging.INFO
+
+
 def configure_logging(level: str = "INFO") -> None:
-    resolved = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(level=resolved, format=LOG_FORMAT, datefmt="%H:%M:%S", stream=sys.stderr)
+    global _level
+    _level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(level=_level, format=LOG_FORMAT, datefmt="%H:%M:%S", stream=sys.stderr)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("botocore").setLevel(logging.WARNING)
 
     # Own handler, no propagation. bittensor reconfigures the root logger to
     # WARNING when a wallet loads, which silently swallowed every INFO line
     # after startup: a validator waiting hours for a round close looked hung.
-    ours = logging.getLogger("microtensor")
-    ours.setLevel(resolved)
+    reclaim_logging()
+
+
+def reclaim_logging() -> None:
+    """Undo what bittensor does to process-wide logging.
+
+    bittensor silences us three separate ways, and clearing one is not enough:
+
+    1. It raises the global logging.disable() threshold, which gates every
+       logger in the process regardless of handler or level.
+    2. When it enables its own default logging it walks every logger that
+       already exists and sets each one to CRITICAL. Our module loggers are
+       created at import, so each is pinned individually. Restoring the parent
+       does nothing, because a child's own level wins over the parent's.
+    3. It can leave our handler detached.
+
+    Only the first was being undone, which is why this looked correct and
+    changed nothing. Cheap enough to call on every poll, and it has to be,
+    because bittensor re-runs that sweep whenever it re-enters its default
+    state, not only at startup.
+    """
+    logging.disable(logging.NOTSET)
+
+    ours = logging.getLogger(ROOT_LOGGER)
+    ours.setLevel(_level)
     ours.propagate = False
     if not ours.handlers:
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%H:%M:%S"))
         ours.addHandler(handler)
 
-
-def reclaim_logging() -> None:
-    """Undo what bittensor does to process-wide logging.
-
-    A dedicated handler was not enough: bittensor also raises the global
-    logging.disable() threshold, which gates every logger in the process
-    regardless of handlers or levels. Called after anything that imports
-    bittensor, because a validator counting down a 24-hour round in silence
-    is indistinguishable from a hung one.
-    """
-    logging.disable(logging.NOTSET)
+    prefix = ROOT_LOGGER + "."
+    for name, logger in list(logging.Logger.manager.loggerDict.items()):
+        if name.startswith(prefix) and isinstance(logger, logging.Logger):
+            logger.setLevel(logging.NOTSET)
 
 
 def add_chain_arguments(parser: argparse.ArgumentParser) -> None:

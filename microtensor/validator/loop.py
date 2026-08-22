@@ -110,8 +110,15 @@ class RoundLoop:
             log.warning("weight refresh rejected at block %d: %s", block, reason)
 
     def wait_for_close(self, round_: Round) -> None:
+        from microtensor.cli.common import reclaim_logging
+
         while self._running:
             block = self.context.client.block()
+            # Every chain call can send bittensor back through its default
+            # logging state, which re-silences our loggers. Reclaiming once at
+            # startup is not enough: this is the loop an operator watches for
+            # hours, and it is the one that went quiet.
+            reclaim_logging()
             if block >= round_.close_block:
                 return
 
