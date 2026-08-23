@@ -259,17 +259,6 @@ def measured_weights(store: Any) -> dict[int, float]:
     return {int(uid): float(value) for uid, value in published.get("weights", {}).items()}
 
 
-def committed_weights(store: Any) -> dict[int, float]:
-    row = store.latest_round()
-    if row is None:
-        return {}
-    entries = store.catalogue(int(row["round_index"])) or {}
-    uids = sorted({int(e.uid) for e in entries.values() if int(e.uid) >= 0})
-    if not uids:
-        return {}
-    return dict.fromkeys(uids, 1.0 / len(uids))
-
-
 def standing_weights(
     store: Any, held: Mapping[str, Any], uid_by_hotkey: Mapping[str, int]
 ) -> dict[int, float]:
@@ -285,8 +274,6 @@ def standing_weights(
         return {u: v for u, v in weights.items() if u != resolved["uid"]}
 
     measured = without_hold(measured_weights(store))
-    if not measured:
-        measured = without_hold(committed_weights(store))
     return apply_reserved(measured, normalise_reserved(resolved))
 
 
