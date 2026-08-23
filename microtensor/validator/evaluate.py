@@ -40,6 +40,9 @@ log = logging.getLogger("microtensor.validator.evaluate")
 REJECTED = GateResult(admitted=False, failures=())
 
 
+INFRASTRUCTURE_ATTEMPTS = 3
+
+
 class Abstain(RuntimeError):
     pass
 
@@ -403,15 +406,30 @@ def evaluate_competition(
     evaluations: list[Evaluation] = []
 
     for participant in participants:
-        try:
-            evaluation = evaluate_participant(
-                context, participant, tasks, cpu_seconds=cpu_seconds
-            )
-        except ArtifactMismatch as exc:
-            log.info("%s scored zero: %s", participant.hotkey, exc)
-            evaluation = _evaluation(participant, tasks)
-        except EngineUnavailable as exc:
-            raise Abstain(str(exc)) from exc
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                evaluation = evaluate_participant(
+                    context, participant, tasks, cpu_seconds=cpu_seconds
+                )
+                break
+            except ArtifactMismatch as exc:
+                log.info("%s scored zero: %s", participant.hotkey, exc)
+                evaluation = _evaluation(participant, tasks)
+                break
+            except EngineUnavailable as exc:
+                raise Abstain(str(exc)) from exc
+            except Abstain as exc:
+                if attempt >= INFRASTRUCTURE_ATTEMPTS:
+                    raise
+                log.warning(
+                    "%s hit an infrastructure fault (%d/%d), measuring it again: %s",
+                    participant.hotkey,
+                    attempt,
+                    INFRASTRUCTURE_ATTEMPTS,
+                    exc,
+                )
 
         evaluations.append(evaluation)
         context.state.record_evaluation(tasks.round_index, evaluation)

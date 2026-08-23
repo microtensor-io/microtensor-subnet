@@ -225,6 +225,9 @@ def discover(
             accepted=True,
         )
 
+    for hotkey, reason in rejected:
+        log.info("round %d: %s rejected: %s", round_.index, hotkey, reason)
+
     log.info(
         "round %d: %d participants frozen, %d rejected",
         round_.index,
