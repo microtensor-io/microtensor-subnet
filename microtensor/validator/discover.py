@@ -46,7 +46,7 @@ class Participant:
 class Roster:
     round_index: int
     participants: tuple[Participant, ...]
-    rejected: tuple[tuple[str, str], ...]
+    rejected: tuple[tuple[str, str, str], ...]
     provenance: dict[str, Verdict] = field(default_factory=dict)
 
     def for_competition(self, track: str, hardware_class: str) -> tuple[Participant, ...]:
@@ -155,7 +155,7 @@ def discover(
     for hotkey, commitment in sorted(commitments.items()):
         reason = _reject_reason(commitment, round_, open_competitions)
         if reason:
-            rejected.append((hotkey, reason))
+            rejected.append((hotkey, commitment.manifest_digest, reason))
             context.state.record_submission(
                 round_.index,
                 hotkey,
@@ -194,7 +194,7 @@ def discover(
                     provenance[hotkey] = verdict
 
         if reason:
-            rejected.append((hotkey, reason))
+            rejected.append((hotkey, commitment.manifest_digest, reason))
             context.state.record_submission(
                 round_.index,
                 hotkey,
@@ -225,7 +225,7 @@ def discover(
             accepted=True,
         )
 
-    for hotkey, reason in rejected:
+    for hotkey, _digest, reason in rejected:
         log.info("round %d: %s rejected: %s", round_.index, hotkey, reason)
 
     log.info(

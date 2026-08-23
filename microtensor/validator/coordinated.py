@@ -8,7 +8,7 @@ from typing import Any
 
 from microtensor.chain.anchor import ConfigAnchor
 from microtensor.coordinator.report import CostBlock, QualityBlock, Report
-from microtensor.core.protocol import Evaluation
+from microtensor.core.protocol import Evaluation, Fault
 from microtensor.validator.client import (
     CoordinatorClient,
     CoordinatorUnreachable,
@@ -218,6 +218,36 @@ def plan_round(
         config_hash=config_hash,
         allowlists=allowlists,
         budgets=budgets,
+    )
+
+
+def inadmissible_report(
+    *,
+    round_index: int,
+    worker_hotkey: str,
+    system_digest: str,
+    engine_version: str,
+    corpus_version: str,
+    corpus_digest: str = "",
+    reason: str = "",
+) -> Report:
+    """A system this worker was assigned but could not admit.
+
+    Carries the artifact fault rather than a measurement, so the coordinator
+    counts the assignment as answered. Reporting nothing left quorum waiting
+    on work that could never arrive.
+    """
+    return Report(
+        round_index=round_index,
+        worker_hotkey=worker_hotkey,
+        system_digest=system_digest,
+        quality=QualityBlock(rotating=0.0, fixed=0.0, combined=0.0),
+        resolve_rate=0.0,
+        cost=CostBlock(expected_ms=0.0, expected_j=None),
+        engine_version=engine_version,
+        corpus_version=corpus_version,
+        corpus_digest=corpus_digest,
+        fault=Fault.ARTIFACT,
     )
 
 

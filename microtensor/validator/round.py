@@ -35,8 +35,10 @@ from microtensor.validator.coordinated import (
     ROUND_DRIFT,
     CoordinatorDisagrees,
     Mode,
+    Plan,
     adopt_settlement,
     emit_reports,
+    inadmissible_report,
     plan_round,
     to_report,
 )
@@ -156,6 +158,42 @@ def adopted(round_index: int, weights: dict[int, float]) -> Settlement:
         blended={},
         vector=quantise_weights(weights),
     )
+
+
+def _report_inadmissible(context: ValidatorContext, plan: Plan, roster: Roster) -> None:
+    """Account for assigned systems this worker cannot measure.
+
+    The coordinator assigns on the commitment alone; discovery also checks the
+    manifest, the base model and provenance. Dropping the difference silently
+    left those assignments unreportable, so quorum counted work nobody could
+    ever deliver and the round could not settle.
+    """
+    try:
+        _, assigned = context.coordinator.assignment()
+    except Exception as exc:
+        log.warning("the assignment could not be read to report rejections: %s", exc)
+        return
+    if not assigned:
+        return
+
+    wanted = set(assigned)
+    for hotkey, digest, reason in roster.rejected:
+        if digest not in wanted:
+            continue
+        report = inadmissible_report(
+            round_index=plan.round_index,
+            worker_hotkey=context.hotkey,
+            system_digest=digest,
+            engine_version=MECHANISM_VERSION,
+            corpus_version=context.config.corpus_version,
+            corpus_digest=context.corpus_digest,
+            reason=reason,
+        )
+        sent, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
+        if failure:
+            log.warning("could not report %s as inadmissible: %s", hotkey, failure)
+        else:
+            log.info("reported %s as inadmissible: %s", hotkey, reason)
 
 
 def run_round(
@@ -314,6 +352,9 @@ def _run_round(
             "enforced; abstain-only until the host is fixed",
             roster,
         )
+
+    if plan.mode is Mode.COORDINATED and context.coordinator is not None:
+        _report_inadmissible(context, plan, roster)
 
     if not roster.participants:
         return abstain("no admissible submission this round", roster)
