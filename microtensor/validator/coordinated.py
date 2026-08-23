@@ -248,6 +248,7 @@ def inadmissible_report(
         corpus_version=corpus_version,
         corpus_digest=corpus_digest,
         fault=Fault.ARTIFACT,
+        fault_reason=reason[:300],
     )
 
 

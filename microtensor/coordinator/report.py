@@ -79,6 +79,7 @@ class Report:
     corpus_version: str = ""
     corpus_digest: str = ""
     fault: Fault | None = None
+    fault_reason: str = ""
     signature: str = ""
 
     def body(self) -> dict[str, Any]:
@@ -100,6 +101,7 @@ class Report:
             "corpus_version": self.corpus_version,
             "corpus_digest": self.corpus_digest,
             "fault": self.fault.value if self.fault else None,
+            "fault_reason": self.fault_reason,
         }
 
     def digest(self) -> str:
@@ -122,6 +124,7 @@ class Report:
             corpus_version=self.corpus_version,
             corpus_digest=self.corpus_digest,
             fault=self.fault,
+            fault_reason=self.fault_reason,
             signature=signature,
         )
 
@@ -144,5 +147,6 @@ class Report:
             corpus_version=str(raw.get("corpus_version", "")),
             corpus_digest=str(raw.get("corpus_digest", "")),
             fault=Fault(fault) if fault else None,
+            fault_reason=str(raw.get("fault_reason", "")),
             signature=str(raw.get("signature", "")),
         )
