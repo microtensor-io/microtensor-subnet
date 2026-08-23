@@ -38,6 +38,7 @@ log = logging.getLogger("microtensor.validator")
 
 REPORTS_ROOT_MISMATCH = "the published reports do not hash to the settlement's reports_root"
 BAD_SCHEME = "the coordinator URL must be http or https"
+WEIGHTS_MISMATCH = "the settlement's weights do not recompute from the published reports"
 
 
 def _detail(exc: urllib.error.HTTPError) -> str:
@@ -46,7 +47,6 @@ def _detail(exc: urllib.error.HTTPError) -> str:
     except (ValueError, OSError):
         return ""
     return str(body.get("detail", "")) if isinstance(body, dict) else ""
-WEIGHTS_MISMATCH = "the settlement's weights do not recompute from the published reports"
 
 
 class CoordinatorUnreachable(RuntimeError):
@@ -185,6 +185,12 @@ class CoordinatorClient:
     def corpus(self, track: str) -> dict[str, Any] | None:
         found: dict[str, Any] | None = self._call("GET", f"/v1/corpus/{track}")
         return found
+
+    def weights(self) -> dict[int, float]:
+        found = self._call("GET", "/v1/weights") or {}
+        if found.get("paused"):
+            return {}
+        return {int(uid): float(value) for uid, value in (found.get("weights") or {}).items()}
 
     def settlement(self, round_index: int) -> dict[str, Any] | None:
         found: dict[str, Any] | None = self._call("GET", f"/v1/settlement/{round_index}")

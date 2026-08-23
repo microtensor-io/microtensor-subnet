@@ -251,6 +251,37 @@ def normalise_reserved(reserved: Mapping[str, Any] | None) -> dict[str, Any]:
     return {"hotkey": hotkey, "uid": uid, "share": min(share, RESERVE_MAX)}
 
 
+def measured_weights(store: Any) -> dict[int, float]:
+    row = store.latest_round()
+    if row is None:
+        return {}
+    published = store.settlement(int(row["round_index"])) or {}
+    return {int(uid): float(value) for uid, value in published.get("weights", {}).items()}
+
+
+def committed_weights(store: Any) -> dict[int, float]:
+    row = store.latest_round()
+    if row is None:
+        return {}
+    entries = store.catalogue(int(row["round_index"])) or {}
+    uids = sorted({int(e.uid) for e in entries.values() if int(e.uid) >= 0})
+    if not uids:
+        return {}
+    return dict.fromkeys(uids, 1.0 / len(uids))
+
+
+def standing_weights(
+    store: Any, held: Mapping[str, Any], uid_by_hotkey: Mapping[str, int]
+) -> dict[int, float]:
+    measured = measured_weights(store) or committed_weights(store)
+    resolved: dict[str, Any] = {}
+    hotkey = str(held.get("hotkey", "")) if held else ""
+    uid = uid_by_hotkey.get(hotkey) if hotkey else None
+    if hotkey and uid is not None:
+        resolved = {"hotkey": hotkey, "uid": uid, "share": float(held.get("share", 0.0))}
+    return apply_reserved(measured, normalise_reserved(resolved))
+
+
 def apply_reserved(weights: Mapping[int, float], reserved: Mapping[str, Any]) -> dict[int, float]:
     """Fold a declared hold into the measured weights.
 

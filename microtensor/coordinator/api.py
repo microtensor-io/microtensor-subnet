@@ -16,7 +16,7 @@ from microtensor.coordinator.collect import (
 from microtensor.coordinator.config import config_hash, served_config
 from microtensor.coordinator.report import Report, canonical
 from microtensor.coordinator.reputation import update as update_standing
-from microtensor.coordinator.settle import Entry
+from microtensor.coordinator.settle import Entry, standing_weights
 from microtensor.coordinator.settle import build as build_settlement
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.coordinator.tokens import TOKEN_HEADER, KeyRing, TokenInvalid
@@ -182,6 +182,20 @@ class Coordinator:
             "config_hash": row["config_hash"] or config_hash(config),
             "anchored": bool(row["anchored_at"]),
             "config": config,
+        }
+
+    def weights(self) -> dict[str, Any]:
+        held = self.reserve() if self.reserve is not None else {}
+        if held.get("paused"):
+            return {"weights": {}, "paused": True, "reserved": {}}
+        folded = standing_weights(self.store, held or {}, self.uid_by_hotkey)
+        return {
+            "weights": {str(uid): value for uid, value in sorted(folded.items())},
+            "paused": False,
+            "reserved": {
+                "hotkey": str(held.get("hotkey", "")),
+                "share": float(held.get("share", 0.0)),
+            },
         }
 
     def assignment(self, hotkey: str) -> dict[str, Any]:
@@ -643,6 +657,12 @@ def build_app(coordinator: Coordinator) -> Any:
         if not found:
             raise HTTPException(status_code=404, detail=f"no corpus is served for {track!r}")
         return found
+
+    @app.get("/v1/weights")
+    async def weights(request: Request) -> dict[str, Any]:
+        hotkey = authenticate(request, b"")
+        authorised(request, hotkey)
+        return coordinator.weights()
 
     @app.get("/v1/assignment/{hotkey}")
     async def assignment(hotkey: str, request: Request) -> dict[str, Any]:

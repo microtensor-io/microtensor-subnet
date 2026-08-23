@@ -90,6 +90,8 @@ class RoundLoop:
 
         standing = self.context.state.last_weights()
         if not standing:
+            standing = self._coordinator_weights()
+        if not standing:
             return
 
         snapshot = self.context.client.snapshot()
@@ -108,6 +110,24 @@ class RoundLoop:
             log.info("refreshed %d weights at block %d", len(vector.uids), block)
         else:
             log.warning("weight refresh rejected at block %d: %s", block, reason)
+
+    def _coordinator_weights(self) -> dict[str, float]:
+        client = self.context.coordinator
+        if client is None:
+            return {}
+        try:
+            found = client.weights()
+        except Exception as exc:
+            log.warning("the coordinator's vector could not be read: %s", exc)
+            return {}
+        if not found:
+            return {}
+        uids = self.context.client.snapshot().uid_by_hotkey
+        by_uid = {uid: hotkey for hotkey, uid in uids.items()}
+        adopted = {by_uid[uid]: value for uid, value in found.items() if uid in by_uid}
+        if adopted:
+            log.info("adopting the coordinator's vector of %d weights", len(adopted))
+        return adopted
 
     def wait_for_close(self, round_: Round) -> None:
         from microtensor.cli.common import reclaim_logging

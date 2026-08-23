@@ -24,7 +24,7 @@ from microtensor.coordinator.server import (
     ServerUnreachable,
     publish_round,
 )
-from microtensor.coordinator.settle import Settlement, apply_reserved, normalise_reserved
+from microtensor.coordinator.settle import Settlement, standing_weights
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.coordinator.tokens import KeyRing
 from microtensor.core.constants import (
@@ -471,37 +471,10 @@ def _anchor(args: argparse.Namespace) -> int:
     return 0
 
 
-def _measured_weights(store: CoordinatorStore) -> dict[int, float]:
-    """The most recent settled vector, or nothing.
-
-    Nothing is the honest answer before the first round settles. It is not the
-    same as every miner scoring zero, and treating it as such would publish a
-    ranking over a field that was never measured.
-    """
-    row = store.latest_round()
-    if row is None:
-        return {}
-    published = store.settlement(int(row["round_index"])) or {}
-    return {int(uid): float(value) for uid, value in published.get("weights", {}).items()}
-
-
 def _weight_vector(
     store: CoordinatorStore, held: dict[str, Any], uid_by_hotkey: dict[str, int]
 ) -> WeightVector:
-    measured = _measured_weights(store)
-    resolved = {}
-    if held:
-        uid = uid_by_hotkey.get(str(held.get("hotkey", "")))
-        if uid is None:
-            log.warning(
-                "%s holds %.2f%% but is not on this metagraph; ignoring the hold",
-                held.get("hotkey"),
-                float(held.get("share", 0.0)) * 100,
-            )
-        else:
-            resolved = {"hotkey": str(held["hotkey"]), "uid": uid, "share": float(held["share"])}
-
-    return quantise_weights(apply_reserved(measured, normalise_reserved(resolved)))
+    return quantise_weights(standing_weights(store, held or {}, uid_by_hotkey))
 
 
 def _weights(args: argparse.Namespace) -> int:
@@ -798,7 +771,6 @@ def _serve(args: argparse.Namespace) -> int:
         chain_config,
         open_client,
         open_wallet,
-        reclaim_logging,
     )
     from microtensor.coordinator.api import build_app
 
