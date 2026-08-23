@@ -48,9 +48,12 @@ class RoundLoop:
         self.restarting = False
 
     def stop(self, *_: object) -> None:
+        from microtensor.validator.evaluate import stopping
+
         if self._running:
             log.info("stop requested; finishing the current round then exiting")
         self._running = False
+        stopping()
 
     def install_signal_handlers(self) -> None:
         def handler(signum: int, frame: FrameType | None) -> None:

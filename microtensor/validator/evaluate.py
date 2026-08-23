@@ -42,6 +42,13 @@ REJECTED = GateResult(admitted=False, failures=())
 
 INFRASTRUCTURE_ATTEMPTS = 3
 
+_stopping = False
+
+
+def stopping(flag: bool = True) -> None:
+    global _stopping
+    _stopping = flag
+
 
 class Abstain(RuntimeError):
     pass
@@ -421,7 +428,7 @@ def evaluate_competition(
             except EngineUnavailable as exc:
                 raise Abstain(str(exc)) from exc
             except Abstain as exc:
-                if attempt >= INFRASTRUCTURE_ATTEMPTS:
+                if _stopping or attempt >= INFRASTRUCTURE_ATTEMPTS:
                     raise
                 log.warning(
                     "%s hit an infrastructure fault (%d/%d), measuring it again: %s",
