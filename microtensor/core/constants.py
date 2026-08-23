@@ -15,10 +15,10 @@ RELEASE_VERSION: Final[str] = "0.1.14"
 # bug fix has no reason to declare.
 MECHANISM_VERSION: Final[str] = "0.1.2"
 DEFAULT_NETUID: Final[int] = 92
-GENESIS_BLOCK: Final[int] = 0
+GENESIS_BLOCK: Final[int] = -17812800
 
 BLOCK_TIME_SECONDS: Final[int] = 12
-ROUND_BLOCKS: Final[int] = 7200
+ROUND_BLOCKS: Final[int] = 21600
 RELEASE_ROUNDS: Final[int] = 30
 WEIGHT_INTERVAL_SECONDS: Final[int] = 1320
 EPOCH_BLOCKS: Final[int] = 360
