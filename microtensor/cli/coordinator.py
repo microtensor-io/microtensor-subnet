@@ -556,15 +556,12 @@ def _weights(args: argparse.Namespace) -> int:
 def _config_hash_for(source: RoundSource, server: ServerClient | None = None) -> str:
     """The hash workers will verify against.
 
-    The control plane's when it published one, because that is the document it
-    is serving to workers; otherwise the same document the serving API builds,
-    arenas included. Hashing the config without the arena list anchored one
-    document while the API served another, and every worker refused the round
-    as a mismatch.
+    The document this coordinator serves, always. A worker fetches the config
+    from /v1/round/current and checks its hash against the chain, so anchoring
+    anything else asks it to verify one document against another's hash. The
+    control plane publishes a differently shaped document, and preferring that
+    hash meant every worker refused every round as a mismatch.
     """
-    published = getattr(source, "config_hash", "")
-    if published:
-        return str(published)
     return config_hash(served_config(CORPUS_VERSION, _arenas(server)))
 
 
