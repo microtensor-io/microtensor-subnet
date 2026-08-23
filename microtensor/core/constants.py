@@ -1,6 +1,26 @@
 from __future__ import annotations
 
+import os
 from typing import Final
+
+
+def _blocks(name: str, default: int) -> int:
+    """A schedule value the operator can set without a code change.
+
+    The round schedule is a pure function of block height, so every party
+    has to resolve the same numbers or they disagree about which round it
+    is. Editing a constant meant a release and a lockstep redeploy for what
+    is an operational decision. served_config publishes all three, and the
+    coordinator anchors that document on chain, so a host set differently
+    fails config verification instead of measuring the wrong round.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
@@ -15,17 +35,19 @@ RELEASE_VERSION: Final[str] = "0.1.14"
 # bug fix has no reason to declare.
 MECHANISM_VERSION: Final[str] = "0.1.2"
 DEFAULT_NETUID: Final[int] = 92
-GENESIS_BLOCK: Final[int] = -17805488
+GENESIS_BLOCK: Final[int] = _blocks("MT_GENESIS_BLOCK", -17805488)
 
 BLOCK_TIME_SECONDS: Final[int] = 12
-ROUND_BLOCKS: Final[int] = 21600
+ROUND_BLOCKS: Final[int] = _blocks("MT_ROUND_BLOCKS", 21600)
 RELEASE_ROUNDS: Final[int] = 30
 WEIGHT_INTERVAL_SECONDS: Final[int] = 1320
 EPOCH_BLOCKS: Final[int] = 360
 WEIGHT_REFRESH_BLOCKS: Final[int] = 300
 TELEMETRY_HEARTBEAT_BLOCKS: Final[int] = 300
 TELEMETRY_RETAIN_DAYS: Final[int] = 30
-SUBMISSION_CLOSES_BEFORE_BLOCKS: Final[int] = 7200
+SUBMISSION_CLOSES_BEFORE_BLOCKS: Final[int] = _blocks(
+    "MT_SUBMISSION_CLOSES_BEFORE_BLOCKS", 7200
+)
 DEADLINE_MARGIN_BLOCKS: Final[int] = 40
 
 MIN_VALIDATOR_STAKE: Final[float] = 1000.0
