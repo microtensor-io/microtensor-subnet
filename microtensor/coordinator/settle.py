@@ -273,12 +273,20 @@ def committed_weights(store: Any) -> dict[int, float]:
 def standing_weights(
     store: Any, held: Mapping[str, Any], uid_by_hotkey: Mapping[str, int]
 ) -> dict[int, float]:
-    measured = measured_weights(store) or committed_weights(store)
     resolved: dict[str, Any] = {}
     hotkey = str(held.get("hotkey", "")) if held else ""
     uid = uid_by_hotkey.get(hotkey) if hotkey else None
     if hotkey and uid is not None:
         resolved = {"hotkey": hotkey, "uid": uid, "share": float(held.get("share", 0.0))}
+
+    def without_hold(weights: dict[int, float]) -> dict[int, float]:
+        if not resolved:
+            return weights
+        return {u: v for u, v in weights.items() if u != resolved["uid"]}
+
+    measured = without_hold(measured_weights(store))
+    if not measured:
+        measured = without_hold(committed_weights(store))
     return apply_reserved(measured, normalise_reserved(resolved))
 
 
