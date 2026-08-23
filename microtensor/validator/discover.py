@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 
 from microtensor.chain.commitment import Commitment, decode_all
 from microtensor.chain.metagraph import MetagraphSnapshot
-from microtensor.chain.rounds import Round
+from microtensor.chain.rounds import Round, accepts_commitment
 from microtensor.chain.wallet import verify_payload
-from microtensor.core.constants import HOST_PROFILE
+from microtensor.core.constants import ALSO_ACCEPT_ROUNDS, HOST_PROFILE
 from microtensor.core.protocol import Role
 from microtensor.core.system import SystemManifest
 from microtensor.provenance.record import ProvenanceUnavailable, Verdict
@@ -240,7 +240,7 @@ def discover(
 def _reject_reason(
     commitment: Commitment, round_: Round, open_competitions: set[tuple[str, str]]
 ) -> str:
-    if commitment.round_index != round_.index:
+    if not accepts_commitment(round_.index, commitment.round_index, ALSO_ACCEPT_ROUNDS):
         return f"commitment names round {commitment.round_index}, not {round_.index}"
     if commitment.competition not in open_competitions:
         return f"{commitment.track}/{commitment.hardware_class} is not an open competition here"

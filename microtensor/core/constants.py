@@ -39,6 +39,21 @@ TELEMETRY_RETAIN_DAYS: Final[int] = 30
 SUBMISSION_CLOSES_BEFORE_BLOCKS: Final[int] = _blocks(
     "MT_SUBMISSION_CLOSES_BEFORE_BLOCKS", 7200
 )
+
+
+def _rounds(name: str) -> tuple[int, ...]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return ()
+    found = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            found.append(int(part))
+    return tuple(sorted(set(found)))
+
+
+ALSO_ACCEPT_ROUNDS: Final[tuple[int, ...]] = _rounds("MT_ALSO_ACCEPT_ROUNDS")
 DEADLINE_MARGIN_BLOCKS: Final[int] = 40
 
 MIN_VALIDATOR_STAKE: Final[float] = 1000.0

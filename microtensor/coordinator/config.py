@@ -6,6 +6,7 @@ from hashlib import sha256
 from typing import Any
 
 from microtensor.core.constants import (
+    ALSO_ACCEPT_ROUNDS,
     CLASS_WEIGHTS,
     COORDINATOR_REPLICATION,
     CORPUS_VERSION,
@@ -80,6 +81,7 @@ def served_config(
         "version": CONFIG_VERSION,
         "mechanism_version": MECHANISM_VERSION,
         "corpus_version": corpus_version,
+        "also_accept_rounds": list(ALSO_ACCEPT_ROUNDS),
         "genesis_block": GENESIS_BLOCK,
         "round_blocks": ROUND_BLOCKS,
         "submission_closes_before_blocks": SUBMISSION_CLOSES_BEFORE_BLOCKS,

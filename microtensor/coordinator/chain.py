@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from microtensor.chain.commitment import decode_all
-from microtensor.chain.rounds import Round, round_for_block
+from microtensor.chain.rounds import Round, accepts_commitment, round_for_block
 from microtensor.coordinator.assign import System, Worker
 from microtensor.coordinator.settle import Entry
-from microtensor.core.constants import GENESIS_BLOCK, ROUND_BLOCKS
+from microtensor.core.constants import ALSO_ACCEPT_ROUNDS, GENESIS_BLOCK, ROUND_BLOCKS
 
 log = logging.getLogger("microtensor.coordinator")
 
@@ -66,7 +66,9 @@ class ChainSource:
         catalogue: dict[str, Entry] = {}
 
         for hotkey, commitment in sorted(commitments.items()):
-            if commitment.round_index != round_.index:
+            if not accepts_commitment(
+                round_.index, commitment.round_index, ALSO_ACCEPT_ROUNDS
+            ):
                 continue
             uid = uid_by_hotkey.get(hotkey)
             if uid is None:

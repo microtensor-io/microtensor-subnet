@@ -227,3 +227,7 @@ def release_version(track: str, hardware_class: str, index: int) -> str:
     because the hyphen is already the field separator.
     """
     return f"microtensor-{track}-{hardware_class.replace('-', '')}-v{index}"
+
+
+def accepts_commitment(round_index: int, named: int, also: tuple[int, ...] = ()) -> bool:
+    return named == round_index or named in also
