@@ -5,15 +5,6 @@ from typing import Final
 
 
 def _blocks(name: str, default: int) -> int:
-    """A schedule value the operator can set without a code change.
-
-    The round schedule is a pure function of block height, so every party
-    has to resolve the same numbers or they disagree about which round it
-    is. Editing a constant meant a release and a lockstep redeploy for what
-    is an operational decision. served_config publishes all three, and the
-    coordinator anchors that document on chain, so a host set differently
-    fails config verification instead of measuring the wrong round.
-    """
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default

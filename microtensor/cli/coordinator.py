@@ -554,14 +554,6 @@ def _weights(args: argparse.Namespace) -> int:
 
 
 def _config_hash_for(source: RoundSource, server: ServerClient | None = None) -> str:
-    """The hash workers will verify against.
-
-    The document this coordinator serves, always. A worker fetches the config
-    from /v1/round/current and checks its hash against the chain, so anchoring
-    anything else asks it to verify one document against another's hash. The
-    control plane publishes a differently shaped document, and preferring that
-    hash meant every worker refused every round as a mismatch.
-    """
     return config_hash(served_config(CORPUS_VERSION, _arenas(server)))
 
 
@@ -750,19 +742,6 @@ REGISTRY_REFRESH_SECONDS = 300
 
 
 def _worker_keyring(args: argparse.Namespace, server: ServerClient | None) -> KeyRing | None:
-    """The key worker tokens are checked against, when checking is switched on.
-
-    Off by default, and this is not a hardening setting waiting to be enabled.
-    The client half of the token flow does not exist: a validator builds its
-    coordinator client with no token and never calls the server's issuing
-    endpoint, so nothing can present one. Setting MT_REQUIRE_WORKER_TOKENS=1
-    today refuses every worker on the subnet, including your own.
-
-    Turn it on only once validators obtain and send tokens, and once each one
-    is registered on the control plane. Until then the gate that decides who
-    may talk to this coordinator is the permitted-validator registry, which
-    is always enforced and is not affected by this setting.
-    """
     if os.environ.get("MT_REQUIRE_WORKER_TOKENS", "0") != "1":
         log.warning(
             "worker tokens are not being checked; the client side is unwired, so "
