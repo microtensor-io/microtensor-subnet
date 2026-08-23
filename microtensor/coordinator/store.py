@@ -92,6 +92,7 @@ class CoordinatorStore:
         ]
         if not rows:
             return
+        self.db.execute("DELETE FROM assignments WHERE round_index = ?", (round_index,))
         self.db.executemany(
             """
             INSERT INTO assignments (round_index, worker_hotkey, system_digest,

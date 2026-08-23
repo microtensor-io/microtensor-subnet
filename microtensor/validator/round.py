@@ -158,7 +158,11 @@ def adopted(round_index: int, weights: dict[int, float]) -> Settlement:
     )
 
 
-def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
+def run_round(
+    context: ValidatorContext,
+    round_: Round,
+    heartbeat: Callable[[], None] | None = None,
+) -> RoundOutcome:
     """Run one round, and leave it in a terminal state whatever happens.
 
     Every deliberate cause routes through the inner abstain(). This wrapper is
@@ -186,7 +190,7 @@ def run_round(context: ValidatorContext, round_: Round) -> RoundOutcome:
     context.state.open_round(round_.index, round_.seed_block, block_hash)
 
     try:
-        return _run_round(context, round_, snapshot, block_hash, started)
+        return _run_round(context, round_, snapshot, block_hash, started, heartbeat)
     except Exception as exc:
         reason = f"the round failed unexpectedly and was abandoned: {exc!r}"
         log.exception("round %d: %s", round_.index, reason)
@@ -205,6 +209,7 @@ def _run_round(
     snapshot: MetagraphSnapshot,
     block_hash: str,
     started: float,
+    heartbeat: Callable[[], None] | None = None,
 ) -> RoundOutcome:
     def abstain(reason: str, roster: Roster | None = None) -> RoundOutcome:
         log.warning("round %d abstaining: %s", round_.index, reason)
@@ -356,6 +361,8 @@ def _run_round(
                 },
             )
             emit_reports(context.coordinator, [report], wallet=context.wallet)
+            if heartbeat is not None:
+                heartbeat()
 
         try:
             result = evaluate_competition(

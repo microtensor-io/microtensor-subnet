@@ -111,6 +111,12 @@ class RoundLoop:
         else:
             log.warning("weight refresh rejected at block %d: %s", block, reason)
 
+    def _heartbeat(self) -> None:
+        try:
+            self.refresh_weights(self.context.client.block())
+        except Exception as exc:
+            log.warning("weight refresh failed mid round: %s", exc)
+
     def _coordinator_weights(self) -> dict[str, float]:
         client = getattr(self.context, "coordinator", None)
         if client is None:
@@ -162,7 +168,7 @@ class RoundLoop:
             return None
 
         self.wait_for_close(round_)
-        outcome = run_round(self.context, round_)
+        outcome = run_round(self.context, round_, heartbeat=self._heartbeat)
         self.rounds_run += 1
         if outcome is not None and outcome.settled:
             self._last_weight_block = self.context.client.block()
