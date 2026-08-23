@@ -285,7 +285,11 @@ class ServerSource:
 
         self.config_hash = str(current.get("config_hash", ""))
         derived = self.chain.open_round()
-        published = int(current["round"])
+        stated = current.get("index", current.get("round"))
+        if stated is None:
+            log.warning("the control plane names no round index; deriving it from chain")
+            return derived
+        published = int(stated)
 
         if published != derived.index:
             raise ServerRefused(
