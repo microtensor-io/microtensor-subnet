@@ -112,7 +112,7 @@ class RoundLoop:
             log.warning("weight refresh rejected at block %d: %s", block, reason)
 
     def _coordinator_weights(self) -> dict[str, float]:
-        client = self.context.coordinator
+        client = getattr(self.context, "coordinator", None)
         if client is None:
             return {}
         try:

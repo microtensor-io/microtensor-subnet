@@ -340,12 +340,30 @@ def _run_round(
             budget=arena.tasks_per_round if arena else context.config.tasks_per_round,
             round_index=round_.index,
         )
+        def publish(evaluation, participant, _plan=plan) -> None:
+            if _plan.mode is not Mode.COORDINATED or context.coordinator is None:
+                return
+            report = to_report(
+                evaluation,
+                round_index=_plan.round_index,
+                worker_hotkey=context.hotkey,
+                system_digest=participant.commitment.manifest_digest,
+                engine_version=MECHANISM_VERSION,
+                corpus_version=context.config.corpus_version,
+                corpus_digest=context.corpus_digest,
+                components={
+                    ref.role.value: ref.artifact_digest for ref in participant.system.components
+                },
+            )
+            emit_reports(context.coordinator, [report], wallet=context.wallet)
+
         try:
             result = evaluate_competition(
                 context,
                 participants,
                 tasks,
                 cpu_seconds=arena.cpu_seconds_per_artifact if arena else 0,
+                on_evaluated=publish,
             )
         except Abstain as exc:
             return abstain(str(exc), roster)

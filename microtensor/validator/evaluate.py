@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -398,6 +398,7 @@ def evaluate_competition(
     tasks: RoundTasks,
     *,
     cpu_seconds: int = 0,
+    on_evaluated: Callable[[Evaluation, Participant], None] | None = None,
 ) -> CompetitionResult:
     evaluations: list[Evaluation] = []
 
@@ -414,6 +415,11 @@ def evaluate_competition(
 
         evaluations.append(evaluation)
         context.state.record_evaluation(tasks.round_index, evaluation)
+        if on_evaluated is not None:
+            try:
+                on_evaluated(evaluation, participant)
+            except Exception as exc:
+                log.warning("could not publish %s as it finished: %s", participant.hotkey, exc)
         context.state.observe(
             tasks.track,
             tasks.hardware_class,
