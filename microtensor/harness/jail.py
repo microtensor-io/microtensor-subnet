@@ -28,12 +28,16 @@ RSS_ATTRIBUTION_FRACTION = 0.90
 # What a bare exit code cannot say. A miner reading "exit -9" learns nothing;
 # the whole diagnosis is which ceiling fired, and the signal plus the usage
 # the parent already measured is enough to say so.
+OPERATOR_SIGNALS: frozenset[int] = frozenset({2, 15})
+
 SIGNAL_CAUSES: dict[int, str] = {
+    2: "interrupted by the operator",
     4: "illegal instruction: the artifact was built for a different cpu",
     6: "aborted: the artifact called abort(), usually a failed allocation",
     7: "bus error: a memory mapping became invalid mid-run",
     8: "arithmetic error",
     9: "killed",
+    15: "terminated by the operator or the process supervisor",
     11: "segmentation fault: the artifact read or wrote out of bounds",
     24: "cpu budget exhausted",
     25: "wrote a file larger than the artifact is permitted",
@@ -55,6 +59,7 @@ class JailResult:
     exit_code: int | None = None
     sandboxed: bool = True
     cpu_budget: float = 0.0
+    unreported: bool = False
     # What the worker finished before a ceiling stopped it. Empty on every
     # other failure, because a crash mid-task proves nothing about the tasks
     # around it, while a cpu budget running out says only "no further".
@@ -84,10 +89,16 @@ class JailResult:
         )
 
     @property
+    def aborted(self) -> bool:
+        if not self.unreported or self.exit_code is None:
+            return False
+        return -self.exit_code in OPERATOR_SIGNALS
+
+    @property
     def fault(self) -> Fault | None:
         if self.ok:
             return None
-        if self.starved:
+        if self.starved or self.aborted:
             return Fault.INFRASTRUCTURE
         if self.timed_out or self.exit_code is not None:
             return Fault.ARTIFACT
@@ -238,6 +249,7 @@ def run_jailed(
                 if timed_out
                 else _died(exit_code, consumed, child_rss, limits)
             ),
+            unreported=True,
             cpu_seconds=consumed,
             wall_seconds=elapsed,
             peak_rss_bytes=child_rss,
