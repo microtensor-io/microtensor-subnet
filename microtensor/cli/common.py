@@ -84,7 +84,9 @@ def open_wallet(config: ChainConfig, *, required: bool = True):  # type: ignore[
 
 
 def open_client(config: ChainConfig, wallet: object | None = None) -> SubtensorClient:
-    return SubtensorClient(config, wallet)
+    client = SubtensorClient(config, wallet)
+    reclaim_logging()
+    return client
 
 
 def fail(message: str) -> int:

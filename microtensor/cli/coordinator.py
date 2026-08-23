@@ -808,7 +808,6 @@ def _serve(args: argparse.Namespace) -> int:
 
         chain = chain_config(args)
         client = open_client(chain, open_wallet(chain, required=False))
-        reclaim_logging()
         try:
             permitted = _permitted(client)
         except Exception as exc:
