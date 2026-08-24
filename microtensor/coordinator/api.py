@@ -384,7 +384,7 @@ class Coordinator:
             config_hash=str(row.get("config_hash", "")),
             corpus_version=self.corpus_version,
             reconciled=result.reconciled,
-            catalogue=self.catalogue,
+            catalogue=self.store.catalogue(round_index) or self.catalogue,
             report_digests=self.store.report_digests(round_index),
             unscored=result.unscored,
             under_replicated=under_replicated(assignment),
