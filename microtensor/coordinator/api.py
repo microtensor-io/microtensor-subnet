@@ -753,7 +753,7 @@ def build_app(coordinator: Coordinator) -> Any:
 
     @app.get("/v1/settlement/{round_index}")
     def settlement(round_index: int) -> dict[str, Any]:
-        found = coordinator.settlement(round_index) or coordinator.settle(round_index)
+        found = coordinator.settle(round_index) or coordinator.settlement(round_index)
         if found is None:
             raise HTTPException(status_code=404, detail="no settlement published yet")
         return found
