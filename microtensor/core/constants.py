@@ -13,6 +13,16 @@ def _blocks(name: str, default: int) -> int:
     except ValueError:
         return default
 
+
+def _ms(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
 RELEASE_VERSION: Final[str] = "0.1.14"
@@ -147,7 +157,7 @@ DECLARATION_LATENCY_FLOOR_MS: Final[int] = 15
 
 ACCURACY_DECIMALS: Final[int] = 4
 TRACK_THRESHOLD: Final[float] = 0.20
-MIN_ROUNDS_OBSERVED: Final[int] = 2
+MIN_ROUNDS_OBSERVED: Final[int] = _blocks("MT_MIN_ROUNDS_OBSERVED", 2)
 
 PAID_RANKS: Final[int] = 8
 RANK_DECAY: Final[float] = 0.85
@@ -159,7 +169,7 @@ HV_QUANT_Q: Final[int] = 10_000
 HV_QUANT_C: Final[int] = 10_000
 EPS_QUALITY: Final[float] = 0.005
 EPS_COST: Final[float] = 0.01
-REFERENCE_COST_MS: Final[float] = 2_000.0
+REFERENCE_COST_MS: Final[float] = _ms("MT_REFERENCE_COST_MS", 2_000.0)
 
 EMA_ALPHA: Final[float] = 0.30
 DECAY_RATE: Final[float] = 0.40

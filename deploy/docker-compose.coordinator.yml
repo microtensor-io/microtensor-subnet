@@ -10,6 +10,8 @@ services:
       MT_ROLE: coordinator
       MT_NETUID: "92"
       MT_NETWORK: finney
+      MT_MIN_ROUNDS_OBSERVED: ${MT_MIN_ROUNDS_OBSERVED:-}
+      MT_REFERENCE_COST_MS: ${MT_REFERENCE_COST_MS:-}
       MT_ALSO_ACCEPT_ROUNDS: ${MT_ALSO_ACCEPT_ROUNDS:-}
       MT_HOME: /var/lib/microtensor
       MT_WALLET_NAME: ${MT_WALLET_NAME:-microtensor}
