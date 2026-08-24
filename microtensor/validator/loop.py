@@ -11,6 +11,7 @@ from microtensor.chain.weights import quantise_weights
 from microtensor.core.constants import (
     BLOCK_TIME_SECONDS,
     POLL_INTERVAL_SECONDS,
+    SUBMISSION_CLOSES_BEFORE_BLOCKS,
     WEIGHT_REFRESH_BLOCKS,
 )
 from microtensor.scoring.weights import to_uid_weights
@@ -64,7 +65,34 @@ class RoundLoop:
             if sig is not None:
                 signal.signal(sig, handler)
 
+    def served_round(self) -> Round | None:
+        client = getattr(self.context, "coordinator", None)
+        if client is None:
+            return None
+        try:
+            current = client.current_round() or {}
+        except Exception as exc:
+            log.warning("the coordinator's open round could not be read: %s", exc)
+            return None
+
+        index = current.get("round")
+        close = current.get("close_block")
+        if index is None or close is None:
+            return None
+
+        length = int(self.context.config.round_blocks)
+        close_margin = SUBMISSION_CLOSES_BEFORE_BLOCKS
+        return Round(
+            index=int(index),
+            start_block=int(close) - length + close_margin,
+            length=length,
+            close_margin=close_margin,
+        )
+
     def round_at_head(self) -> Round:
+        served = self.served_round()
+        if served is not None:
+            return served
         return round_for_block(
             self.context.client.block(),
             length=self.context.config.round_blocks,
