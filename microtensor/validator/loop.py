@@ -78,6 +78,7 @@ class RoundLoop:
         index = current.get("round")
         close = current.get("close_block")
         if index is None or close is None:
+            log.warning("the coordinator served no open round; using the schedule instead")
             return None
 
         length = int(self.context.config.round_blocks)
@@ -166,14 +167,23 @@ class RoundLoop:
             log.info("adopting the coordinator's vector of %d weights", len(adopted))
         return adopted
 
-    def wait_for_close(self, round_: Round) -> None:
+    def wait_for_close(self, round_: Round) -> bool:
         from microtensor.cli.common import reclaim_logging
 
         while self._running:
             block = self.context.client.block()
             reclaim_logging()
             if block >= round_.close_block:
-                return
+                return True
+
+            served = self.served_round()
+            if served is not None and served.index != round_.index:
+                log.info(
+                    "the coordinator is on round %d, not %d; re-planning",
+                    served.index,
+                    round_.index,
+                )
+                return False
 
             self.consider_update(round_, block)
             try:
@@ -198,7 +208,8 @@ class RoundLoop:
             self._sleep(self.poll_seconds)
             return None
 
-        self.wait_for_close(round_)
+        if not self.wait_for_close(round_):
+            return None
         outcome = run_round(self.context, round_, heartbeat=self._heartbeat)
         self.rounds_run += 1
         if outcome is not None and outcome.settled:
