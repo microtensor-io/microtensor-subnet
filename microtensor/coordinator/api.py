@@ -17,7 +17,7 @@ from microtensor.coordinator.collect import (
 from microtensor.coordinator.config import config_hash, served_config
 from microtensor.coordinator.report import Report, canonical
 from microtensor.coordinator.reputation import update as update_standing
-from microtensor.coordinator.settle import Entry, standing_weights
+from microtensor.coordinator.settle import Entry, merkle_root, standing_weights
 from microtensor.coordinator.settle import build as build_settlement
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.coordinator.tokens import TOKEN_HEADER, KeyRing, TokenInvalid
@@ -224,9 +224,6 @@ class Coordinator:
         }
 
     def absorb(self, round_index: int) -> int:
-        if self.store.settlement(round_index) is not None:
-            return 0
-
         pending = self.store.unassigned(round_index)
         if not pending:
             return 0
@@ -357,6 +354,8 @@ class Coordinator:
         pay. Such a round settles on the hold alone and says so: no reports, no
         frontier, and a weight vector that names only the reserved uid.
         """
+        self.absorb(round_index)
+
         expected = self.store.expected_reports(round_index)
         received = self.store.report_count(round_index)
         if not quorum_reached(expected, received, COORDINATOR_QUORUM):
@@ -364,9 +363,15 @@ class Coordinator:
                 return None
             return self._settle_on_hold(round_index)
 
+        digests = self.store.report_digests(round_index)
         existing = self.store.settlement(round_index)
         if existing is not None:
-            return existing
+            if str(existing.get("reports_root", "")) == merkle_root(digests):
+                return existing
+            log.info(
+                "round %d has measurements its settlement predates; rebuilding",
+                round_index,
+            )
 
         by_system = self.store.reports_by_system(round_index)
         advisory = self.store.advisory()
@@ -385,7 +390,7 @@ class Coordinator:
             corpus_version=self.corpus_version,
             reconciled=result.reconciled,
             catalogue=self.store.catalogue(round_index) or self.catalogue,
-            report_digests=self.store.report_digests(round_index),
+            report_digests=digests,
             unscored=result.unscored,
             under_replicated=under_replicated(assignment),
             advisory=advisory,
