@@ -12,7 +12,7 @@ Netuid **92** on finney.
 | Disk | NVMe. 200 GB to start, 1 TB comfortable for a long run |
 | GPU | none |
 | Network | 1 Gbps, 500 GB to 1 TB monthly transfer |
-| Uptime | continuous. Weights are submitted every 300 blocks (about 60 min); a full measurement round completes every 7200 blocks (about 24 h) |
+| Uptime | continuous. Weights are submitted every 300 blocks (about 60 min); a round runs 21,600 blocks (about 3 days) and submissions close 7,200 blocks before it ends |
 | Credentials | any W&B account (`wandb login`); no key is issued by us |
 
 ## 1. Install
@@ -22,11 +22,15 @@ git clone https://github.com/microtensor-io/microtensor-subnet
 cd microtensor-subnet
 
 python -m venv .venv && source .venv/bin/activate
-pip install ".[validator,gguf,huggingface,s3]"
+pip install -e ".[validator,gguf,huggingface,s3]"
 ```
 
+Install with `-e`. A plain install copies the package into site-packages,
+and every later `git pull` silently changes nothing while the service keeps
+running old code.
+
 `validator` carries the ONNX engine; `gguf` adds the llama.cpp one. Install
-the formats the arenas you measure accept — a format you skip simply does not
+the formats the arenas you measure accept. A format you skip simply does not
 register, and `mt inspect engines` shows what a build will run.
 
 `huggingface` and `s3` are fetch backends. Install the ones matching the source
@@ -41,7 +45,21 @@ btcli stake add --netuid 92 --wallet.name <coldkey> --amount <alpha>
 
 Weights are only counted if your hotkey holds a validator permit.
 
-## 3. Configure
+## 3. Get authorized for coordinated rounds
+
+The chain permit lets you vote. Taking assignments in coordinated rounds
+additionally requires the operator to authorize your hotkey on the control
+plane. Send your hotkey to the operator and wait for confirmation before
+expecting work.
+
+Without this you start cleanly, verify the config, adopt and verify the
+coordinator's weights, and never measure anything. The validator logs
+`no assignment document` at round close; that is this, not a fault.
+
+Assignments are drawn when a round opens. A validator authorized mid round
+receives its first assignment at the next round open.
+
+## 4. Configure
 
 ```bash
 export MT_NETWORK=finney
@@ -53,7 +71,7 @@ export MT_COORDINATOR_URL=https://coordinator.microtensor.cloud
 `MT_NETUID` defaults to 92. Flags override environment; `--coordinator` and
 `MT_COORDINATOR_URL` are the same setting.
 
-W&B credentials are required, from **any** W&B account — we issue nothing:
+W&B credentials are required, from **any** W&B account; we issue nothing:
 
 ```bash
 wandb login
@@ -64,7 +82,7 @@ Every submission carries a public training run in `microtensor/training-runs`
 bound to its artifact digest, and a validator that cannot read that project
 admits nobody. The project is world-readable, so any valid key can.
 
-## 4. Corpus
+## 5. Corpus
 
 A coordinated validator takes the corpus from the coordinator. You supply
 nothing. Every worker in a round measures the same tasks, and reports carry a
@@ -82,7 +100,7 @@ under `$MT_HOME/corpus`, one task per line:
 partition. Per round the validator draws `⌈0.7·N⌉` rotating tasks with the round
 seed and takes `⌊0.3·N⌋` fixed tasks unchanged.
 
-## 5. Certify the host
+## 6. Certify the host
 
 ```bash
 mt validator certify mt-3g --cooling-mode active --power-mode performance
@@ -91,7 +109,7 @@ mt validator certify mt-3g --cooling-mode active --power-mode performance
 Cooling and power modes are pinned into the device profile hash. Changing either
 one later means certifying again.
 
-## 6. Verify
+## 7. Verify
 
 ```bash
 mt inspect engines      # must show: sandbox enforced
@@ -111,7 +129,7 @@ Then a real round without submitting:
 mt validator once --dry-run
 ```
 
-## 7. Run
+## 8. Run
 
 ```bash
 mt validator run
@@ -123,14 +141,19 @@ Coordinated (measures an assigned subset, adopts a settlement it recomputes):
 mt validator run --coordinator https://coordinator.microtensor.cloud --auto-update
 ```
 
+A coordinated validator takes the open round from the coordinator, because
+the operator opens rounds. The block schedule is only the fallback when the
+coordinator cannot be reached. Between rounds it idles on
+`round N is already settled; waiting for the next`, which is correct.
+
 To run standalone, leave `--coordinator` unset and `MT_COORDINATOR_URL` empty.
 `--auto-update` installs signed releases between rounds and exits for the
-supervisor to restart it, so only use it under systemd or docker — backgrounded
+supervisor to restart it, so only use it under systemd or docker. Backgrounded
 in a shell, the first update leaves it down.
 
 ## What the logs show
 
-Startup, in order — each line is a stage completing:
+Startup, in order; each line is a stage completing:
 
 ```
 training run store reachable at microtensor/training-runs
@@ -143,7 +166,7 @@ round 1236 open: 5400 blocks until submissions close
 The metagraph fetch between the second and third lines takes a minute or two
 and prints nothing. It is not stuck.
 
-**The long wait is normal.** A round is 7200 blocks — about 24 hours — and a
+**The long wait is normal.** A round is 21,600 blocks, about 3 days, and a
 validator acts when the round closes, not before. Until then it repeats
 `round N open: M blocks until submissions close` every few minutes, refreshing
 weights on the way. A silent process here is a broken one; a chatty one
@@ -152,13 +175,13 @@ counting down blocks is healthy.
 Before an arena is live there is nothing to measure, and the round settles on
 the reserved hold. The validator fetches that settlement, recomputes it,
 checks the reserved uid against its own metagraph, and submits the same
-weights the coordinator would — verified rather than relayed. You still set
+weights the coordinator would: verified rather than relayed. You still set
 weights every round from day one.
 
 `no corpus served yet; waiting for an arena to go live` is likewise a wait,
 not a fault, and is rechecked every round.
 
-Versions before 0.1.10 lost every log line after wallet load — bittensor
+Versions before 0.1.10 lost every log line after wallet load; bittensor
 resets the root logger to WARNING. Upgrade rather than debug the silence.
 
 ### systemd
@@ -175,7 +198,7 @@ Environment=MT_NETUID=92
 Environment=MT_WALLET_NAME=<coldkey>
 Environment=MT_WALLET_HOTKEY=<hotkey>
 Environment=MT_HOME=/var/lib/microtensor
-ExecStart=/opt/microtensor/.venv/bin/mt validator run
+ExecStart=/opt/microtensor/.venv/bin/mt validator run --coordinator https://coordinator.microtensor.cloud --auto-update
 Restart=always
 RestartSec=30
 TimeoutStopSec=1800
@@ -186,6 +209,10 @@ WantedBy=multi-user.target
 ```
 
 `TimeoutStopSec` is long so `SIGTERM` lets the current round finish.
+
+The unit's `User` must be the account that ran `wandb login`, or set
+`Environment=WANDB_API_KEY=<key>` explicitly. A service user without either
+fails at boot naming the run store.
 
 ### Docker
 
@@ -264,10 +291,10 @@ survives silence.
 ## Weights and rounds
 
 Weight submission is not tied to round completion. The validator re-submits its
-standing vector every 300 blocks, so it is never silent between rounds. A round
-takes about 24 h because a full measurement pass over every submitted system
-does; a validator that only set weights when a round finished would go quiet for
-twenty epochs at a time and give up the dividends to whoever kept submitting.
+standing vector every 300 blocks, so it is never silent between rounds, and a
+round runs about 3 days. A validator that only set weights when a round
+finished would go quiet for hundreds of epochs and give up the dividends to
+whoever kept submitting.
 
 The refresh republishes what the last round settled. It recomputes nothing.
 
@@ -300,3 +327,6 @@ within the round.
 | refuses to start, CPU limit does not bind | kernel will not enforce budgets, pass `--allow-degraded` to run abstain only |
 | fails at boot naming the run store | `WANDB_API_KEY` missing, wrong, or the API is unreachable |
 | `mt validator status` warns about the permit | hotkey holds no validator permit |
+| holds every round with `no assignment document` | the operator has not authorized your hotkey for coordinated rounds |
+| starts, adopts weights, never measures | authorized mid round; assignments arrive at the next round open |
+| `git pull` changes nothing | the install was not editable; run `pip install -e .` once and restart |
