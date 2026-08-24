@@ -93,7 +93,9 @@ class RoundLoop:
     def round_at_head(self) -> Round:
         served = self.served_round()
         if served is not None:
+            log.info("the coordinator's open round is %d", served.index)
             return served
+        log.warning("no round from the coordinator; falling back to the block schedule")
         return round_for_block(
             self.context.client.block(),
             length=self.context.config.round_blocks,
