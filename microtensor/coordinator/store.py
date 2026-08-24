@@ -103,6 +103,73 @@ class CoordinatorStore:
             rows,
         )
 
+    def extend_assignment(
+        self,
+        round_index: int,
+        assignment: Mapping[str, Sequence[str]],
+        systems: Mapping[str, tuple[str, str, str]],
+    ) -> int:
+        rows = [
+            (
+                round_index,
+                worker,
+                digest,
+                systems.get(digest, ("", "", ""))[0],
+                systems.get(digest, ("", "", ""))[1],
+                systems.get(digest, ("", "", ""))[2],
+            )
+            for digest, workers in assignment.items()
+            for worker in workers
+        ]
+        if not rows:
+            return 0
+        before = self.expected_reports(round_index)
+        self.db.executemany(
+            """
+            INSERT INTO assignments (round_index, worker_hotkey, system_digest,
+                                     track, hardware_class, miner_hotkey)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index, worker_hotkey, system_digest) DO NOTHING
+            """,
+            rows,
+        )
+        return self.expected_reports(round_index) - before
+
+    def unassigned(self, round_index: int) -> tuple[str, ...]:
+        rows = self.db.query(
+            """
+            SELECT c.system_digest FROM catalogue c
+            LEFT JOIN assignments a
+              ON a.round_index = c.round_index AND a.system_digest = c.system_digest
+            WHERE c.round_index = ? AND a.system_digest IS NULL
+            ORDER BY c.system_digest
+            """,
+            (round_index,),
+        )
+        return tuple(str(r["system_digest"]) for r in rows)
+
+    def round_workers(self, round_index: int) -> tuple[str, ...]:
+        rows = self.db.query(
+            """
+            SELECT DISTINCT worker_hotkey FROM assignments
+            WHERE round_index = ? ORDER BY worker_hotkey
+            """,
+            (round_index,),
+        )
+        return tuple(str(r["worker_hotkey"]) for r in rows)
+
+    def round_replication(self, round_index: int) -> int:
+        row = self.db.one(
+            """
+            SELECT MAX(n) AS d FROM (
+                SELECT COUNT(*) AS n FROM assignments
+                WHERE round_index = ? GROUP BY system_digest
+            )
+            """,
+            (round_index,),
+        )
+        return int(row["d"]) if row and row["d"] else 0
+
     def assignment_for(self, round_index: int, worker_hotkey: str) -> list[dict[str, Any]]:
         rows = self.db.query(
             """

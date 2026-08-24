@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from microtensor.chain.wallet import verify_bytes
+from microtensor.coordinator.assign import System, Worker, assign
 from microtensor.coordinator.collect import (
     ReportRejected,
     intake,
@@ -213,6 +214,7 @@ class Coordinator:
             return {"round": None}
 
         index = int(row["round_index"])
+        self.absorb(index)
         if self.store.expected_reports(index) == 0:
             return {"round": index}
 
@@ -220,6 +222,59 @@ class Coordinator:
             "round": index,
             "systems": self.store.assignment_for(index, hotkey),
         }
+
+    def absorb(self, round_index: int) -> int:
+        if self.store.settlement(round_index) is not None:
+            return 0
+
+        pending = self.store.unassigned(round_index)
+        if not pending:
+            return 0
+
+        workers = self.store.round_workers(round_index)
+        if not workers:
+            log.warning(
+                "round %d has %d unassigned system(s) and no worker to measure them",
+                round_index,
+                len(pending),
+            )
+            return 0
+
+        row = self.store.round(round_index)
+        catalogue = self.store.catalogue(round_index)
+        systems = [
+            System(
+                digest=digest,
+                track=catalogue[digest].track,
+                hardware_class=catalogue[digest].hardware_class,
+                miner_hotkey=catalogue[digest].miner_hotkey,
+            )
+            for digest in pending
+            if digest in catalogue
+        ]
+        if not systems:
+            return 0
+
+        depth = self.store.round_replication(round_index) or len(workers)
+        mapping = assign(
+            systems,
+            [Worker(hotkey=hotkey) for hotkey in workers],
+            str((row or {}).get("block_hash") or ""),
+            replication=depth,
+        )
+        added = self.store.extend_assignment(
+            round_index,
+            mapping,
+            {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
+        )
+        log.info(
+            "round %d: assigned %d late system(s) across %d worker(s), %d new report(s) expected",
+            round_index,
+            len(systems),
+            len(workers),
+            added,
+        )
+        return added
 
     def settlement(self, round_index: int) -> dict[str, Any] | None:
         return self.store.settlement(round_index)
