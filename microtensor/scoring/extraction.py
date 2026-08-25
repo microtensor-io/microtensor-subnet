@@ -14,10 +14,13 @@ document, which scores zero the same way malformed code does.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 Entity = tuple[str, str]
+
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def _entity(raw: Any) -> Entity | None:
@@ -44,13 +47,26 @@ def parse_entities(output: Any) -> set[Entity] | None:
     sentence can legitimately contain no entities.
     """
     if isinstance(output, str):
-        # Engine output is text. It must be exactly one JSON document of the
-        # declared shape; prose, markdown fences or trailing chatter are
-        # malformed, which is the strictness the task states.
+        # Engine output is text. A fenced block is unwrapped first, exactly as
+        # the code arena unwraps fenced code before executing it; what is
+        # inside must then be one strict JSON document of the declared shape.
+        blocks = _FENCE.findall(output)
+        candidate = max(blocks, key=len).strip() if blocks else output.strip()
         try:
-            output = json.loads(output)
+            output = json.loads(candidate)
         except ValueError:
             return None
+
+    # The declared shape wrapped in a single-element list is unwrapped; any
+    # deeper nesting is malformed.
+    if (
+        isinstance(output, Sequence)
+        and not isinstance(output, (str | bytes))
+        and len(output) == 1
+        and isinstance(output[0], Mapping)
+        and "entities" in output[0]
+    ):
+        output = output[0]
     items: Any = output.get("entities") if isinstance(output, Mapping) else output
     if not isinstance(items, Sequence) or isinstance(items, (str | bytes)):
         return None
