@@ -341,6 +341,22 @@ Both are drawn from distributions absent from public corpora. The fixed
 partition rotates only on detected contamination, and any rotation establishes a
 replacement baseline in parallel so the historical series stays interpretable.
 
+### Prompt wording is load bearing
+
+A track prompt is frozen into the corpus and served to every artifact, so a
+wording defect becomes a property of the whole arena. The extract track found
+the canonical trap. Its prompt originally ended with the bare escape clause
+"Return an empty list if there are none." The 0.6B baseline obeyed the clause on
+nearly every sentence and scored micro-F1 0.057 at precision 1.000 with zero
+format failures. Every output was a valid empty entity list, so nothing in the
+harness flagged it. Rephrasing the clause to name the condition and the exact
+shape to return recovered the baseline to roughly 0.37.
+
+Two rules follow. Never end a prompt with a bare escape clause; state the empty
+case with its condition and its exact output shape. And treat a near-zero
+baseline with perfect precision and clean formatting as the signature of a model
+taking an escape hatch, not as evidence of task difficulty.
+
 ---
 
 ## 5 · Envelope measurement (frozen)
