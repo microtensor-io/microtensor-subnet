@@ -77,6 +77,7 @@ class RoundLoop:
 
         index = current.get("round")
         close = current.get("close_block")
+        self._served_settled = bool(current.get("settled"))
         if index is None or close is None:
             log.warning("the coordinator served no open round; using the schedule instead")
             return None
@@ -179,10 +180,11 @@ class RoundLoop:
                 return True
 
             served = self.served_round()
-            if served is not None and served.index != round_.index:
+            if served is not None and (
+                served.index != round_.index or getattr(self, "_served_settled", False)
+            ):
                 log.info(
-                    "the coordinator is on round %d, not %d; re-planning",
-                    served.index,
+                    "the coordinator's round %d is no longer waiting to close; re-planning",
                     round_.index,
                 )
                 return False
@@ -200,6 +202,20 @@ class RoundLoop:
 
     def step(self) -> RoundOutcome | None:
         round_ = self.round_at_head()
+
+        if getattr(self, "_served_settled", False):
+            if getattr(self, "_idled_on", None) != round_.index:
+                log.info(
+                    "round %d is settled; holding weights until the operator opens the next",
+                    round_.index,
+                )
+                self._idled_on = round_.index
+            try:
+                self.refresh_weights(self.context.client.block())
+            except Exception as exc:
+                log.warning("weight refresh failed while idle: %s", exc)
+            self._sleep(self.poll_seconds)
+            return None
 
         if self.context.state.is_settled(round_.index):
             log.info("round %d is already settled; waiting for the next", round_.index)

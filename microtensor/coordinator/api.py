@@ -174,9 +174,11 @@ class Coordinator:
         if row is None:
             return {}
         config = served_config(self.corpus_version or "", self.arenas)
+        index = int(row["round_index"])
         return {
             "corpus_digest": self.corpus_digest(),
-            "round": row["round_index"],
+            "round": index,
+            "settled": self.store.settlement(index) is not None,
             "seed_block": row["seed_block"],
             "close_block": row["close_block"],
             "block_hash": row["block_hash"],
