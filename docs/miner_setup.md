@@ -338,6 +338,38 @@ competition without touching anything. It serves no traffic and holds no
 inference. It is a scheduler, and it can go down between rounds without costing
 you a thing.
 
+### Sealed submissions
+
+While a round is open, an unencrypted artifact on a public host can be copied
+and committed by someone else before you. To close that window, submit sealed:
+
+```bash
+mt miner ship --sealed
+```
+
+This encrypts your artifact under a fresh key, publishes only the ciphertext,
+and commits the same pointer marked sealed. Nothing readable is public during
+the window. At the close block the key is revealed on chain, validators
+decrypt, verify the plaintext against the digest you committed, and measure.
+
+`mt miner run` posts the reveal for you the moment the round closes. The key
+is held at `~/.microtensor/reveal/` on the machine that packaged the artifact;
+keep that machine running through the close block, or reveal by hand from it:
+
+```bash
+mt miner reveal
+```
+
+**A sealed submission that is never revealed is excluded, with the reason
+`sealed submission was never revealed`.** There is no penalty beyond missing
+that round, and nothing to appeal: the key either arrived on chain in the
+reveal window or it did not. If you ship sealed, keep the packaging machine up,
+or reveal manually before the window closes.
+
+The reveal is a second commitment that replaces your submission in your hotkey's
+single on-chain slot. Everything a validator needed from the original was read
+while the round was open, so the slot only has to carry the key afterward.
+
 ### The individual steps, if you prefer them
 
 ```bash
