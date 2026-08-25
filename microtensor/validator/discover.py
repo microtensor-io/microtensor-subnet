@@ -265,11 +265,14 @@ def _reveals_of(raw: Mapping[str, str], round_index: int) -> dict[str, str]:
 
 def _sealing_reason(commitment: Commitment, manifest: ArtifactManifest) -> str:
     if commitment.sealed and manifest.sealed is None:
-        return "commitment says sealed but the manifest carries no sealed block"
+        return (
+            "sealed commitment but the manifest carries no sealed block; "
+            "repackage with mt miner ship --sealed"
+        )
     if not commitment.sealed and manifest.sealed is not None:
-        return "manifest is sealed but the commitment does not say so"
+        return "manifest is sealed but the commitment is not; repackage with mt miner ship --sealed"
     if REQUIRE_SEALED_SUBMISSIONS and not commitment.sealed:
-        return "this round requires sealed submissions"
+        return "this round requires a sealed submission; resubmit with mt miner ship --sealed"
     return ""
 
 
