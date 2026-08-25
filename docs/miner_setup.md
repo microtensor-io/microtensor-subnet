@@ -297,6 +297,11 @@ If it prints `INADMISSIBLE`, fix the model. Do not declare around it.
 
 ## 8 · Ship it
 
+Submitting grants the network the right to retain, archive and redistribute
+any artifact it certifies, together with its manifest and measured record.
+Certificates resolve against the network's archived copy, so deleting your own
+hosting after settlement does not break them.
+
 Everything above is one-time. Mining is five commands total:
 
 ```bash
