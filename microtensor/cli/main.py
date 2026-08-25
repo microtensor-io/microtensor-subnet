@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from microtensor.cli import archive as archive_cmd
 from microtensor.cli import coordinator as coordinator_cmd
 from microtensor.cli import corpus as corpus_cmd
 from microtensor.cli import inspect as inspect_cmd
@@ -31,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     corpus_cmd.register(subparsers)
     update_cmd.register(subparsers)
     inspect_cmd.register(subparsers)
+    archive_cmd.register(subparsers)
     return parser
 
 
