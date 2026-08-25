@@ -69,6 +69,26 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _add_server_arguments(opened)
     opened.set_defaults(handler=_open)
 
+    subs = inner.add_parser(
+        "open-submissions",
+        help="open a round for submissions now; the window starts at this block",
+    )
+    add_common_arguments(subs)
+    add_chain_arguments(subs)
+    _add_server_arguments(subs)
+    subs.set_defaults(handler=_open_submissions)
+
+    frz = inner.add_parser(
+        "freeze",
+        help="freeze the roster at close and assign; the round enters evaluation",
+    )
+    add_common_arguments(frz)
+    add_chain_arguments(frz)
+    frz.add_argument("--round", type=int, help="round to freeze; defaults to the open one")
+    frz.add_argument("--replication", type=int, default=COORDINATOR_REPLICATION)
+    _add_server_arguments(frz)
+    frz.set_defaults(handler=_freeze)
+
     plan = inner.add_parser("assign", help="compute and store this round's assignment")
     add_common_arguments(plan)
     plan.add_argument("--round", type=int, required=True)
@@ -251,6 +271,103 @@ def _config(args: argparse.Namespace) -> int:
     print(json.dumps(config, indent=2, sort_keys=True))
     print()
     print(f"hash  {config_hash(config)}")
+    return 0
+
+
+def _open_submissions(args: argparse.Namespace) -> int:
+    from microtensor.cli.common import chain_config, open_client, open_wallet
+    from microtensor.core.constants import (
+        EVALUATION_WINDOW_BLOCKS,
+        SUBMISSION_WINDOW_BLOCKS,
+    )
+
+    chain = chain_config(args)
+    wallet = open_wallet(chain, required=False)
+    client = open_client(chain, wallet)
+    server = _server(args)
+    source: RoundSource = ChainSource(client=client)
+    if server is not None:
+        source = ServerSource(chain=ChainSource(client=client), client=server)
+
+    block = client.block()
+    start = block
+    close = start + SUBMISSION_WINDOW_BLOCKS
+    end = close + EVALUATION_WINDOW_BLOCKS
+
+    with _store(args) as store:
+        index = store.next_round_index()
+        store.open_submissions(
+            index,
+            start_block=start,
+            close_block=close,
+            end_block=end,
+            config_hash=_config_hash_for(source, server),
+        )
+        store.record_metagraph(index, source.uids())
+
+    hours = SUBMISSION_WINDOW_BLOCKS * 12 / 3600
+    print(f"round {index} open for submissions at block {start}")
+    print(f"  submissions close at block {close} (~{hours:.0f}h)")
+    print(f"  evaluation runs to block {end}")
+    print("Anchor the config hash before workers verify against it:")
+    print(f"  mt coordinator anchor --round {index}")
+    print(f"Freeze and assign once submissions close: mt coordinator freeze --round {index}")
+    return 0
+
+
+def _freeze(args: argparse.Namespace) -> int:
+    from microtensor.chain.rounds import Round
+    from microtensor.cli.common import chain_config, open_client, open_wallet
+    from microtensor.coordinator.chain import observed
+
+    chain = chain_config(args)
+    wallet = open_wallet(chain, required=False)
+    client = open_client(chain, wallet)
+    server = _server(args)
+    source: RoundSource = ChainSource(client=client)
+    if server is not None:
+        source = ServerSource(chain=ChainSource(client=client), client=server)
+
+    with _store(args) as store:
+        row = store.round(args.round) if args.round is not None else store.latest_round()
+    if row is None:
+        return fail("no round is open; run mt coordinator open-submissions first")
+
+    index = int(row["round_index"])
+    start = int(row["start_block"])
+    close = int(row["close_block"])
+    end = int(row["end_block"])
+    block = client.block()
+    if block < close:
+        return fail(f"submissions are open until block {close}; the chain is at {block}")
+
+    seed = str(client.block_hash(close))
+    round_ = Round(
+        index=index,
+        start_block=start,
+        length=end - start,
+        close_margin=end - close,
+    )
+    systems, catalogue = source.systems(round_)
+    workers = source.workers()
+
+    with _store(args) as store:
+        store.freeze_round(index, block_hash=seed)
+        if systems and workers:
+            mapping = assign(systems, workers, seed, replication=args.replication)
+            store.record_assignment(
+                index,
+                mapping,
+                {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
+            )
+            store.record_catalogue(index, observed(catalogue, store.observations(index)))
+        store.record_metagraph(index, source.uids())
+
+    if not systems:
+        print(f"round {index} frozen with no submissions; it settles on the hold")
+        return 0
+    print(f"round {index} frozen: {len(systems)} systems, seed from block {close}")
+    print(f"  assignments {sum(len(v) for v in mapping.values())}")
     return 0
 
 

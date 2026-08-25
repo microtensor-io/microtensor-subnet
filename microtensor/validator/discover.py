@@ -153,7 +153,7 @@ def discover(
     uid_by_hotkey = snapshot.uid_by_hotkey
     open_competitions = set(context.competitions)
     accepted: list[Participant] = []
-    rejected: list[tuple[str, str]] = []
+    rejected: list[tuple[str, str, str]] = []
     provenance: dict[str, Verdict] = {}
     # Heights, not seconds: the run must have finished at or before the block
     # the commitment window closes on. Multiplying a height into fake seconds

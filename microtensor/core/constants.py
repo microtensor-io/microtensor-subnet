@@ -66,6 +66,8 @@ def _rounds(name: str) -> tuple[int, ...]:
 ALSO_ACCEPT_ROUNDS: Final[tuple[int, ...]] = _rounds("MT_ALSO_ACCEPT_ROUNDS")
 
 REVEAL_WINDOW_BLOCKS: Final[int] = _blocks("MT_REVEAL_WINDOW_BLOCKS", 25)
+SUBMISSION_WINDOW_BLOCKS: Final[int] = _blocks("MT_SUBMISSION_WINDOW_BLOCKS", 7200)
+EVALUATION_WINDOW_BLOCKS: Final[int] = _blocks("MT_EVALUATION_WINDOW_BLOCKS", 7200)
 REQUIRE_SEALED_SUBMISSIONS: Final[bool] = (
     os.environ.get("MT_REQUIRE_SEALED_SUBMISSIONS", "").strip() == "1"
 )

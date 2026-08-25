@@ -32,8 +32,48 @@ class Published:
 
 
 def current_round(config: MinerConfig, client: ChainClient) -> Round:
+    """The round to submit to.
+
+    When a coordinator is configured, its open round is authoritative: the
+    operator sets the window, and computing it from block height instead would
+    submit to the wrong round. Without a coordinator, or if it cannot be
+    reached, the block schedule stands so a standalone miner still works.
+    """
+    served = _served_round(config)
+    if served is not None:
+        return served
     return round_for_block(
         client.block(), length=config.round_blocks, genesis=config.genesis_block
+    )
+
+
+def _served_round(config: MinerConfig) -> Round | None:
+    if not config.coordinator_url:
+        return None
+    import json
+    import urllib.request
+
+    url = config.coordinator_url.rstrip("/") + "/v1/round/current"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as answer:  # noqa: S310
+            current = json.load(answer)
+    except Exception as exc:
+        log.warning("could not read the coordinator's round (%s); using the schedule", exc)
+        return None
+
+    index = current.get("round")
+    close = current.get("close_block")
+    start = current.get("start_block")
+    end = current.get("end_block")
+    if index is None or close is None or start is None or end is None:
+        return None
+    if current.get("phase") not in ("submissions", None):
+        log.info("round %s is past submissions; nothing new to submit", index)
+    return Round(
+        index=int(index),
+        start_block=int(start),
+        length=int(end) - int(start),
+        close_margin=int(end) - int(close),
     )
 
 

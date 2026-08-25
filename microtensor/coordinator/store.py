@@ -58,6 +58,51 @@ class CoordinatorStore:
             (round_index, seed_block, block_hash, close_block, config_hash, time.time()),
         )
 
+    def open_submissions(
+        self,
+        round_index: int,
+        *,
+        start_block: int,
+        close_block: int,
+        end_block: int,
+        config_hash: str = "",
+    ) -> None:
+        """Open a round for submissions dynamically, with no seed yet.
+
+        The operator's action sets the clock: start is now, close and end are
+        offsets from it. The seed is the close block's hash, unknown until the
+        window ends, so it is left blank and filled when the round is frozen.
+        """
+        self.db.execute(
+            """
+            INSERT INTO rounds (round_index, seed_block, block_hash, close_block,
+                                start_block, end_block, phase, config_hash, opened_at)
+            VALUES (?, ?, '', ?, ?, ?, 'submissions', ?, ?)
+            ON CONFLICT (round_index) DO UPDATE SET
+                close_block = excluded.close_block,
+                start_block = excluded.start_block,
+                end_block = excluded.end_block,
+                phase = excluded.phase,
+                config_hash = excluded.config_hash
+            """,
+            (
+                round_index, close_block, close_block, start_block,
+                end_block, config_hash, time.time(),
+            ),
+        )
+
+    def freeze_round(self, round_index: int, *, block_hash: str) -> None:
+        """Move a round from submissions to evaluation, recording the seed."""
+        self.db.execute(
+            "UPDATE rounds SET block_hash = ?, phase = 'evaluation', closed_at = ? "
+            "WHERE round_index = ?",
+            (block_hash, time.time(), round_index),
+        )
+
+    def next_round_index(self) -> int:
+        row = self.latest_round()
+        return (int(row["round_index"]) + 1) if row else 0
+
     def mark_anchored(self, round_index: int) -> None:
         self.db.execute(
             "UPDATE rounds SET anchored_at = ? WHERE round_index = ?",

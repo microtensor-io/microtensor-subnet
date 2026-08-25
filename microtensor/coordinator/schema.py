@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 5
+SCHEMA_VERSION: Final[int] = 6
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -225,6 +225,14 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
             """
             ALTER TABLE reports ADD COLUMN components TEXT NOT NULL DEFAULT '{}'
             """,
+        ),
+    ),
+    (
+        6,
+        (
+            "ALTER TABLE rounds ADD COLUMN start_block INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE rounds ADD COLUMN end_block INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE rounds ADD COLUMN phase TEXT NOT NULL DEFAULT 'legacy'",
         ),
     ),
 )

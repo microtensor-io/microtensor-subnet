@@ -38,6 +38,7 @@ class MinerConfig:
     round_blocks: int = ROUND_BLOCKS
     genesis_block: int = GENESIS_BLOCK
     republish_margin_blocks: int = 120
+    coordinator_url: str = ""
     allow_unsandboxed: bool = False
 
     def __post_init__(self) -> None:

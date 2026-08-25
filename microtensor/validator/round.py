@@ -196,7 +196,9 @@ def _report_inadmissible(context: ValidatorContext, plan: Plan, roster: Roster) 
             log.info("reported %s as inadmissible: %s", hotkey, reason)
 
 
-def _screen_derivation(context, round_index, participants):  # type: ignore[no-untyped-def]
+def _screen_derivation(
+    context: ValidatorContext, round_index: int, participants: Sequence[Participant]
+) -> None:
     """Compare this round's measured artifacts for derivation, off the score path.
 
     Wrapped so nothing it does can cost a round: report-only by default, and any
