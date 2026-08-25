@@ -294,7 +294,7 @@ def score(
     tasks: RoundTasks,
     *,
     cpu_seconds: int = 0,
-) -> tuple[tuple[TaskOutcome, ...], str]:
+) -> tuple[tuple[TaskOutcome, ...], dict[str, Response], str]:
     metric = get_track(tasks.track).metric
     requests = to_requests(
         tasks.all, tasks.seed, tasks.track, participant.manifest.artifact_digest
@@ -312,7 +312,7 @@ def score(
         if result.fault is Fault.INFRASTRUCTURE:
             raise Abstain(f"{participant.hotkey}: execution infrastructure failed — {result.error}")
         if not result.partial:
-            return (), f"execution failed: {result.error}"
+            return (), {}, f"execution failed: {result.error}"
         log.info(
             "%s ran out of budget after %d of %d tasks; the rest are forfeit, the "
             "finished ones stand",
@@ -340,7 +340,48 @@ def score(
         raise Abstain(
             f"{participant.hotkey}: the execution sandbox is unavailable — {exc}"
         ) from exc
-    return outcomes, ""
+    return outcomes, by_ref, ""
+
+
+def _detection_partition_scores(
+    tasks: RoundTasks, by_ref: dict[str, Response]
+) -> tuple[float, float, int, int]:
+    """COCO mAP per partition over the whole image set, not an average.
+
+    A shared category list across both partitions keeps the class set stable,
+    so rotating and fixed mAP are computed against the same definition of the
+    problem rather than each inventing its own from the classes it happened to
+    see.
+    """
+    from microtensor.scoring.detection import (
+        Detection,
+        category_ids,
+        coco_map,
+        parse_detections,
+    )
+
+    rotating = {t.ref for t in tasks.rotating}
+    rot_preds: list[list[Detection]] = []
+    rot_gold: list[object] = []
+    fix_preds: list[list[Detection]] = []
+    fix_gold: list[object] = []
+    for task in tasks.all:
+        response = by_ref.get(task.ref)
+        preds = parse_detections(response.output) if response and response.ok else []
+        if task.ref in rotating:
+            rot_preds.append(preds)
+            rot_gold.append(task.gold)
+        else:
+            fix_preds.append(preds)
+            fix_gold.append(task.gold)
+
+    cats = category_ids([*rot_gold, *fix_gold])
+    return (
+        coco_map(rot_preds, rot_gold, categories=cats),
+        coco_map(fix_preds, fix_gold, categories=cats),
+        len(rot_gold),
+        len(fix_gold),
+    )
 
 
 def evaluate_participant(
@@ -376,15 +417,20 @@ def evaluate_participant(
         metric = get_track(tasks.track).metric
         outcomes, front_outcomes = outcomes_from(cascade.legs, tasks, metric)
         front_only_score = combine_partitions(*partition_scores(front_outcomes)[:2])
+        by_ref = {r.task_ref: r for r in cascade.responses()}
     else:
-        outcomes, failure = score(
+        outcomes, by_ref, failure = score(
             context, participant, artifact, hardware, tasks, cpu_seconds=cpu_seconds
         )
         if failure:
             log.info("%s scored zero: %s", participant.hotkey, failure)
             return _evaluation(participant, tasks, gate=gate, measured=measured)
+        metric = get_track(tasks.track).metric
 
-    rotating, fixed, n_rotating, n_fixed = partition_scores(outcomes)
+    if metric == "map_at_iou":
+        rotating, fixed, n_rotating, n_fixed = _detection_partition_scores(tasks, by_ref)
+    else:
+        rotating, fixed, n_rotating, n_fixed = partition_scores(outcomes)
     return _evaluation(
         participant,
         tasks,

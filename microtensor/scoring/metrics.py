@@ -109,7 +109,7 @@ def exact_match_numeric(output: Any, gold: Any, tolerance: float = 1e-6) -> floa
 
 
 def _extract_number(value: Any) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, (int | float)) and not isinstance(value, bool):
         return float(value)
     if isinstance(value, dict):
         for key in ("value", "answer", "result"):
@@ -134,8 +134,22 @@ def rubric_f1_tool_calls(output: Any, gold: Any) -> float:
     return 0.5 * rubric + 0.5 * calls
 
 
+def map_at_iou(output: Any, gold: Any) -> float:
+    """Per-image proxy: did the detector emit any well-formed box for this image.
+
+    The ranked quality for detection is COCO mAP, computed at dataset level per
+    partition, not an average of per-image scores; that lives in the validator.
+    This exists only so the per-task pipeline has a value and so a malformed
+    output reads as zero here too.
+    """
+    from microtensor.scoring.detection import parse_detections
+
+    return 1.0 if parse_detections(output) else 0.0
+
+
 METRICS: Final[dict[str, Metric]] = {
     "execution_pass_rate": execution_pass_rate,
+    "map_at_iou": map_at_iou,
     "schema_conformance": schema_conformance,
     "extraction_f1": extraction_f1,
     "span_accuracy": span_accuracy,
