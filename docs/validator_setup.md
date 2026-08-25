@@ -17,17 +17,35 @@ Netuid **92** on finney.
 
 ## 1. Install
 
+Python 3.10 or newer. On Debian and Ubuntu the venv module ships separately,
+so install it first:
+
+```bash
+sudo apt install -y python3-venv
+```
+
 ```bash
 git clone https://github.com/microtensor-io/microtensor-subnet
 cd microtensor-subnet
 
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[validator,gguf,huggingface,s3]"
 ```
+
+Your prompt must show `(.venv)` before you run pip. If the venv step printed
+an `ensurepip` error, the venv was never created: install `python3-venv`,
+delete `.venv`, and start the block again. Running pip without the venv lands
+on the system Python, whose old setuptools fails the editable install with an
+error naming `build_editable`.
 
 Install with `-e`. A plain install copies the package into site-packages,
 and every later `git pull` silently changes nothing while the service keeps
 running old code.
+
+The venv also matters for the `mt` command itself: outside it, `mt` is the
+system tape utility, and `mt: invalid argument` means the venv is not active,
+not that anything is broken.
 
 `validator` carries the ONNX engine; `gguf` adds the llama.cpp one. Install
 the formats the arenas you measure accept. A format you skip simply does not
