@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import struct
 import time
 from pathlib import Path
@@ -248,6 +249,20 @@ class GgufEngine:
 
         self._manifest = manifest
 
+    # Qwen3 and other hybrid models emit a reasoning block before the answer.
+    # It consumes the output budget and is not the answer, so it is removed
+    # before scoring; thinking is also disabled at generation where the build
+    # honours it, so the budget goes to the answer rather than the reasoning.
+    _THINK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+    @staticmethod
+    def _strip_thinking(text: str) -> str:
+        cleaned = GgufEngine._THINK.sub("", text)
+        # An unclosed think block (budget ran out mid-reasoning) leaves a
+        # dangling open tag; drop everything from it, since no answer followed.
+        head, _, _ = cleaned.partition("<think>")
+        return head.strip() if "<think>" in cleaned else cleaned.strip()
+
     def generate(self, request: Request) -> Response:
         if self._model is None:
             return Response.failed(request.task_ref, "engine was asked to generate before load")
@@ -275,24 +290,39 @@ class GgufEngine:
             # Streamed so the first token can be timed. Sampling is fixed to
             # argmax: temperature zero with top_k one leaves nothing for the
             # RNG to decide, whatever the build's sampler chain does.
-            stream = self._model.create_completion(
-                request.prompt,
-                max_tokens=request.max_output_tokens,
-                temperature=0.0,
-                top_k=1,
-                top_p=1.0,
-                min_p=0.0,
-                typical_p=1.0,
-                repeat_penalty=1.0,
-                frequency_penalty=0.0,
-                presence_penalty=0.0,
-                mirostat_mode=0,
-                seed=SEED,
-                stream=True,
-            )
+            sampler = {
+                "max_tokens": request.max_output_tokens,
+                "temperature": 0.0,
+                "top_k": 1,
+                "top_p": 1.0,
+                "min_p": 0.0,
+                "typical_p": 1.0,
+                "repeat_penalty": 1.0,
+                "frequency_penalty": 0.0,
+                "presence_penalty": 0.0,
+                "mirostat_mode": 0,
+                "seed": SEED,
+                "stream": True,
+            }
+
+            # Instruction tasks go through the model's chat template so an
+            # instruct model follows the prompt instead of continuing it.
+            # Completion tasks (code) stay raw, which is the correct interface
+            # for a function-completion benchmark.
+            if request.chat:
+                stream = self._chat_stream(request.prompt, sampler)
+                delta_key = "delta"
+            else:
+                stream = self._model.create_completion(request.prompt, **sampler)
+                delta_key = "text"
 
             for chunk in stream:
-                piece = chunk["choices"][0].get("text", "")
+                choice = chunk["choices"][0]
+                piece = (
+                    choice.get("delta", {}).get("content", "")
+                    if delta_key == "delta"
+                    else choice.get("text", "")
+                )
                 if not piece:
                     continue
                 if count == 0:
@@ -308,13 +338,34 @@ class GgufEngine:
                 (time.perf_counter() - started) * 1000.0,
             )
 
+        output = "".join(produced)
+        if request.chat:
+            output = self._strip_thinking(output)
         return Response(
             task_ref=request.task_ref,
-            output="".join(produced),
+            output=output,
             ttft_ms=(first_token_at - started) * 1000.0 if first_token_at else 0.0,
             total_ms=(total - started) * 1000.0,
             output_tokens=count,
         )
+
+    def _chat_stream(self, prompt: str, sampler: dict[str, Any]) -> Any:
+        """Chat completion with thinking disabled where the build supports it.
+
+        `chat_template_kwargs` is passed when the installed llama-cpp-python
+        accepts it, so Qwen3 skips its reasoning block and spends the budget on
+        the answer. Older builds ignore the switch; the output is stripped of
+        any think block regardless, so the answer is scored either way.
+        """
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            return self._model.create_chat_completion(
+                messages=messages,
+                chat_template_kwargs={"enable_thinking": False},
+                **sampler,
+            )
+        except TypeError:
+            return self._model.create_chat_completion(messages=messages, **sampler)
 
     def unload(self) -> None:
         self._model = None

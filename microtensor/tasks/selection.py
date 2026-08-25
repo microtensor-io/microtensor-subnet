@@ -87,7 +87,8 @@ def to_requests(
     track: str,
     artifact_digest: str = "",
 ) -> list[Request]:
-    decoding = get_track(track).decoding
+    track_ = get_track(track)
+    decoding = track_.decoding
     return [
         Request(
             task_ref=task.ref,
@@ -95,6 +96,7 @@ def to_requests(
             inputs=dict(task.inputs),
             max_output_tokens=task.max_output_tokens,
             decoding=decoding,
+            chat=track_.chat,
             seed=int(task_nonce(seed, task.ref)[:8], 16) if decoding.value == "seeded" else 0,
             nonce=task_nonce(seed, task.ref, artifact_digest),
         )

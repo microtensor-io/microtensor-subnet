@@ -30,6 +30,7 @@ class Track:
     enabled: bool = False
     classes: tuple[str, ...] = ()
     metric_display: str = ""
+    chat: bool = False
 
     def __post_init__(self) -> None:
         if self.enabled and self.emission_share <= 0.0:
@@ -106,6 +107,7 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.GREEDY,
             emission_share=0.0,
             work_unit="generated_tokens",
+            chat=True,
         ),
         Track(
             id="extract",
@@ -115,6 +117,7 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.GREEDY,
             emission_share=0.0,
             work_unit="generated_tokens",
+            chat=True,
         ),
         Track(
             id="analytics",
@@ -123,6 +126,7 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.GREEDY,
             emission_share=0.0,
             work_unit="generated_tokens",
+            chat=True,
         ),
         Track(
             id="support",
@@ -131,6 +135,7 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.GREEDY,
             emission_share=0.0,
             work_unit="generated_tokens",
+            chat=True,
         ),
         Track(
             id="detect",
@@ -139,6 +144,7 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.ARGMAX,
             emission_share=0.0,
             work_unit="images",
+            chat=True,
         ),
         Track(
             id="vqa",
@@ -147,6 +153,7 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.GREEDY,
             emission_share=0.0,
             work_unit="images",
+            chat=True,
         ),
         Track(
             id="speech",
@@ -155,6 +162,7 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.ARGMAX,
             emission_share=0.0,
             work_unit="audio_seconds",
+            chat=True,
         ),
         Track(
             id="video",

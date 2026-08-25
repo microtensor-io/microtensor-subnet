@@ -35,6 +35,7 @@ class Request:
     decoding: Decoding = Decoding.GREEDY
     seed: int = 0
     nonce: str = ""
+    chat: bool = False
 
     def __post_init__(self) -> None:
         if not self.task_ref:
