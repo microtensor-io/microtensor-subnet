@@ -198,6 +198,41 @@ class SubtensorClient:
                 found[hotkey] = str(raw)
         return found
 
+    def commitment_blocks(self, hotkeys: Sequence[str]) -> dict[str, int]:
+        """The block each hotkey's current commitment landed in.
+
+        The pallet stores the block beside the payload; bittensor's reader
+        strips it, so this queries the storage map directly. A hotkey it
+        cannot answer for is absent, and the caller chooses the stand-in.
+        """
+        substrate = getattr(self.subtensor, "substrate", None)
+        if substrate is None:
+            return {}
+
+        wanted = {str(h) for h in hotkeys}
+        found: dict[str, int] = {}
+
+        def read() -> Any:
+            return substrate.query_map("Commitments", "CommitmentOf", [self._config.netuid])
+
+        try:
+            rows = with_retry("commitment blocks", read)
+        except Exception as exc:
+            log.warning("commitment blocks unreadable, ties fall back to the close block: %s", exc)
+            return {}
+
+        for key, value in rows:
+            hotkey = str(getattr(key, "value", key))
+            if hotkey not in wanted:
+                continue
+            record = getattr(value, "value", value)
+            if not isinstance(record, dict):
+                continue
+            block = record.get("block")
+            if block is not None:
+                found[hotkey] = int(block)
+        return found
+
     def _commitments_from_metagraph(self, hotkeys: Sequence[str]) -> dict[str, str] | None:
         """Read commitments off the metagraph when it already carries them.
 

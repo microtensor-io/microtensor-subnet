@@ -62,6 +62,14 @@ class ChainSource:
         commitments = decode_all(raw)
         uid_by_hotkey = snapshot.uid_by_hotkey
 
+        blocks: dict[str, int] = {}
+        reader = getattr(self.client, "commitment_blocks", None)
+        if reader is not None:
+            try:
+                blocks = dict(reader(list(commitments))) or {}
+            except Exception as exc:
+                log.warning("commitment blocks unreadable: %s", exc)
+
         found: list[System] = []
         catalogue: dict[str, Entry] = {}
 
@@ -92,7 +100,7 @@ class ChainSource:
                 hardware_class=hardware_class,
                 quality=0.0,
                 expected_ms=0.0,
-                committed_at=round_.index,
+                committed_at=blocks.get(hotkey, round_.close_block),
             )
 
         log.info("round %d: %d systems committed on chain", round_.index, len(found))
