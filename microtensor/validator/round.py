@@ -196,6 +196,44 @@ def _report_inadmissible(context: ValidatorContext, plan: Plan, roster: Roster) 
             log.info("reported %s as inadmissible: %s", hotkey, reason)
 
 
+def _screen_derivation(context, round_index, participants):  # type: ignore[no-untyped-def]
+    """Compare this round's measured artifacts for derivation, off the score path.
+
+    Wrapped so nothing it does can cost a round: report-only by default, and any
+    failure is logged and swallowed. The artifacts are already in the cache from
+    measurement, so this reads what is on disk and records distances.
+    """
+    try:
+        from microtensor.validator.derive import read_subject, screen
+
+        subjects = []
+        for participant in participants:
+            path = context.cache.get(participant.manifest.artifact_digest)
+            if path is None:
+                continue
+            subjects.append(
+                read_subject(
+                    key=participant.commitment.manifest_digest,
+                    committed_at=getattr(participant, "committed_at", round_index),
+                    path=path,
+                    base_sample=None,
+                )
+            )
+        if len(subjects) < 2:
+            return
+        comparisons = screen(subjects, prior=[])
+        fired = sum(1 for c in comparisons if any(sig.fired for sig in c.signals))
+        if fired:
+            log.info(
+                "round %d: derivation screen ran over %d artifacts, %d pair(s) fired a signal",
+                round_index,
+                len(subjects),
+                fired,
+            )
+    except Exception as exc:
+        log.warning("derivation screen skipped: %s", exc)
+
+
 def run_round(
     context: ValidatorContext,
     round_: Round,
@@ -418,6 +456,7 @@ def _run_round(
         scored += sum(1 for e in result.evaluations if e.measured is not None)
 
         price_components(context, round_.index, track, hardware_class, participants)
+        _screen_derivation(context, round_.index, participants)
 
         if plan.mode is Mode.COORDINATED:
             reports.extend(

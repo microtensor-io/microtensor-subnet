@@ -69,6 +69,9 @@ REVEAL_WINDOW_BLOCKS: Final[int] = _blocks("MT_REVEAL_WINDOW_BLOCKS", 25)
 REQUIRE_SEALED_SUBMISSIONS: Final[bool] = (
     os.environ.get("MT_REQUIRE_SEALED_SUBMISSIONS", "").strip() == "1"
 )
+DERIVATION_ENFORCING: Final[bool] = (
+    os.environ.get("MT_DERIVATION_ENFORCING", "").strip() == "1"
+)
 DEADLINE_MARGIN_BLOCKS: Final[int] = 40
 
 MIN_VALIDATOR_STAKE: Final[float] = 1000.0
