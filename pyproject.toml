@@ -38,6 +38,9 @@ validator = [
     # same number published detector benchmarks report, not a reimplementation
     # that drifts in the edge cases COCOeval already settled.
     "pycocotools>=2.0.7",
+    # Renders a model's own chat template with thinking disabled on llama-cpp
+    # builds that cannot pass chat_template_kwargs through.
+    "jinja2>=3.1",
     # Not optional while PROVENANCE_REQUIRED is on: a validator builds a run
     # store every round, so without wandb it raises before it measures
     # anything. Leaving it in the provenance extra meant the documented

@@ -310,19 +310,12 @@ class GgufEngine:
             # Completion tasks (code) stay raw, which is the correct interface
             # for a function-completion benchmark.
             if request.chat:
-                stream = self._chat_stream(request.prompt, sampler)
-                delta_key = "delta"
+                pieces = self._chat_pieces(request.prompt, sampler)
             else:
-                stream = self._model.create_completion(request.prompt, **sampler)
-                delta_key = "text"
+                completion = self._model.create_completion(request.prompt, **sampler)
+                pieces = (c["choices"][0].get("text", "") for c in completion)
 
-            for chunk in stream:
-                choice = chunk["choices"][0]
-                piece = (
-                    choice.get("delta", {}).get("content", "")
-                    if delta_key == "delta"
-                    else choice.get("text", "")
-                )
+            for piece in pieces:
                 if not piece:
                     continue
                 if count == 0:
@@ -349,23 +342,73 @@ class GgufEngine:
             output_tokens=count,
         )
 
-    def _chat_stream(self, prompt: str, sampler: dict[str, Any]) -> Any:
-        """Chat completion with thinking disabled where the build supports it.
+    def _chat_pieces(self, prompt: str, sampler: dict[str, Any]) -> Any:
+        """Text pieces from a chat generation, with thinking disabled.
 
-        `chat_template_kwargs` is passed when the installed llama-cpp-python
-        accepts it, so Qwen3 skips its reasoning block and spends the budget on
-        the answer. Older builds ignore the switch; the output is stripped of
-        any think block regardless, so the answer is scored either way.
+        Three paths, most faithful first. A build that accepts
+        `chat_template_kwargs` gets it directly. Otherwise the model's own
+        chat template is rendered from its gguf metadata with
+        `enable_thinking=False` and fed as a completion, which is what the
+        chat call does internally minus the switch this build cannot pass.
+        Only if the model ships no template does plain chat run, thinking on,
+        with the block stripped from the output afterwards.
         """
         messages = [{"role": "user", "content": prompt}]
         try:
-            return self._model.create_chat_completion(
+            stream = self._model.create_chat_completion(
                 messages=messages,
                 chat_template_kwargs={"enable_thinking": False},
                 **sampler,
             )
+            for chunk in stream:
+                piece = chunk["choices"][0].get("delta", {}).get("content", "")
+                if piece:
+                    yield piece
+            return
         except TypeError:
-            return self._model.create_chat_completion(messages=messages, **sampler)
+            pass
+
+        rendered = self._render_chat(messages)
+        if rendered is not None:
+            for chunk in self._model.create_completion(rendered, **sampler):
+                piece = chunk["choices"][0].get("text", "")
+                if piece:
+                    yield piece
+            return
+
+        for chunk in self._model.create_chat_completion(messages=messages, **sampler):
+            piece = chunk["choices"][0].get("delta", {}).get("content", "")
+            if piece:
+                yield piece
+
+    def _render_chat(self, messages: list[dict[str, str]]) -> str | None:
+        """The model's own chat template, rendered with thinking off."""
+        template = (getattr(self._model, "metadata", None) or {}).get(
+            "tokenizer.chat_template"
+        )
+        if not template:
+            return None
+        try:
+            import json as _json
+
+            import jinja2
+
+            environment = jinja2.Environment(  # noqa: S701 - prompt text, not HTML
+                trim_blocks=True, lstrip_blocks=True
+            )
+            environment.filters["tojson"] = _json.dumps
+
+            def _raise(message: str) -> str:
+                raise ValueError(message)
+
+            environment.globals["raise_exception"] = _raise
+            return environment.from_string(template).render(
+                messages=messages,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except Exception:
+            return None
 
     def unload(self) -> None:
         self._model = None
