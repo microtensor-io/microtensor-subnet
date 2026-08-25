@@ -384,6 +384,44 @@ def _detection_partition_scores(
     )
 
 
+def _extraction_partition_scores(
+    tasks: RoundTasks, by_ref: dict[str, Response]
+) -> tuple[float, float, int, int]:
+    """Entity micro-F1 per partition, aggregated over the whole document set."""
+    from microtensor.scoring.extraction import gold_entities, micro_f1, parse_entities
+
+    rotating = {t.ref for t in tasks.rotating}
+    rot_preds: list[set[tuple[str, str]] | None] = []
+    rot_gold: list[set[tuple[str, str]]] = []
+    fix_preds: list[set[tuple[str, str]] | None] = []
+    fix_gold: list[set[tuple[str, str]]] = []
+    for task in tasks.all:
+        response = by_ref.get(task.ref)
+        preds = parse_entities(response.output) if response and response.ok else None
+        gold = gold_entities(task.gold)
+        if task.ref in rotating:
+            rot_preds.append(preds)
+            rot_gold.append(gold)
+        else:
+            fix_preds.append(preds)
+            fix_gold.append(gold)
+
+    return (
+        micro_f1(rot_preds, rot_gold),
+        micro_f1(fix_preds, fix_gold),
+        len(rot_gold),
+        len(fix_gold),
+    )
+
+
+# Metrics whose ranked quality is aggregated over the whole document set rather
+# than averaged per task. Registering here keeps the dispatch in one place.
+_DATASET_METRICS = {
+    "map_at_iou": _detection_partition_scores,
+    "entity_micro_f1": _extraction_partition_scores,
+}
+
+
 def evaluate_participant(
     context: ValidatorContext,
     participant: Participant,
@@ -427,8 +465,9 @@ def evaluate_participant(
             return _evaluation(participant, tasks, gate=gate, measured=measured)
         metric = get_track(tasks.track).metric
 
-    if metric == "map_at_iou":
-        rotating, fixed, n_rotating, n_fixed = _detection_partition_scores(tasks, by_ref)
+    dataset_scorer = _DATASET_METRICS.get(metric)
+    if dataset_scorer is not None:
+        rotating, fixed, n_rotating, n_fixed = dataset_scorer(tasks, by_ref)
     else:
         rotating, fixed, n_rotating, n_fixed = partition_scores(outcomes)
     return _evaluation(

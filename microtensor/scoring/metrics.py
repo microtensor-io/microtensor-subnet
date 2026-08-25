@@ -134,6 +134,19 @@ def rubric_f1_tool_calls(output: Any, gold: Any) -> float:
     return 0.5 * rubric + 0.5 * calls
 
 
+def entity_micro_f1(output: Any, gold: Any) -> float:
+    """Per-document F1 proxy for entity extraction.
+
+    The ranked quality is corpus-level micro-F1, aggregated across every
+    document per partition, which lives in the validator. This per-task value
+    exists so the pipeline has a number and so a malformed output reads as zero
+    here too.
+    """
+    from microtensor.scoring.extraction import gold_entities, micro_f1, parse_entities
+
+    return micro_f1([parse_entities(output)], [gold_entities(gold)])
+
+
 def map_at_iou(output: Any, gold: Any) -> float:
     """Per-image proxy: did the detector emit any well-formed box for this image.
 
@@ -150,6 +163,7 @@ def map_at_iou(output: Any, gold: Any) -> float:
 METRICS: Final[dict[str, Metric]] = {
     "execution_pass_rate": execution_pass_rate,
     "map_at_iou": map_at_iou,
+    "entity_micro_f1": entity_micro_f1,
     "schema_conformance": schema_conformance,
     "extraction_f1": extraction_f1,
     "span_accuracy": span_accuracy,
