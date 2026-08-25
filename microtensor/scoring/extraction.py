@@ -13,6 +13,7 @@ document, which scores zero the same way malformed code does.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -42,6 +43,14 @@ def parse_entities(output: Any) -> set[Entity] | None:
     rescued. An empty entity list is valid and distinct from malformed: a
     sentence can legitimately contain no entities.
     """
+    if isinstance(output, str):
+        # Engine output is text. It must be exactly one JSON document of the
+        # declared shape; prose, markdown fences or trailing chatter are
+        # malformed, which is the strictness the task states.
+        try:
+            output = json.loads(output)
+        except ValueError:
+            return None
     items: Any = output.get("entities") if isinstance(output, Mapping) else output
     if not isinstance(items, Sequence) or isinstance(items, (str | bytes)):
         return None
