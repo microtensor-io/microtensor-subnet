@@ -393,13 +393,15 @@ Supported schemes: `hf`, `https`, `s3`, `r2`, `ipfs`.
 ## 9 · Timing
 
 ```
-[start ─────────────────── close) [close ──────── deadline]
- publish inside this window        evaluation, too late to submit
+[open ───────────────────── close) [close ──────── deadline]
+ publish inside this window         evaluation, too late to submit
 ```
 
-Submissions close 600 blocks (≈ 2 h) before the round ends, and the participant
-set freezes there by artifact digest. **A commitment for round *N* must land
-before round *N*'s close block.** Anything later competes in round *N+1*.
+The operator opens each round's submission window, and your client reads the
+open round and its close block from the network automatically. You set nothing:
+`mt miner run` picks up the current window and commits inside it. A submission
+for round *N* must land before round *N*'s close block; anything later competes
+in round *N+1*.
 
 The round seed is drawn from the hash of that very close block, so no submitter
 can see the task set. Do not bother trying to time it.
