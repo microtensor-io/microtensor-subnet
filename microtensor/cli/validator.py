@@ -115,7 +115,11 @@ def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tasks-per-round", type=int, default=TASKS_PER_ROUND)
     parser.add_argument("--cache-cap-bytes", type=int, default=ARTIFACT_CACHE_CAP_BYTES)
     parser.add_argument("--cpu-seconds", type=int, default=CPU_SECONDS_PER_ARTIFACT)
-    parser.add_argument("--profile-seconds", type=int, default=60)
+    parser.add_argument(
+        "--profile-seconds",
+        type=int,
+        default=int(os.environ.get("MT_PROFILE_SECONDS", "150")),
+    )
     parser.add_argument(
         "--allow-unsandboxed",
         action="store_true",
