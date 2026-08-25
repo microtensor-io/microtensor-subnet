@@ -8,7 +8,7 @@ from typing import Any
 
 from microtensor.chain.commitment import SOURCE_SCHEMES
 from microtensor.chain.config import ChainConfig
-from microtensor.core.constants import GENESIS_BLOCK, ROUND_BLOCKS
+from microtensor.core.constants import COORDINATOR_URL, GENESIS_BLOCK, ROUND_BLOCKS
 from microtensor.core.protocol import ArtifactFormat
 from microtensor.core.tracks import CLASSES, enabled_tracks, is_competable
 
@@ -38,7 +38,7 @@ class MinerConfig:
     round_blocks: int = ROUND_BLOCKS
     genesis_block: int = GENESIS_BLOCK
     republish_margin_blocks: int = 120
-    coordinator_url: str = ""
+    coordinator_url: str = COORDINATOR_URL
     allow_unsandboxed: bool = False
 
     def __post_init__(self) -> None:

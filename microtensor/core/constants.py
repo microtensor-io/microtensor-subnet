@@ -139,7 +139,9 @@ COORDINATOR_QUORUM: Final[float] = 0.67
 COORDINATOR_RETRIES: Final[int] = 4
 COORDINATOR_BACKOFF_SECONDS: Final[float] = 5.0
 COORDINATOR_TIMEOUT_SECONDS: Final[int] = 30
-COORDINATOR_URL: Final[str] = ""
+COORDINATOR_URL: Final[str] = os.environ.get(
+    "MT_COORDINATOR_URL", "https://coordinator.microtensor.cloud"
+).strip()
 COORDINATOR_SERVER_URL: Final[str] = ""
 # The hotkey whose on-chain commitment counts as the config anchor. Empty
 # means this build cannot check that a served config is the one the chain was
