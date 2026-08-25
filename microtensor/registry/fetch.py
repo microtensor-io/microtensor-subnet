@@ -190,6 +190,7 @@ def materialise(
     attempts: int = ARTIFACT_FETCH_RETRIES,
     timeout: int = ARTIFACT_FETCH_TIMEOUT_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
+    key: str | None = None,
 ) -> Path:
     cached = cache.get(manifest.artifact_digest)
     if cached is not None:
@@ -212,16 +213,43 @@ def materialise(
         except CacheError as exc:
             raise Unfetchable(str(exc)) from exc
 
-        for entry in manifest.files:
+        if manifest.sealed is not None:
+            from microtensor.core.hashing import digest_bytes
+            from microtensor.core.sealing import SealError, open_sealed
+
+            if not key:
+                raise Unfetchable("the submission is sealed and no key was revealed")
+            blob_name = str(manifest.sealed.get("blob", "artifact.enc"))
+            blob_path = staging / blob_name
             _fetch_one(
                 fetcher,
                 locator,
-                entry.path,
-                staging / entry.path,
+                blob_name,
+                blob_path,
                 attempts=attempts,
                 timeout=timeout,
                 sleep=sleep,
             )
+            blob = blob_path.read_bytes()
+            expected = str(manifest.sealed.get("digest", ""))
+            if expected and digest_bytes(blob) != expected:
+                raise ArtifactMismatch("the ciphertext does not match the committed blob digest")
+            try:
+                open_sealed(blob, key, staging)
+            except SealError as exc:
+                raise ArtifactMismatch(str(exc)) from exc
+            blob_path.unlink(missing_ok=True)
+        else:
+            for entry in manifest.files:
+                _fetch_one(
+                    fetcher,
+                    locator,
+                    entry.path,
+                    staging / entry.path,
+                    attempts=attempts,
+                    timeout=timeout,
+                    sleep=sleep,
+                )
 
         ok, reason = verify_tree(staging, manifest)
         if not ok:

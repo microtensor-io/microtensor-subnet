@@ -43,6 +43,7 @@ class ArtifactManifest:
     load: LoadManifest
     declared: DeclaredEnvelope
     system: SystemManifest | None = None
+    sealed: dict[str, str] | None = None
     version: str = MECHANISM_VERSION
     signature: str = ""
 
@@ -79,6 +80,7 @@ class ArtifactManifest:
             "load": self.load.to_dict(),
             "declared": asdict(self.declared),
             "system": self.system.body() if self.system else None,
+            "sealed": dict(self.sealed) if self.sealed else None,
         }
 
     def digest(self) -> str:
@@ -159,6 +161,7 @@ class ArtifactManifest:
                 track=str(payload["track"]),
                 hardware_class=str(payload["hardware_class"]),
                 source=str(payload["source"]),
+                sealed=(dict(payload["sealed"]) if payload.get("sealed") else None),
                 files=tuple(
                     FileEntry(
                         path=str(f["path"]),
@@ -198,6 +201,7 @@ class ArtifactManifest:
 
 
 MANIFEST_NAME = "manifest.json"
+SEALED_BLOB_NAME = "artifact.enc"
 EXCLUDED_PREFIXES = (".",)
 
 
@@ -205,7 +209,7 @@ def is_artifact_file(root: Path, path: Path) -> bool:
     if not path.is_file():
         return False
     parts = path.relative_to(root).parts
-    if parts == (MANIFEST_NAME,):
+    if parts in ((MANIFEST_NAME,), (SEALED_BLOB_NAME,)):
         return False
     return not any(part.startswith(EXCLUDED_PREFIXES) for part in parts)
 
@@ -220,6 +224,7 @@ def build_manifest(
     source: str,
     load: LoadManifest,
     declared: DeclaredEnvelope,
+    sealed: dict[str, str] | None = None,
 ) -> ArtifactManifest:
     if not root.is_dir():
         raise ManifestError(f"{root} is not an artifact directory")
@@ -243,6 +248,7 @@ def build_manifest(
         files=files,
         load=load,
         declared=declared,
+        sealed=sealed,
     )
 
 

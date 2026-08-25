@@ -8,6 +8,8 @@ from microtensor.core.constants import MAX_COMMITMENT_BYTES
 from microtensor.core.hashing import DIGEST_PREFIX
 
 COMMITMENT_TAG: Final[str] = "mt1"
+REVEAL_TAG: Final[str] = "mtr"
+SEALED_MARK: Final[str] = "k"
 FIELD_SEPARATOR: Final[str] = "|"
 SHORT_DIGEST_CHARS: Final[int] = 32
 
@@ -43,6 +45,7 @@ class Commitment:
     hardware_class: str
     manifest_digest: str
     source: str
+    sealed: bool = False
 
     def __post_init__(self) -> None:
         if self.round_index < 0:
@@ -75,6 +78,7 @@ class Commitment:
                 self.hardware_class,
                 self.manifest_digest,
                 self.source,
+                *((SEALED_MARK,) if self.sealed else ()),
             )
         )
         size = len(payload.encode("utf-8"))
@@ -89,7 +93,9 @@ class Commitment:
         if not raw:
             return None
         parts = raw.strip().split(FIELD_SEPARATOR)
-        if len(parts) != 6 or parts[0] != COMMITMENT_TAG:
+        if len(parts) not in (6, 7) or parts[0] != COMMITMENT_TAG:
+            return None
+        if len(parts) == 7 and parts[6] != SEALED_MARK:
             return None
         try:
             return cls(
@@ -98,6 +104,7 @@ class Commitment:
                 hardware_class=parts[3],
                 manifest_digest=parts[4].lower(),
                 source=parts[5],
+                sealed=len(parts) == 7,
             )
         except (CommitmentError, ValueError):
             return None
@@ -106,12 +113,59 @@ class Commitment:
         return digest_matches(self.manifest_digest, digest)
 
 
+@dataclass(frozen=True, slots=True)
+class Reveal:
+    """The key for a sealed submission, posted at the close block.
+
+    It replaces the submission in the hotkey's single commitment slot, so it
+    carries only what the slot no longer holds: which artifact, and the key.
+    Everything else was captured by readers during the open window.
+    """
+
+    round_index: int
+    manifest_digest: str
+    key: str
+
+    def __post_init__(self) -> None:
+        if self.round_index < 0:
+            raise CommitmentError("round index must not be negative")
+        if not _HEX.match(self.manifest_digest) or len(self.manifest_digest) < 16:
+            raise CommitmentError("digest must be at least 16 hex chars")
+        if not _HEX.match(self.key) or len(self.key) != 64:
+            raise CommitmentError("key must be 64 hex chars")
+
+    def encode(self) -> str:
+        payload = FIELD_SEPARATOR.join(
+            (REVEAL_TAG, str(self.round_index), self.manifest_digest, self.key)
+        )
+        if len(payload.encode("utf-8")) > MAX_COMMITMENT_BYTES:
+            raise CommitmentError("reveal is over the chain limit")
+        return payload
+
+    @classmethod
+    def decode(cls, raw: str) -> Reveal | None:
+        if not raw:
+            return None
+        parts = raw.strip().split(FIELD_SEPARATOR)
+        if len(parts) != 4 or parts[0] != REVEAL_TAG:
+            return None
+        try:
+            return cls(
+                round_index=int(parts[1]),
+                manifest_digest=parts[2].lower(),
+                key=parts[3].lower(),
+            )
+        except (CommitmentError, ValueError):
+            return None
+
+
 def build_commitment(
     round_index: int,
     track: str,
     hardware_class: str,
     manifest_digest: str,
     source: str,
+    sealed: bool = False,
 ) -> Commitment:
     return Commitment(
         round_index=round_index,
@@ -119,6 +173,7 @@ def build_commitment(
         hardware_class=hardware_class,
         manifest_digest=short_digest(manifest_digest),
         source=source,
+        sealed=sealed,
     )
 
 

@@ -79,6 +79,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="declare what selfcheck measured instead of explicit ceilings",
     )
+    pack.add_argument(
+        "--sealed",
+        action="store_true",
+        help="encrypt the artifact; publish only ciphertext, reveal the key at close",
+    )
     pack.set_defaults(handler=_package)
 
     up = inner.add_parser("upload", help="push the packaged artifact to your source")
@@ -94,7 +99,17 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _add_settings_arguments(ship)
     ship.add_argument("--profile-seconds", type=int, default=60)
     ship.add_argument("--no-selfcheck", action="store_true")
+    ship.add_argument(
+        "--sealed",
+        action="store_true",
+        help="encrypt the artifact; publish only ciphertext, reveal the key at close",
+    )
     ship.set_defaults(handler=_ship)
+
+    unveil = inner.add_parser("reveal", help="post the key for a sealed submission")
+    _add_settings_arguments(unveil)
+    unveil.add_argument("--round", type=int, help="round to reveal; defaults to the packaged round")
+    unveil.set_defaults(handler=_reveal)
 
     serve = inner.add_parser("run", help="re-commit automatically every round")
     _add_settings_arguments(serve)
@@ -324,7 +339,14 @@ def _do_package(args: argparse.Namespace, config: MinerConfig, round_index: int 
     wallet = open_wallet(config.chain)
     client = open_client(config.chain, wallet)
     index = round_index if round_index is not None else current_round(config, client).index
-    manifest = package(config, index, _load_manifest_spec(config), _declared(args, config), wallet)
+    manifest = package(
+        config,
+        index,
+        _load_manifest_spec(config),
+        _declared(args, config),
+        wallet,
+        seal=bool(getattr(args, "sealed", False)),
+    )
     return manifest, client
 
 
@@ -456,6 +478,23 @@ def _publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reveal(args: argparse.Namespace) -> int:
+    from microtensor.miner.package import load_packaged
+    from microtensor.miner.publish import reveal
+
+    try:
+        config = _config(args)
+        wallet = open_wallet(config.chain)
+        client = open_client(config.chain, wallet)
+        manifest = load_packaged(config)
+        index = args.round if args.round is not None else manifest.round_index
+        payload = reveal(config, client, index, manifest)
+    except (MinerConfigError, PackageError, PublishError) as exc:
+        return fail(str(exc))
+    print(f"revealed   round {index}: {payload.split('|')[0]}|…|<key>")
+    return 0
+
+
 def _ship(args: argparse.Namespace) -> int:
     try:
         config = _config(args)
@@ -479,7 +518,12 @@ def _ship(args: argparse.Namespace) -> int:
             )
 
         manifest = package(
-            config, round_.index, _load_manifest_spec(config), _declared(args, config), wallet
+            config,
+            round_.index,
+            _load_manifest_spec(config),
+            _declared(args, config),
+            wallet,
+            seal=bool(getattr(args, "sealed", False)),
         )
         print(f"packaged   {len(manifest.files)} files, {manifest.total_bytes / 1024**3:.2f} GiB")
 

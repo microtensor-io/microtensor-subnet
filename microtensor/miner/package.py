@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 from microtensor.chain.wallet import hotkey_address, sign_payload
@@ -23,6 +25,7 @@ def package(
     load: LoadManifest,
     declared: DeclaredEnvelope,
     wallet: Any,
+    seal: bool = False,
 ) -> ArtifactManifest:
     if not config.artifact_dir.is_dir():
         raise PackageError(f"{config.artifact_dir} is not a directory")
@@ -30,6 +33,19 @@ def package(
     hotkey = hotkey_address(wallet)
     staged = config.artifact_dir / MANIFEST_NAME
     staged.unlink(missing_ok=True)
+
+    sealed = None
+    if seal:
+        from microtensor.core.hashing import digest_bytes
+        from microtensor.core.sealing import ALGORITHM, BLOB_NAME, seal_tree
+
+        blob, key = seal_tree(config.artifact_dir)
+        (config.artifact_dir / BLOB_NAME).write_bytes(blob)
+        sealed = {
+            "algorithm": ALGORITHM,
+            "blob": BLOB_NAME,
+            "digest": digest_bytes(blob),
+        }
 
     try:
         manifest = build_manifest(
@@ -41,6 +57,7 @@ def package(
             source=config.source,
             load=load,
             declared=declared,
+            sealed=sealed,
         )
     except ManifestError as exc:
         raise PackageError(str(exc)) from exc
@@ -52,6 +69,10 @@ def package(
     signed = manifest.signed_with(sign_payload(wallet, manifest.body()))
     staged.write_bytes(signed.to_json())
 
+    if seal:
+        key_path = save_key(signed.digest(), round_index, key)
+        log.info("sealed under a key held at %s; reveal it at the close block", key_path)
+
     log.info(
         "packaged %d files, %.2f GiB, manifest %s",
         len(signed.files),
@@ -59,6 +80,31 @@ def package(
         signed.digest()[:23],
     )
     return signed
+
+
+def reveal_dir() -> Path:
+    home = Path(os.environ.get("MT_HOME", "~/.microtensor")).expanduser()
+    return home / "reveal"
+
+
+def save_key(manifest_digest: str, round_index: int, key: str) -> Path:
+    from microtensor.chain.commitment import short_digest
+
+    target = reveal_dir()
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / f"r{round_index}-{short_digest(manifest_digest)}.key"
+    path.write_text(key, encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def load_key(manifest_digest: str, round_index: int) -> str | None:
+    from microtensor.chain.commitment import short_digest
+
+    path = reveal_dir() / f"r{round_index}-{short_digest(manifest_digest)}.key"
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8").strip()
 
 
 def load_packaged(config: MinerConfig) -> ArtifactManifest:
@@ -73,6 +119,8 @@ def load_packaged(config: MinerConfig) -> ArtifactManifest:
 
 
 def publishable_files(manifest: ArtifactManifest) -> list[str]:
+    if manifest.sealed:
+        return [MANIFEST_NAME, str(manifest.sealed.get("blob", ""))]
     return [entry.path for entry in manifest.files] + [MANIFEST_NAME]
 
 

@@ -138,7 +138,10 @@ def _cpu_budget(context: ValidatorContext, cpu_seconds: int) -> int:
 def materialise(context: ValidatorContext, participant: Participant) -> Path:
     try:
         return fetch_artifact(
-            participant.manifest, context.cache, workdir=context.config.work_dir
+            participant.manifest,
+            context.cache,
+            workdir=context.config.work_dir,
+            key=participant.key,
         )
     except Unfetchable as exc:
         raise Abstain(f"{participant.hotkey}: artifact unfetchable — {exc}") from exc

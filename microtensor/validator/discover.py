@@ -8,7 +8,13 @@ from microtensor.chain.commitment import Commitment, decode_all
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.rounds import Round, accepts_commitment
 from microtensor.chain.wallet import verify_payload
-from microtensor.core.constants import ALSO_ACCEPT_ROUNDS, HOST_PROFILE
+from microtensor.core.constants import (
+    ALSO_ACCEPT_ROUNDS,
+    BLOCK_TIME_SECONDS,
+    HOST_PROFILE,
+    REQUIRE_SEALED_SUBMISSIONS,
+    REVEAL_WINDOW_BLOCKS,
+)
 from microtensor.core.protocol import Role
 from microtensor.core.system import SystemManifest
 from microtensor.provenance.record import ProvenanceUnavailable, Verdict
@@ -26,6 +32,7 @@ class Participant:
     uid: int
     commitment: Commitment
     manifest: ArtifactManifest
+    key: str | None = None
 
     @property
     def competition(self) -> tuple[str, str]:
@@ -140,6 +147,7 @@ def discover(
 ) -> Roster:
     raw = context.client.commitments(list(snapshot.hotkeys))
     commitments = decode_all(raw)
+    keys = _reveals_of(raw, round_.index)
     log.info("round %d: %d commitments readable", round_.index, len(commitments))
 
     uid_by_hotkey = snapshot.uid_by_hotkey
@@ -177,6 +185,8 @@ def discover(
         else:
             reason = _manifest_reason(manifest, hotkey, context.config.verify_signatures)
             if not reason:
+                reason = _sealing_reason(commitment, manifest)
+            if not reason:
                 system = _system_of(manifest, commitment.hardware_class)
                 reason = _base_model_reason(
                     system,
@@ -212,6 +222,7 @@ def discover(
                 uid=uid_by_hotkey[hotkey],
                 commitment=commitment,
                 manifest=manifest,
+                key=keys.get(hotkey),
             )
         )
         context.state.record_submission(
@@ -225,6 +236,8 @@ def discover(
             accepted=True,
         )
 
+    accepted, rejected = _await_reveals(context, round_, accepted, rejected)
+
     for hotkey, _digest, reason in rejected:
         log.info("round %d: %s rejected: %s", round_.index, hotkey, reason)
 
@@ -235,6 +248,95 @@ def discover(
         len(rejected),
     )
     return Roster(round_.index, tuple(accepted), tuple(rejected), provenance)
+
+
+def _reveals_of(raw: Mapping[str, str], round_index: int) -> dict[str, str]:
+    """Keys already posted, from slots whose submission was replaced by a reveal
+    or read again after one landed."""
+    from microtensor.chain.commitment import Reveal
+
+    found: dict[str, str] = {}
+    for hotkey, payload in raw.items():
+        reveal = Reveal.decode(payload)
+        if reveal is not None and reveal.round_index == round_index:
+            found[hotkey] = reveal.key
+    return found
+
+
+def _sealing_reason(commitment: Commitment, manifest: ArtifactManifest) -> str:
+    if commitment.sealed and manifest.sealed is None:
+        return "commitment says sealed but the manifest carries no sealed block"
+    if not commitment.sealed and manifest.sealed is not None:
+        return "manifest is sealed but the commitment does not say so"
+    if REQUIRE_SEALED_SUBMISSIONS and not commitment.sealed:
+        return "this round requires sealed submissions"
+    return ""
+
+
+def _await_reveals(
+    context: ValidatorContext,
+    round_: Round,
+    accepted: list[Participant],
+    rejected: list[tuple[str, str, str]],
+) -> tuple[list[Participant], list[tuple[str, str, str]]]:
+    """Hold discovery open until sealed participants have keys or the window ends.
+
+    Exclusion is self-enforcing: a miner who never reveals is dropped with a
+    reason that says exactly that, and nothing about it needs adjudicating.
+    """
+    import time as _time
+
+    pending = [p for p in accepted if p.commitment.sealed and not p.key]
+    if not pending:
+        return accepted, rejected
+
+    deadline = round_.close_block + REVEAL_WINDOW_BLOCKS
+    while pending and context.client.block() < deadline:
+        log.info(
+            "round %d: waiting on %d reveal(s), window closes at block %d",
+            round_.index,
+            len(pending),
+            deadline,
+        )
+        _time.sleep(BLOCK_TIME_SECONDS * 2)
+        raw = context.client.commitments([p.hotkey for p in pending])
+        keys = _reveals_of(raw, round_.index)
+        if not keys:
+            continue
+        refreshed: list[Participant] = []
+        for participant in accepted:
+            key = keys.get(participant.hotkey)
+            if key and participant.commitment.sealed and not participant.key:
+                participant = Participant(
+                    hotkey=participant.hotkey,
+                    uid=participant.uid,
+                    commitment=participant.commitment,
+                    manifest=participant.manifest,
+                    key=key,
+                )
+            refreshed.append(participant)
+        accepted = refreshed
+        pending = [p for p in accepted if p.commitment.sealed and not p.key]
+
+    for participant in pending:
+        rejected.append(
+            (
+                participant.hotkey,
+                participant.commitment.manifest_digest,
+                "sealed submission was never revealed",
+            )
+        )
+        context.state.record_submission(
+            round_.index,
+            participant.hotkey,
+            participant.commitment.track,
+            participant.commitment.hardware_class,
+            participant.commitment.manifest_digest,
+            participant.commitment.source,
+            reason="sealed submission was never revealed",
+        )
+    accepted = [p for p in accepted if not (p.commitment.sealed and not p.key)]
+    return accepted, rejected
 
 
 def _reject_reason(

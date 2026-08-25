@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from microtensor.chain.client import ChainClient
-from microtensor.chain.commitment import Commitment, build_commitment
+from microtensor.chain.commitment import Commitment, Reveal, build_commitment
 from microtensor.chain.rounds import Round, round_for_block
 from microtensor.core.constants import BLOCK_TIME_SECONDS, POLL_INTERVAL_SECONDS
 from microtensor.miner.config import MinerConfig
@@ -46,6 +46,7 @@ def commitment_for(
         config.hardware_class,
         manifest.digest(),
         config.source,
+        sealed=manifest.sealed is not None,
     )
 
 
@@ -80,6 +81,35 @@ def publish(
     return Published(round_index=round_index, commitment=commitment, payload=payload)
 
 
+def reveal(
+    config: MinerConfig, client: ChainClient, round_index: int, manifest: ArtifactManifest
+) -> str:
+    """Post the key for a sealed submission, replacing the slot's contents.
+
+    The submission itself was already read by every party that needed it
+    during the open window; from the close block onward the only thing the
+    slot has to say is which artifact this is and how to open it.
+    """
+    from microtensor.miner.package import load_key
+
+    if manifest.sealed is None:
+        raise PublishError("this submission is not sealed; there is nothing to reveal")
+    key = load_key(manifest.digest(), round_index)
+    if key is None:
+        raise PublishError(
+            f"no key held for round {round_index}; was this artifact packaged here?"
+        )
+    payload = Reveal(
+        round_index=round_index,
+        manifest_digest=manifest.digest().split(":", 1)[-1][:32],
+        key=key,
+    ).encode()
+    if not client.publish(payload):
+        raise PublishError("the chain rejected the reveal")
+    log.info("round %d: key revealed", round_index)
+    return payload
+
+
 class PublishLoop:
     def __init__(
         self,
@@ -95,6 +125,7 @@ class PublishLoop:
         self._sleep = sleep
         self._running = False
         self.published: list[Published] = []
+        self.revealed: set[int] = set()
 
     def stop(self, *_: object) -> None:
         self._running = False
@@ -104,6 +135,7 @@ class PublishLoop:
         block = self.client.block()
 
         if any(p.round_index == round_.index for p in self.published):
+            self._maybe_reveal(round_, block)
             self._sleep(self.poll_seconds)
             return None
 
@@ -130,6 +162,22 @@ class PublishLoop:
         published = publish(self.config, self.client, round_.index, manifest)
         self.published.append(published)
         return published
+
+    def _maybe_reveal(self, round_: Round, block: int) -> None:
+        if round_.index in self.revealed or block < round_.close_block:
+            return
+        try:
+            manifest = load_packaged(self.config)
+        except Exception:
+            return
+        if manifest.sealed is None or manifest.round_index != round_.index:
+            self.revealed.add(round_.index)
+            return
+        try:
+            reveal(self.config, self.client, round_.index, manifest)
+            self.revealed.add(round_.index)
+        except PublishError as exc:
+            log.warning("reveal not posted yet: %s", exc)
 
     def run(self, max_rounds: int | None = None) -> int:
         self._running = True
