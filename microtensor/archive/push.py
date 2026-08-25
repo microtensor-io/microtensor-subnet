@@ -37,6 +37,7 @@ class Candidate:
     certificate: dict[str, Any] | None = None
     quality: float | None = None
     expected_ms: float | None = None
+    has_manifest: bool = True
     tags: list[str] = field(default_factory=list)
 
 
@@ -72,12 +73,28 @@ def snapshots(cache_dirs: list[Path]) -> dict[str, Path]:
     return found
 
 
+def components_by_system(coordinator_url: str, round_index: int) -> dict[str, str]:
+    published = _get(f"{coordinator_url}/v1/settlement/{round_index}")
+    out: dict[str, str] = {}
+    for entry in published.get("frontier", ()):
+        front = dict(entry.get("components") or {}).get("front", "")
+        if front:
+            out[str(entry.get("system"))] = str(front).split(":", 1)[-1]
+    return out
+
+
 def candidates(
-    server_url: str, track: str, hardware_class: str, cache_dirs: list[Path]
+    server_url: str,
+    coordinator_url: str,
+    track: str,
+    hardware_class: str,
+    cache_dirs: list[Path],
+    object_dirs: list[Path],
 ) -> tuple[list[Candidate], list[str], int]:
     board = _get(f"{server_url}/v1/arenas/{track}/{hardware_class}/leaderboard")
     round_index = int(board.get("round_index"))
     by_digest = snapshots(cache_dirs)
+    fronts = components_by_system(coordinator_url, round_index)
 
     kept: list[Candidate] = []
     missing: list[str] = []
@@ -85,10 +102,18 @@ def candidates(
         if system.get("state") not in ARCHIVED_STATES:
             continue
         system_id = str(system["system_id"])
+        has_manifest = True
         snapshot = next(
             (path for digest, path in by_digest.items() if digest.startswith(system_id)),
             None,
         )
+        if snapshot is None:
+            front = fronts.get(system_id, "")
+            for root in object_dirs:
+                if front and (root / front).is_dir():
+                    snapshot = root / front
+                    has_manifest = False
+                    break
         if snapshot is None:
             missing.append(system_id)
             continue
@@ -108,6 +133,7 @@ def candidates(
                 certificate=certificate,
                 quality=system.get("quality"),
                 expected_ms=system.get("expected_ms"),
+                has_manifest=has_manifest,
             )
         )
     return kept, missing, round_index
@@ -161,13 +187,22 @@ def card(
         ]
     else:
         lines += ["## Measured record", "", NO_CERTIFICATE]
-    lines += [
-        "",
-        "The manifest in `manifest.json` is the submission exactly as the",
-        "miner shipped it; this repository's contents hash to the digest",
-        "committed on chain for this round.",
-        "",
-    ]
+    if candidate.has_manifest:
+        lines += [
+            "",
+            "The manifest in `manifest.json` is the submission exactly as the",
+            "miner shipped it; this repository's contents hash to the digest",
+            "committed on chain for this round.",
+            "",
+        ]
+    else:
+        lines += [
+            "",
+            "The artifact was fetched over a scheme that left no manifest file",
+            "on disk; the bytes here are the component the network verified by",
+            "digest and measured, retained without the submitted manifest.",
+            "",
+        ]
     return "\n".join(lines)
 
 
@@ -216,15 +251,19 @@ def push(target: Path, org: str, token: str) -> str:
 def run(
     *,
     server_url: str,
+    coordinator_url: str,
     track: str,
     hardware_class: str,
     org: str,
     token: str,
     cache_dirs: list[Path],
+    object_dirs: list[Path],
     staging_root: Path,
     dry_run: bool = False,
 ) -> int:
-    kept, missing, round_index = candidates(server_url, track, hardware_class, cache_dirs)
+    kept, missing, round_index = candidates(
+        server_url, coordinator_url, track, hardware_class, cache_dirs, object_dirs
+    )
     for system_id in missing:
         log.warning("no cached bytes for %s; it cannot be archived from here", system_id)
 

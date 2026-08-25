@@ -16,6 +16,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     round_.add_argument("--track", default="code")
     round_.add_argument("--hardware-class", default="mt-3g")
     round_.add_argument("--server", default="https://api.microtensor.cloud")
+    round_.add_argument("--coordinator", default="https://coordinator.microtensor.cloud")
     round_.add_argument("--org", default="microtensor-archive")
     round_.add_argument(
         "--cache",
@@ -40,13 +41,19 @@ def _round(args: argparse.Namespace) -> int:
         "~/.cache/huggingface/hub",
         "~/archive-r1236-salvage",
     ]
+    objects = [
+        "~/.microtensor/cache/objects",
+        "~/archive-r1236-objects",
+    ]
     archived = run(
         server_url=args.server.rstrip("/"),
+        coordinator_url=args.coordinator.rstrip("/"),
         track=args.track,
         hardware_class=args.hardware_class,
         org=args.org,
         token=token,
         cache_dirs=[Path(c).expanduser() for c in caches],
+        object_dirs=[Path(o).expanduser() for o in objects],
         staging_root=Path(args.staging).expanduser(),
         dry_run=args.dry_run,
     )
