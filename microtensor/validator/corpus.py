@@ -18,11 +18,21 @@ def parse(payload: dict[str, Any]) -> Corpus:
     that skipped the check would be measuring against a task set nobody else
     agreed to.
     """
+    # Gold for the scored partitions travels in the tests sidecar, never inline
+    # on the task: a scored task carrying its own answer would put the answer in
+    # front of whoever holds the task. Attaching it here is what makes the task
+    # scorable; without it every prediction is compared against nothing and the
+    # whole field scores zero.
+    sidecar = {
+        str(entry["ref"]): dict(entry)
+        for entry in payload.get("tests", ())
+        if isinstance(entry, dict) and entry.get("ref")
+    }
     tasks = tuple(
         Task(
             ref=str(row["ref"]),
             prompt=str(row["prompt"]),
-            gold=row.get("gold"),
+            gold=sidecar.get(str(row["ref"]), row.get("gold")),
             partition=str(row["partition"]),
             inputs=dict(row.get("inputs") or {}),
             max_output_tokens=int(row.get("max_output_tokens", 512)),
