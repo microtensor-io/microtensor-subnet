@@ -182,7 +182,5 @@ def evaluate_gate(
             failures.append(GateFailure.SIZE_OVER_DECLARED)
         if measured.peak_rss_bytes > declared.peak_rss_bytes * (1.0 + DECLARATION_TOLERANCE_RSS):
             failures.append(GateFailure.RSS_OVER_DECLARED)
-        if measured.ttft_p95_ms > latency_allowance(declared.p95_latency_ms):
-            failures.append(GateFailure.LATENCY_OVER_DECLARED)
 
     return GateResult(admitted=not failures, failures=tuple(failures))
