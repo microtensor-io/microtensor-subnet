@@ -93,6 +93,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     push = inner.add_parser("publish", help="commit the pointer on chain for one round")
     _add_settings_arguments(push)
     push.add_argument("--upload", action="store_true", help="upload before committing")
+    push.add_argument(
+        "--recommit",
+        action="store_true",
+        help="restore a pointer a reveal overwrote, after the window closed",
+    )
     push.set_defaults(handler=_publish)
 
     ship = inner.add_parser("ship", help="package, upload and publish in one step")
@@ -454,9 +459,14 @@ def _publish(args: argparse.Namespace) -> int:
 
         round_ = current_round(config, client)
         if not round_.accepts_submissions(client.block()):
-            return fail(
+            if not getattr(args, "recommit", False):
+                return fail(
+                    f"round {round_.index} closed at block {round_.close_block}; "
+                    f"package for round {round_.index + 1} instead"
+                )
+            print(
                 f"round {round_.index} closed at block {round_.close_block}; "
-                f"package for round {round_.index + 1} instead"
+                "re-committing a pointer that was overwritten by its own reveal"
             )
 
         if args.upload:
