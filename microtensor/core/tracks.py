@@ -115,8 +115,10 @@ TRACKS: Final[dict[str, Track]] = {
             metric="entity_micro_f1",
             metric_display="entity micro-F1 (exact)",
             decoding=Decoding.GREEDY,
-            emission_share=0.0,
+            emission_share=1.0,
             work_unit="generated_tokens",
+            enabled=True,
+            classes=("mt-3g",),
             chat=True,
         ),
         Track(
