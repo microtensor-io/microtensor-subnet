@@ -758,7 +758,11 @@ def build_app(coordinator: Coordinator) -> Any:
 
     @app.get("/v1/settlement/{round_index}")
     def settlement(round_index: int) -> dict[str, Any]:
-        found = coordinator.settle(round_index) or coordinator.settlement(round_index)
+        # Read-only on purpose. This used to lazily settle, which let any poll
+        # of an unfinished round mint a hold settlement for it; settling is the
+        # operator's act, through `mt coordinator settle`, never a side effect
+        # of a validator asking whether one exists yet.
+        found = coordinator.settlement(round_index)
         if found is None:
             raise HTTPException(status_code=404, detail="no settlement published yet")
         return found

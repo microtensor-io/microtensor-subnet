@@ -252,10 +252,13 @@ def normalise_reserved(reserved: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def measured_weights(store: Any) -> dict[int, float]:
-    row = store.latest_round()
-    if row is None:
-        return {}
-    published = store.settlement(int(row["round_index"])) or {}
+    """The newest settlement that exists, not the newest round.
+
+    While a round is open or evaluating it has no settlement yet, and the
+    field's standing pay must keep flowing from the last settled round rather
+    than collapsing to the hold for the whole window.
+    """
+    published = store.newest_settlement() or {}
     return {int(uid): float(value) for uid, value in published.get("weights", {}).items()}
 
 

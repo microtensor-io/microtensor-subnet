@@ -801,6 +801,16 @@ class CoordinatorStore:
             ),
         )
 
+    def newest_settlement(self) -> dict[str, Any] | None:
+        row = self.db.one(
+            "SELECT payload, signature FROM settlements ORDER BY round_index DESC LIMIT 1"
+        )
+        if row is None:
+            return None
+        body: dict[str, Any] = json.loads(str(row["payload"]))
+        body["signature"] = str(row["signature"])
+        return body
+
     def settlement(self, round_index: int) -> dict[str, Any] | None:
         row = self.db.one(
             "SELECT payload, signature FROM settlements WHERE round_index = ?",
