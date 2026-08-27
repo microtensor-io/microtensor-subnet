@@ -10,7 +10,7 @@ from microtensor.coordinator.report import Report
 
 log = logging.getLogger("microtensor.coordinator")
 
-QUALITY_QUANTUM = 4
+QUALITY_QUANTUM = 2
 
 VERSION_MISMATCH = "engine or corpus version does not match the round"
 CORPUS_MISMATCH = "the worker's corpus does not hash to the one this round is measured against"
@@ -73,10 +73,11 @@ class Intake:
 def quantise_quality(value: float) -> float:
     """Compare quality at the precision the mechanism itself publishes.
 
-    Scoring is deterministic, so two honest workers agree exactly. Rounding to
-    the published precision keeps a float printed and re-parsed in transit from
-    being read as a disagreement, without softening a real one: any difference
-    the network could act on survives this.
+    Two honest workers on different silicon can differ in the third decimal:
+    float accumulation order shifts with the instruction set, greedy decoding
+    flips the odd token, and generative scores move beneath the task's own
+    noise floor. Agreement is judged at a hundredth, which no honest spread
+    crosses and any score worth disputing does.
     """
     return round(value, QUALITY_QUANTUM)
 
