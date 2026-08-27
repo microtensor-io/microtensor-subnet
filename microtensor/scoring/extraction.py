@@ -88,6 +88,14 @@ def gold_entities(gold: Any) -> set[Entity]:
     a malformed gold entry is skipped rather than zeroing the document.
     """
     tests: Any
+    if isinstance(gold, str):
+        # The corpus stores gold as a JSON document, so it arrives as text.
+        # Undecoded it matches nothing and every miner scores zero against a
+        # corpus that is perfectly correct.
+        try:
+            gold = json.loads(gold)
+        except ValueError:
+            return set()
     if isinstance(gold, Mapping):
         tests = gold.get("tests")
         if tests is None and "entities" in gold:
