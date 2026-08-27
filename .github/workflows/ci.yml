@@ -65,7 +65,7 @@ jobs:
           python - <<'PY'
           from microtensor.core.constants import CLASS_WEIGHTS
           from microtensor.core.tracks import competitions
-          expected = [("code", "mt-3g")]
+          expected = [("extract", "mt-3g")]
           assert competitions() == expected, competitions()
           assert sum(CLASS_WEIGHTS.values()) == 1.0, CLASS_WEIGHTS
           print(competitions())

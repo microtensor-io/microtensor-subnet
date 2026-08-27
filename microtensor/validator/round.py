@@ -190,7 +190,7 @@ def _report_inadmissible(context: ValidatorContext, plan: Plan, roster: Roster) 
             corpus_digest=context.corpus_digest,
             reason=reason,
         )
-        sent, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
+        _, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
         if failure:
             log.warning("could not report %s as inadmissible: %s", hotkey, failure)
         else:
