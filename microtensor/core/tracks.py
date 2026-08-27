@@ -95,9 +95,8 @@ TRACKS: Final[dict[str, Track]] = {
             metric="execution_pass_rate",
             metric_display="pass@1 (greedy)",
             decoding=Decoding.GREEDY,
-            emission_share=1.0,
+            emission_share=0.0,
             work_unit="generated_tokens",
-            enabled=True,
             classes=("mt-3g",),
         ),
         Track(
