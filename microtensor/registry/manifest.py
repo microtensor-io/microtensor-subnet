@@ -108,6 +108,7 @@ class ArtifactManifest:
             declared=self.declared,
             system=self.system,
             version=self.version,
+            sealed=self.sealed,
             signature=signature,
         )
 
