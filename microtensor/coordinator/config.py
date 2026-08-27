@@ -58,6 +58,11 @@ def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
             value.get("cpu_seconds_per_artifact") or CPU_SECONDS_PER_ARTIFACT
         ),
         "tasks_per_round": int(value.get("tasks_per_round") or TASKS_PER_ROUND),
+        "ceilings": {
+            k: int(v)
+            for k, v in dict(value.get("ceilings") or {}).items()
+            if k in ("max_size_bytes", "max_rss_bytes", "max_p95_ms") and int(v) > 0
+        },
     }
 
 

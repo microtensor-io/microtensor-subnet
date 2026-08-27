@@ -105,6 +105,9 @@ class RoundBudget:
 
     cpu_seconds_per_artifact: int
     tasks_per_round: int
+    max_size_bytes: int = 0
+    max_rss_bytes: int = 0
+    max_p95_ms: int = 0
 
 
 def budgets_from(config: Mapping[str, Any]) -> dict[tuple[str, str], RoundBudget]:
@@ -125,8 +128,13 @@ def budgets_from(config: Mapping[str, Any]) -> dict[tuple[str, str], RoundBudget
         tasks = block.get("tasks_per_round")
         if not cpu or not tasks:
             continue
+        ceilings = dict(block.get("ceilings") or {})
         out[(track, hardware_class)] = RoundBudget(
-            cpu_seconds_per_artifact=int(cpu), tasks_per_round=int(tasks)
+            cpu_seconds_per_artifact=int(cpu),
+            tasks_per_round=int(tasks),
+            max_size_bytes=int(ceilings.get("max_size_bytes") or 0),
+            max_rss_bytes=int(ceilings.get("max_rss_bytes") or 0),
+            max_p95_ms=int(ceilings.get("max_p95_ms") or 0),
         )
     return out
 

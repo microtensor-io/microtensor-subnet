@@ -177,6 +177,15 @@ class ServerClient:
                 value = arena.get(field_name)
                 if isinstance(value, int) and value > 0:
                     block[field_name] = value
+            ceilings = arena.get("ceilings")
+            if isinstance(ceilings, dict):
+                block["ceilings"] = {
+                    k: int(v)
+                    for k, v in ceilings.items()
+                    if k in ("max_size_bytes", "max_rss_bytes", "max_p95_ms")
+                    and isinstance(v, int)
+                    and v > 0
+                }
             baselines = arena.get("role_baselines")
             if isinstance(baselines, dict) and baselines:
                 block["role_baselines"] = {str(k): str(v) for k, v in baselines.items()}

@@ -227,9 +227,9 @@ CLASSES: Final[dict[str, HardwareClass]] = {
             id="mt-3g",
             max_size_bytes=(3 * _GB) // 2,
             max_rss_bytes=3 * _GB,
-            max_p95_ms=10_000,
+            max_p95_ms=15_000,
             reference="developer workstation, cpu only",
-            derivation=MEASURED_ON,
+            derivation="single-threaded cpu, Qwen3-1.7B Q6_K, 512 tokens: p95 12,269 ms",
             device_profile="dev:f1dc8bba84734f19",
         ),
         HardwareClass(

@@ -4,7 +4,7 @@ import dataclasses
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from microtensor.chain.anchor import AnchorError, read_anchor
@@ -19,6 +19,7 @@ from microtensor.core.constants import (
     REFERENCE_COST_MS,
 )
 from microtensor.core.protocol import Role
+from microtensor.core.tracks import HardwareClass, get_class
 from microtensor.provenance.record import ProvenanceUnavailable
 from microtensor.scoring import frontier
 from microtensor.store.state import ABSTAINED, SETTLED
@@ -194,6 +195,29 @@ def _report_inadmissible(context: ValidatorContext, plan: Plan, roster: Roster) 
             log.warning("could not report %s as inadmissible: %s", hotkey, failure)
         else:
             log.info("reported %s as inadmissible: %s", hotkey, reason)
+
+
+def _anchored_hardware(hardware_class: str, arena: object) -> HardwareClass:
+    """The class envelope, with any ceiling the anchored config restates.
+
+    The arena's ceilings are operator dials and move between rounds; the class
+    table is this build's fallback. A worker gating on its own build's numbers
+    while the anchored document says otherwise measures a different
+    competition from its peers.
+    """
+    hardware = get_class(hardware_class)
+    if arena is None:
+        return hardware
+    overrides = {
+        field_name: value
+        for field_name, value in (
+            ("max_size_bytes", getattr(arena, "max_size_bytes", 0)),
+            ("max_rss_bytes", getattr(arena, "max_rss_bytes", 0)),
+            ("max_p95_ms", getattr(arena, "max_p95_ms", 0)),
+        )
+        if value
+    }
+    return replace(hardware, **overrides) if overrides else hardware
 
 
 def _screen_derivation(
@@ -419,6 +443,7 @@ def _run_round(
         # config and a worker on an older build still runs the round its
         # peers are running.
         arena = plan.budgets.get((track, hardware_class))
+        hardware = _anchored_hardware(hardware_class, arena)
         tasks = select(
             context.corpus(track),
             competition_seed(block_hash, track, hardware_class),
@@ -451,6 +476,7 @@ def _run_round(
                 participants,
                 tasks,
                 cpu_seconds=arena.cpu_seconds_per_artifact if arena else 0,
+                hardware=hardware,
                 on_evaluated=publish,
             )
         except Abstain as exc:

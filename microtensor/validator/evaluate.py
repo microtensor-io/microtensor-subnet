@@ -428,8 +428,9 @@ def evaluate_participant(
     tasks: RoundTasks,
     *,
     cpu_seconds: int = 0,
+    hardware: HardwareClass | None = None,
 ) -> Evaluation:
-    hardware = get_class(participant.competition[1])
+    hardware = hardware or get_class(participant.competition[1])
     artifact = materialise(context, participant)
 
     measured, failure = profile(context, participant, artifact, hardware, tasks.seed)
@@ -496,6 +497,7 @@ def evaluate_competition(
     tasks: RoundTasks,
     *,
     cpu_seconds: int = 0,
+    hardware: HardwareClass | None = None,
     on_evaluated: Callable[[Evaluation, Participant], None] | None = None,
 ) -> CompetitionResult:
     evaluations: list[Evaluation] = []
@@ -506,7 +508,7 @@ def evaluate_competition(
             attempt += 1
             try:
                 evaluation = evaluate_participant(
-                    context, participant, tasks, cpu_seconds=cpu_seconds
+                    context, participant, tasks, cpu_seconds=cpu_seconds, hardware=hardware
                 )
                 break
             except ArtifactMismatch as exc:
