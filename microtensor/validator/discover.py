@@ -139,6 +139,83 @@ def _base_model_reason(system: SystemManifest, allowlist: frozenset[str]) -> str
     return ""
 
 
+def observe_commitments(
+    context: ValidatorContext, snapshot: MetagraphSnapshot, round_: Round
+) -> int:
+    """Record the round's pointers while the window is open.
+
+    A hotkey has one commitment slot, so a sealed miner's reveal overwrites the
+    pointer it belongs to. Read live at discovery, that pointer is gone and the
+    miner vanishes from their own round. Recorded here on every poll of the open
+    window, it survives, and `_recovered` puts it back.
+    """
+    try:
+        raw = context.client.commitments(list(snapshot.hotkeys))
+    except Exception as exc:
+        log.warning("commitments unreadable this pass, nothing recorded: %s", exc)
+        return 0
+
+    seen = 0
+    for hotkey, commitment in decode_all(raw).items():
+        if commitment.round_index != round_.index:
+            continue
+        context.state.record_submission(
+            round_.index,
+            hotkey,
+            commitment.track,
+            commitment.hardware_class,
+            commitment.manifest_digest,
+            commitment.source,
+        )
+        seen += 1
+    return seen
+
+
+def _recovered(
+    context: ValidatorContext,
+    round_: Round,
+    raw: Mapping[str, str],
+    commitments: Mapping[str, Commitment],
+) -> dict[str, Commitment]:
+    """Pointers this validator recorded that the chain no longer carries.
+
+    Only for a slot that now holds this round's reveal: that is the one case
+    where the pointer is known to have existed and to have been replaced by its
+    own author. Everything the recovered commitment claims is still checked
+    downstream, and the artifact is still verified against the digest the miner
+    signed, so a stale record cannot admit anything the chain would not have.
+    """
+    try:
+        observed = context.state.observed_submissions(round_.index)
+    except Exception as exc:
+        log.warning("recorded submissions unreadable: %s", exc)
+        return {}
+
+    out: dict[str, Commitment] = {}
+    for hotkey, payload in raw.items():
+        if hotkey in commitments or not _is_reveal_for(payload, round_.index):
+            continue
+        found = observed.get(hotkey)
+        if found is None:
+            continue
+        track, hardware_class, digest, source = found
+        out[hotkey] = Commitment(
+            round_index=round_.index,
+            track=track,
+            hardware_class=hardware_class,
+            manifest_digest=digest,
+            source=source,
+            sealed=True,
+        )
+    if out:
+        log.info(
+            "round %d: %d pointer(s) restored from record after being overwritten by a reveal",
+            round_.index,
+            len(out),
+        )
+    return out
+
+
 def discover(
     context: ValidatorContext,
     snapshot: MetagraphSnapshot,
@@ -146,7 +223,8 @@ def discover(
     allowlists: Mapping[tuple[str, str], frozenset[str]] | None = None,
 ) -> Roster:
     raw = context.client.commitments(list(snapshot.hotkeys))
-    commitments = decode_all(raw)
+    commitments = dict(decode_all(raw))
+    commitments.update(_recovered(context, round_, raw, commitments))
     keys = _reveals_of(raw, round_.index)
     log.info("round %d: %d commitments readable", round_.index, len(commitments))
 
@@ -261,6 +339,13 @@ def _reveals_of(raw: Mapping[str, str], round_index: int) -> dict[str, str]:
         if reveal is not None and reveal.round_index == round_index:
             found[hotkey] = reveal.key
     return found
+
+
+def _is_reveal_for(payload: str, round_index: int) -> bool:
+    from microtensor.chain.commitment import Reveal
+
+    reveal = Reveal.decode(payload)
+    return reveal is not None and reveal.round_index == round_index
 
 
 def _sealing_reason(commitment: Commitment, manifest: ArtifactManifest) -> str:

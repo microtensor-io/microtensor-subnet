@@ -199,6 +199,32 @@ class ValidatorState:
         )
         return [(str(r["hotkey"]), str(r["reason"])) for r in rows]
 
+    def observed_submissions(self, round_index: int) -> dict[str, tuple[str, str, str, str]]:
+        """What was committed this round, as this validator saw it on chain.
+
+        A hotkey holds one commitment slot, so a sealed miner's reveal replaces
+        the pointer it was revealing a key for. Recorded here while the window
+        is open, the pointer survives its own reveal and discovery can still
+        find the artifact. Keyed by hotkey, valued (track, class, digest,
+        source).
+        """
+        rows = self.db.query(
+            """
+            SELECT hotkey, track, hardware_class, manifest_digest, source
+            FROM submissions WHERE round_index = ? AND source != ''
+            """,
+            (round_index,),
+        )
+        return {
+            str(r["hotkey"]): (
+                str(r["track"]),
+                str(r["hardware_class"]),
+                str(r["manifest_digest"]),
+                str(r["source"]),
+            )
+            for r in rows
+        }
+
     def record_evaluation(self, round_index: int, evaluation: Evaluation) -> None:
         envelope = (
             json.dumps(asdict(evaluation.measured), sort_keys=True)

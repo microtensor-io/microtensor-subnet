@@ -103,6 +103,19 @@ class RoundLoop:
             genesis=self.context.config.genesis_block,
         )
 
+    def record_open_commitments(self, round_: Round) -> None:
+        """Keep a record of this round's pointers while they are still on chain.
+
+        Cheap: one commitment read per poll, no fetching. It exists so a sealed
+        miner's reveal, which necessarily overwrites the pointer it reveals a
+        key for, cannot erase the submission from the round.
+        """
+        from microtensor.validator.discover import observe_commitments
+
+        seen = observe_commitments(self.context, self.context.client.snapshot(), round_)
+        if seen:
+            log.debug("round %d: recorded %d pointer(s)", round_.index, seen)
+
     def consider_update(self, round_: Round, block: int) -> None:
         if self.updater is None:
             return
@@ -190,6 +203,10 @@ class RoundLoop:
                 return False
 
             self.consider_update(round_, block)
+            try:
+                self.record_open_commitments(round_)
+            except Exception as exc:
+                log.warning("commitments not recorded this pass: %s", exc)
             try:
                 self.refresh_weights(block)
             except Exception as exc:
