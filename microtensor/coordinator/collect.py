@@ -10,7 +10,8 @@ from microtensor.coordinator.report import Report
 
 log = logging.getLogger("microtensor.coordinator")
 
-QUALITY_QUANTUM = 2
+QUALITY_QUANTUM = 4
+QUALITY_EPSILON = 0.01
 
 VERSION_MISMATCH = "engine or corpus version does not match the round"
 CORPUS_MISMATCH = "the worker's corpus does not hash to the one this round is measured against"
@@ -115,18 +116,30 @@ def accept(
 
 
 def _majority(values: list[float]) -> tuple[float | None, str]:
-    counts: dict[float, int] = {}
-    for value in values:
-        counts[value] = counts.get(value, 0) + 1
+    """The value the largest tolerant cluster stands behind, or None.
 
-    best = max(counts.values())
+    Clustered within QUALITY_EPSILON of each cluster's lowest member rather
+    than grouped by rounded value: rounding puts a grid line between numbers
+    closer than the tolerance, and whether two workers agree must not depend
+    on where the grid happens to fall. The agreed value is the cluster's
+    minimum, a real reported measurement every agreeing worker met or beat,
+    never an average.
+    """
+    clusters: list[list[float]] = []
+    for value in sorted(values):
+        if clusters and value - clusters[-1][0] <= QUALITY_EPSILON:
+            clusters[-1].append(value)
+        else:
+            clusters.append([value])
+
+    best = max(len(c) for c in clusters)
     if best < 2:
         return None, NO_MAJORITY
 
-    winners = sorted(v for v, n in counts.items() if n == best)
+    winners = [c for c in clusters if len(c) == best]
     if len(winners) > 1:
         return None, NO_MAJORITY
-    return winners[0], ""
+    return winners[0][0], ""
 
 
 def reconcile(reports: Sequence[Report], advisory: Sequence[str] = ()) -> Reconciled:
@@ -154,9 +167,8 @@ def reconcile(reports: Sequence[Report], advisory: Sequence[str] = ()) -> Reconc
     diverged: list[str] = []
     for report in deciding:
         value = quantise_quality(report.quality.combined)
-        (agreed if agreed_value is not None and value == agreed_value else diverged).append(
-            report.worker_hotkey
-        )
+        inside = agreed_value is not None and abs(value - agreed_value) <= QUALITY_EPSILON
+        (agreed if inside else diverged).append(report.worker_hotkey)
 
     conforming = [r for r in deciding if r.conforming]
     envelope_source = conforming or deciding
