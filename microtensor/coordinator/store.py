@@ -802,6 +802,12 @@ class CoordinatorStore:
             ),
         )
 
+    def sign(self, round_index: int, signature: str) -> None:
+        self.db.execute(
+            "UPDATE settlements SET signature = ? WHERE round_index = ?",
+            (signature, round_index),
+        )
+
     def newest_settlement(self) -> dict[str, Any] | None:
         row = self.db.one(
             "SELECT payload, signature FROM settlements ORDER BY round_index DESC LIMIT 1"

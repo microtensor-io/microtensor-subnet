@@ -17,7 +17,7 @@ from microtensor.coordinator.collect import (
 from microtensor.coordinator.config import config_hash, served_config
 from microtensor.coordinator.report import Report, canonical
 from microtensor.coordinator.reputation import update as update_standing
-from microtensor.coordinator.settle import Entry, merkle_root, standing_weights
+from microtensor.coordinator.settle import Entry, Settlement, merkle_root, standing_weights
 from microtensor.coordinator.settle import build as build_settlement
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.coordinator.tokens import TOKEN_HEADER, KeyRing, TokenInvalid
@@ -123,6 +123,7 @@ class Coordinator:
     coldkeys: dict[str, str] = None  # type: ignore[assignment]
     uid_by_hotkey: dict[str, int] = None  # type: ignore[assignment]
     reserve: Callable[[], dict[str, Any]] | None = None
+    signer: Callable[[dict[str, Any]], str] | None = None
     mirror_report: Callable[[int, list[dict[str, Any]]], Any] | None = None
     arenas: dict[str, dict[str, Any]] = None  # type: ignore[assignment]
     # Re-reads the arena list and corpora so an arena activated after this
@@ -372,7 +373,7 @@ class Coordinator:
         existing = self.store.settlement(round_index)
         if existing is not None:
             if str(existing.get("reports_root", "")) == merkle_root(digests):
-                return existing
+                return self._sign_stored(round_index, existing)
             log.info(
                 "round %d has measurements its settlement predates; rebuilding",
                 round_index,
@@ -403,7 +404,7 @@ class Coordinator:
             reserved=self._reserved(),
             dropped=self._dropped(round_index, int(row.get("seed_block", 0) or 0)),
         )
-        self.store.publish(settlement)
+        self.store.publish(self._signed(settlement))
 
         from microtensor.coordinator.settle import snapshots_from
 
@@ -532,7 +533,7 @@ class Coordinator:
     def _settle_on_hold(self, round_index: int) -> dict[str, Any] | None:
         existing = self.store.settlement(round_index)
         if existing is not None:
-            return existing
+            return self._sign_stored(round_index, existing)
 
         held = self._reserved()
         if not held:
@@ -549,13 +550,35 @@ class Coordinator:
             coldkeys=self.coldkeys,
             reserved=held,
         )
-        self.store.publish(settlement)
+        self.store.publish(self._signed(settlement))
         log.info(
             "round %d had nothing to measure; settled on the hold for %s alone",
             round_index,
             held["hotkey"],
         )
         return self.store.settlement(round_index)
+
+    def _signed(self, settlement: Settlement) -> Settlement:
+        if self.signer is None or settlement.signature:
+            return settlement
+        try:
+            return settlement.signed_with(self.signer(settlement.body()))
+        except Exception as exc:
+            log.warning("the settlement could not be signed: %s", exc)
+            return settlement
+
+    def _sign_stored(self, round_index: int, published: dict[str, Any]) -> dict[str, Any]:
+        if self.signer is None or str(published.get("signature", "")):
+            return published
+        body = {key: value for key, value in published.items() if key != "signature"}
+        try:
+            signature = self.signer(body)
+        except Exception as exc:
+            log.warning("the stored settlement could not be signed: %s", exc)
+            return published
+        self.store.sign(round_index, signature)
+        log.info("round %d settlement signed in place", round_index)
+        return self.store.settlement(round_index) or published
 
     def _reserved(self) -> dict[str, Any]:
         """Resolve the control plane's hold against this metagraph.

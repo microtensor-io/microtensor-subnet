@@ -670,6 +670,7 @@ def _settle(args: argparse.Namespace) -> int:
             catalogue=store.catalogue(args.round),
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
+            signer=_signer(args),
         )
         published = service.settle(args.round)
 
@@ -862,6 +863,17 @@ def _worker_keyring(args: argparse.Namespace, server: ServerClient | None) -> Ke
     return keyring
 
 
+def _signer(args: argparse.Namespace) -> Any:
+    from microtensor.chain.wallet import sign_payload
+    from microtensor.cli.common import chain_config, open_wallet
+
+    wallet = open_wallet(chain_config(args), required=False)
+    if wallet is None:
+        log.warning("no wallet is available, so settlements will publish unsigned")
+        return None
+    return lambda body: sign_payload(wallet, body)
+
+
 def _permitted(client: Any) -> dict[str, int]:
     snapshot = client.snapshot(refresh=True)
     uids = dict(snapshot.uid_by_hotkey)
@@ -939,6 +951,7 @@ def _serve(args: argparse.Namespace) -> int:
             corpora=_corpora(args, server),
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
+            signer=_signer(args),
             mirror_report=server.push_reports if server is not None else None,
             arenas=_arenas(server),
             arena_source=(lambda: _arenas(server)) if server is not None else None,
