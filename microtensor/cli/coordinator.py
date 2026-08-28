@@ -100,6 +100,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     settle = inner.add_parser("settle", help="reconcile and publish a round")
     add_common_arguments(settle)
+    add_chain_arguments(settle)
     settle.add_argument("--round", type=int, required=True)
     _add_server_arguments(settle)
     settle.set_defaults(handler=_settle)
