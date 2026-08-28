@@ -10,6 +10,7 @@ from pathlib import Path
 from microtensor.core.protocol import (
     Evaluation,
     Fault,
+    GateFailure,
     GateResult,
     MeasuredEnvelope,
     Role,
@@ -38,6 +39,7 @@ from microtensor.validator.discover import Participant
 log = logging.getLogger("microtensor.validator.evaluate")
 
 REJECTED = GateResult(admitted=False, failures=())
+BUDGET_EXHAUSTED = "exhausted its cpu budget"
 
 
 INFRASTRUCTURE_ATTEMPTS = 3
@@ -84,6 +86,12 @@ def _expected_ms(cascade: CascadeResult | None, measured: MeasuredEnvelope | Non
     if measured is not None:
         return float(measured.ttft_p95_ms)
     return 0.0
+
+
+def _verdict(gate: GateResult, failure: str) -> GateResult:
+    if failure == BUDGET_EXHAUSTED:
+        return GateResult(admitted=False, failures=(GateFailure.BUDGET_CEILING,))
+    return gate
 
 
 def _evaluation(
@@ -252,13 +260,12 @@ def run_system(
         if not result.partial:
             return None, f"execution failed: {result.error}"
         log.info(
-            "%s ran out of budget after %d of %d tasks; the rest are forfeit, the "
-            "finished ones stand",
+            "%s exhausted its cpu budget after %d of %d tasks",
             participant.hotkey,
             len(result.partial),
             len(tasks.all),
         )
-        return CascadeResult(legs=tuple(result.partial)), ""
+        return None, BUDGET_EXHAUSTED
 
     return CascadeResult(legs=tuple(result.value)), ""
 
@@ -314,12 +321,12 @@ def score(
         if not result.partial:
             return (), {}, f"execution failed: {result.error}"
         log.info(
-            "%s ran out of budget after %d of %d tasks; the rest are forfeit, the "
-            "finished ones stand",
+            "%s exhausted its cpu budget after %d of %d tasks",
             participant.hotkey,
             len(result.partial),
             len(tasks.all),
         )
+        return (), {}, BUDGET_EXHAUSTED
 
     # A task with no response scores as a failure further down, so the tasks
     # the worker never reached are forfeit without any special case here.
@@ -452,7 +459,9 @@ def evaluate_participant(
         )
         if failure or cascade is None:
             log.info("%s scored zero: %s", participant.hotkey, failure)
-            return _evaluation(participant, tasks, gate=gate, measured=measured)
+            return _evaluation(
+                participant, tasks, gate=_verdict(gate, failure), measured=measured
+            )
         metric = get_track(tasks.track).metric
         outcomes, front_outcomes = outcomes_from(cascade.legs, tasks, metric)
         front_only_score = combine_partitions(*partition_scores(front_outcomes)[:2])
@@ -463,7 +472,9 @@ def evaluate_participant(
         )
         if failure:
             log.info("%s scored zero: %s", participant.hotkey, failure)
-            return _evaluation(participant, tasks, gate=gate, measured=measured)
+            return _evaluation(
+                participant, tasks, gate=_verdict(gate, failure), measured=measured
+            )
         metric = get_track(tasks.track).metric
 
     dataset_scorer = _DATASET_METRICS.get(metric)

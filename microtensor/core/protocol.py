@@ -37,6 +37,7 @@ class GateFailure(str, Enum):
     RSS_OVER_DECLARED = "measured memory exceeds its own declaration"
     LATENCY_OVER_DECLARED = "measured latency exceeds its own declaration"
     SIZE_OVER_DECLARED = "measured size exceeds its own declaration"
+    BUDGET_CEILING = "exhausted its cpu budget before finishing the round"
 
 
 @dataclass(frozen=True, slots=True)
