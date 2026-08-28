@@ -400,7 +400,6 @@ class Coordinator:
             under_replicated=under_replicated(assignment),
             advisory=advisory,
             coldkeys=self.coldkeys,
-            previous=self._previous_weights(round_index),
             reserved=self._reserved(),
             dropped=self._dropped(round_index, int(row.get("seed_block", 0) or 0)),
         )
@@ -591,19 +590,6 @@ class Coordinator:
 
         log.info("holding %.2f%% of emission for %s at uid %d", share * 100, hotkey, uid)
         return {"hotkey": hotkey, "uid": uid, "share": share}
-
-    def _previous_weights(self, round_index: int) -> dict[str, float]:
-        """The last published blend, so the EMA has something to smooth against.
-
-        Taken from the coordinator's own previous settlement rather than from
-        any worker's local history, because every worker adopts this vector and
-        they must all smooth against the same prior.
-        """
-        for earlier in range(round_index - 1, max(round_index - 8, -1), -1):
-            published = self.store.settlement(earlier)
-            if published:
-                return {str(k): float(v) for k, v in published.get("blended", {}).items()}
-        return {}
 
     def _update_reputation(self, round_index: int, result: Any) -> None:
         diverged = {d.worker_hotkey for d in result.divergences}
