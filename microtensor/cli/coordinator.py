@@ -865,11 +865,21 @@ def _worker_keyring(args: argparse.Namespace, server: ServerClient | None) -> Ke
 def _permitted(client: Any) -> dict[str, int]:
     snapshot = client.snapshot(refresh=True)
     uids = dict(snapshot.uid_by_hotkey)
-    return {
+    permitted = {
         hotkey: uids[hotkey]
         for hotkey in snapshot.hotkeys
         if hotkey in uids and snapshot.has_permit(hotkey)
     }
+    for hotkey in _also_accepted():
+        if hotkey in uids and hotkey not in permitted:
+            permitted[hotkey] = uids[hotkey]
+            log.info("accepting %s ahead of its validator permit", hotkey)
+    return permitted
+
+
+def _also_accepted() -> tuple[str, ...]:
+    named = os.environ.get("MT_ALSO_ACCEPT_HOTKEYS", "")
+    return tuple(hotkey.strip() for hotkey in named.split(",") if hotkey.strip())
 
 
 def _keep_registry_current(registry: Registry, client: Any) -> None:
