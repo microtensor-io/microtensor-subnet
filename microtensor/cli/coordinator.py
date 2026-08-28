@@ -358,7 +358,10 @@ def _freeze(args: argparse.Namespace) -> int:
             store.record_assignment(
                 index,
                 mapping,
-                {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
+                {
+                    s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source)
+                    for s in systems
+                },
             )
             store.record_catalogue(index, observed(catalogue, store.observations(index)))
         store.record_metagraph(index, source.uids())
@@ -397,7 +400,10 @@ def _assign(args: argparse.Namespace) -> int:
         store.record_assignment(
             args.round,
             mapping,
-            {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
+            {
+                s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source)
+                for s in systems
+            },
         )
 
     thin = under_replicated(mapping, args.replication)
@@ -507,7 +513,10 @@ def _open(args: argparse.Namespace) -> int:
         store.record_assignment(
             round_.index,
             mapping,
-            {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
+            {
+                s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source)
+                for s in systems
+            },
         )
         store.record_catalogue(round_.index, observed(catalogue, store.observations(round_.index)))
         store.record_metagraph(round_.index, source.uids())
@@ -525,7 +534,10 @@ def _open(args: argparse.Namespace) -> int:
             server.push_assignments(
                 round_.index,
                 mapping,
-                {s.digest: (s.track, s.hardware_class, s.miner_hotkey) for s in systems},
+                {
+                    s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source)
+                    for s in systems
+                },
             )
         except (ServerUnreachable, ServerRefused) as exc:
             log.warning("the assignment map was not mirrored to the control plane: %s", exc)

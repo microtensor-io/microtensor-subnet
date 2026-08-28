@@ -29,6 +29,7 @@ class System:
     track: str
     hardware_class: str
     miner_hotkey: str = ""
+    source: str = ""
 
     @property
     def competition(self) -> tuple[str, str]:

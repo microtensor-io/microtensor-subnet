@@ -121,16 +121,17 @@ class CoordinatorStore:
         self,
         round_index: int,
         assignment: Mapping[str, Sequence[str]],
-        systems: Mapping[str, tuple[str, str, str]],
+        systems: Mapping[str, tuple[str, ...]],
     ) -> None:
+        blank = ("", "", "", "")
         rows = [
             (
                 round_index,
                 worker,
                 digest,
-                systems.get(digest, ("", "", ""))[0],
-                systems.get(digest, ("", "", ""))[1],
-                systems.get(digest, ("", "", ""))[2],
+                (systems.get(digest) or blank)[0],
+                (systems.get(digest) or blank)[1],
+                (systems.get(digest) or blank)[2],
             )
             for digest, workers in assignment.items()
             for worker in workers

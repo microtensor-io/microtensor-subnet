@@ -90,6 +90,7 @@ class ChainSource:
                     track=track,
                     hardware_class=hardware_class,
                     miner_hotkey=hotkey,
+                    source=commitment.source,
                 )
             )
             catalogue[digest] = Entry(

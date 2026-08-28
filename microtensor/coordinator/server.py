@@ -244,8 +244,14 @@ class ServerClient:
         }
         if systems:
             body["systems"] = [
-                {"digest": digest, "track": track, "hardware_class": klass, "miner": miner}
-                for digest, (track, klass, miner) in systems.items()
+                {
+                    "digest": digest,
+                    "track": row[0],
+                    "hardware_class": row[1],
+                    "miner": row[2],
+                    "source": row[3] if len(row) > 3 else "",
+                }
+                for digest, row in systems.items()
             ]
         return self._call("POST", "/v1/ingest/assignments", body) or {}
 
