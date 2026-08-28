@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from statistics import median
+from statistics import fmean, median
 from typing import Any
 
 from microtensor.coordinator.report import Report
@@ -11,7 +11,7 @@ from microtensor.coordinator.report import Report
 log = logging.getLogger("microtensor.coordinator")
 
 QUALITY_QUANTUM = 4
-QUALITY_EPSILON = 0.01
+QUALITY_SPREAD_WARNING = 0.01
 
 VERSION_MISMATCH = "engine or corpus version does not match the round"
 CORPUS_MISMATCH = "the worker's corpus does not hash to the one this round is measured against"
@@ -115,45 +115,14 @@ def accept(
         raise ReportRejected(f"{CORPUS_MISMATCH}: {report.corpus_digest or 'none declared'}")
 
 
-def _majority(values: list[float]) -> tuple[float | None, str]:
-    """The value the largest tolerant cluster stands behind, or None.
-
-    Clustered within QUALITY_EPSILON of each cluster's lowest member rather
-    than grouped by rounded value: rounding puts a grid line between numbers
-    closer than the tolerance, and whether two workers agree must not depend
-    on where the grid happens to fall. The agreed value is the cluster's
-    minimum, a real reported measurement every agreeing worker met or beat,
-    never an average.
-    """
-    clusters: list[list[float]] = []
-    for value in sorted(values):
-        if clusters and value - clusters[-1][0] <= QUALITY_EPSILON:
-            clusters[-1].append(value)
-        else:
-            clusters.append([value])
-
-    best = max(len(c) for c in clusters)
-    if best < 2:
-        return None, NO_MAJORITY
-
-    winners = [c for c in clusters if len(c) == best]
-    if len(winners) > 1:
-        return None, NO_MAJORITY
-    return winners[0][0], ""
+def _publishable(values: Sequence[float]) -> list[int]:
+    live = [i for i, value in enumerate(values) if value > 0.0]
+    if not live or len(live) == len(values):
+        return list(range(len(values)))
+    return live
 
 
 def reconcile(reports: Sequence[Report], advisory: Sequence[str] = ()) -> Reconciled:
-    """One agreed measurement from several independent ones.
-
-    Quality is deterministic, so a disagreement is a defect rather than noise
-    and is never averaged: the majority value stands and the outliers are named.
-    With no majority the system goes unscored for the round, because a
-    coordinator that breaks a three-way tie by choosing is deciding the
-    outcome rather than counting it.
-
-    Envelope and energy are hardware-dependent and legitimately vary inside the
-    conformance band, so those take the median across conforming workers only.
-    """
     if not reports:
         raise ValueError("cannot reconcile an empty report set")
 
@@ -161,31 +130,45 @@ def reconcile(reports: Sequence[Report], advisory: Sequence[str] = ()) -> Reconc
     deciding = [r for r in reports if r.worker_hotkey not in advisory] or list(reports)
 
     qualities = [quantise_quality(r.quality.combined) for r in deciding]
-    agreed_value, reason = _majority(qualities) if len(deciding) > 1 else (qualities[0], "")
+    keep = _publishable(qualities)
+    kept = [deciding[i] for i in keep]
+    dropped = [r for i, r in enumerate(deciding) if i not in set(keep)]
 
-    agreed: list[str] = []
-    diverged: list[str] = []
-    for report in deciding:
-        value = quantise_quality(report.quality.combined)
-        inside = agreed_value is not None and abs(value - agreed_value) <= QUALITY_EPSILON
-        (agreed if inside else diverged).append(report.worker_hotkey)
+    for report in dropped:
+        log.warning(
+            "%s reported no measurement on %s while others measured it; discarded",
+            report.worker_hotkey,
+            digest,
+        )
 
-    conforming = [r for r in deciding if r.conforming]
-    envelope_source = conforming or deciding
+    agreed_value = quantise_quality(fmean([qualities[i] for i in keep])) if keep else None
+    reason = "" if keep else NO_MAJORITY
+
+    values = [qualities[i] for i in keep]
+    if len(values) > 1 and max(values) - min(values) > QUALITY_SPREAD_WARNING:
+        log.warning(
+            "%s: workers spread %.4f on quality, wider than %.4f",
+            digest,
+            max(values) - min(values),
+            QUALITY_SPREAD_WARNING,
+        )
+
+    conforming = [r for r in kept if r.conforming]
+    envelope_source = conforming or kept or deciding
 
     energies = [r.cost.expected_j for r in envelope_source if r.cost.expected_j is not None]
 
     return Reconciled(
         system_digest=digest,
         quality=agreed_value,
-        resolve_rate=median([r.resolve_rate for r in deciding]),
+        resolve_rate=median([r.resolve_rate for r in kept or deciding]),
         expected_ms=median([r.cost.expected_ms for r in envelope_source]),
         expected_j=median(energies) if energies else None,
         envelope=_median_envelope(envelope_source),
-        components=next((dict(r.components) for r in deciding if r.components), {}),
-        ablation=_median_ablation(deciding),
-        agreed=tuple(agreed),
-        diverged=tuple(diverged),
+        components=next((dict(r.components) for r in kept or deciding if r.components), {}),
+        ablation=_median_ablation(kept or deciding),
+        agreed=tuple(r.worker_hotkey for r in kept),
+        diverged=tuple(r.worker_hotkey for r in dropped),
         conforming_reports=len(conforming),
         reason=reason,
     )
