@@ -7,7 +7,6 @@ from typing import Any
 from microtensor.core.constants import (
     DECLARATION_LATENCY_FLOOR_MS,
     DECLARATION_TOLERANCE_LATENCY,
-    DECLARATION_TOLERANCE_RSS,
     DECLARATION_TOLERANCE_SIZE,
 )
 from microtensor.core.tracks import HardwareClass
@@ -181,7 +180,5 @@ def evaluate_gate(
     if measured.conforming:
         if measured.size_bytes > declared.size_bytes * (1.0 + DECLARATION_TOLERANCE_SIZE):
             failures.append(GateFailure.SIZE_OVER_DECLARED)
-        if measured.peak_rss_bytes > declared.peak_rss_bytes * (1.0 + DECLARATION_TOLERANCE_RSS):
-            failures.append(GateFailure.RSS_OVER_DECLARED)
 
     return GateResult(admitted=not failures, failures=tuple(failures))

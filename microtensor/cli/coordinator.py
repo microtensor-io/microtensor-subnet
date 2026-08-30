@@ -102,6 +102,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_common_arguments(settle)
     add_chain_arguments(settle)
     settle.add_argument("--round", type=int, required=True)
+    settle.add_argument(
+        "--partial",
+        action="store_true",
+        help="settle even though assigned reports are still missing",
+    )
     _add_server_arguments(settle)
     settle.set_defaults(handler=_settle)
 
@@ -660,9 +665,39 @@ def _config_hash_for(source: RoundSource, server: ServerClient | None = None) ->
     return config_hash(served_config(CORPUS_VERSION, _arenas(server)))
 
 
+def _missing_reports(store: CoordinatorStore, round_index: int) -> list[tuple[str, str]]:
+    if store.settlement(round_index) is not None:
+        return []
+    expected = store.expected_reports(round_index)
+    if expected == 0 or store.report_count(round_index) >= expected:
+        return []
+    reported = {
+        (digest, report.worker_hotkey)
+        for digest, reports in store.reports_by_system(round_index).items()
+        for report in reports
+    }
+    return sorted(
+        (digest, worker)
+        for digest, workers in store.full_assignment(round_index).items()
+        for worker in workers
+        if (digest, worker) not in reported
+    )
+
+
 def _settle(args: argparse.Namespace) -> int:
     server = _server(args)
     with _store(args) as store:
+        if not args.partial:
+            missing = _missing_reports(store, args.round)
+            if missing:
+                received = store.report_count(args.round)
+                expected = store.expected_reports(args.round)
+                pairs = ", ".join(f"{digest}<-{worker}" for digest, worker in missing)
+                return fail(
+                    f"round {args.round} holds {received} of {expected} assigned reports; "
+                    f"still missing: {pairs}. A late report would break the published "
+                    f"reports_root. Pass --partial to settle anyway"
+                )
         service = Coordinator(
             store=store,
             registry=Registry({}),

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
-from microtensor.chain.commitment import decode_all
+from microtensor.chain.commitment import Commitment, decode_all
 from microtensor.chain.rounds import Round, accepts_commitment, round_for_block
+from microtensor.chain.wallet import verify_payload
 from microtensor.coordinator.assign import System, Worker
 from microtensor.coordinator.settle import Entry
 from microtensor.core.constants import ALSO_ACCEPT_ROUNDS, GENESIS_BLOCK, ROUND_BLOCKS
+from microtensor.registry.fetch import ArtifactMismatch, fetch_manifest
+from microtensor.registry.manifest import ArtifactManifest
 
 log = logging.getLogger("microtensor.coordinator")
 
@@ -40,6 +45,38 @@ class ChainSource:
     client: Any
     round_blocks: int = ROUND_BLOCKS
     genesis_block: int = GENESIS_BLOCK
+    work_dir: Path | None = None
+    verify_signatures: bool = True
+    fetch: Callable[..., ArtifactManifest] = fetch_manifest
+
+    def _workdir(self) -> Path:
+        if self.work_dir is None:
+            self.work_dir = Path(tempfile.mkdtemp(prefix="mt-coordinator-"))
+        return self.work_dir
+
+    def _admission_reason(self, hotkey: str, commitment: Commitment) -> str:
+        try:
+            manifest = self.fetch(commitment, workdir=self._workdir())
+        except ArtifactMismatch as exc:
+            return f"manifest rejected: {exc}"
+        except Exception as exc:
+            log.warning(
+                "%s: manifest not fetchable at discovery (%s); left for the validators",
+                hotkey,
+                exc,
+            )
+            return ""
+        if manifest.hotkey != hotkey:
+            return "manifest declares a different hotkey than the one that committed it"
+        if self.verify_signatures:
+            if not manifest.signature:
+                return "manifest carries no signature"
+            if not verify_payload(manifest.hotkey, manifest.body(), manifest.signature):
+                return "manifest signature does not verify against the declaring hotkey"
+        fits, reason = manifest.fits_class()
+        if not fits:
+            return reason
+        return ""
 
     def open_round(self) -> Round:
         return round_for_block(
@@ -80,6 +117,16 @@ class ChainSource:
                 continue
             uid = uid_by_hotkey.get(hotkey)
             if uid is None:
+                continue
+
+            reason = self._admission_reason(hotkey, commitment)
+            if reason:
+                log.warning(
+                    "round %d: %s excluded at discovery, never catalogued: %s",
+                    round_.index,
+                    hotkey,
+                    reason,
+                )
                 continue
 
             track, hardware_class = commitment.competition

@@ -4,7 +4,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from microtensor.core.constants import CPU_SECONDS_PER_ARTIFACT, TASKS_PER_ROUND
+from microtensor.core.constants import (
+    CPU_SECONDS_PER_ARTIFACT,
+    GENERATION_SECONDS_PER_TASK,
+    TASKS_PER_ROUND,
+)
 from microtensor.core.protocol import (
     DeclaredEnvelope,
     GateResult,
@@ -50,21 +54,25 @@ class SelfCheck:
     proposed: DeclaredEnvelope
     gate: GateResult
     hardware_class: str
+    measured_generation_seconds: float = 0.0
 
     @property
     def admissible(self) -> bool:
-        return self.gate.admitted
+        return self.gate.admitted and self.fits_round_budget
+
+    @property
+    def generation_seconds_per_task(self) -> float:
+        if self.measured_generation_seconds > 0.0:
+            return self.measured_generation_seconds
+        return float(GENERATION_SECONDS_PER_TASK)
+
+    @property
+    def task_seconds(self) -> float:
+        return self.measured.ttft_p95_ms / 1000.0 + self.generation_seconds_per_task
 
     @property
     def round_cpu_seconds(self) -> float:
-        """What a full round of this artifact costs, at scoring prompt length.
-
-        Passing the envelope gate says one task fits its ceiling. It says
-        nothing about whether TASKS_PER_ROUND of them fit the round budget,
-        and a miner that runs out midway forfeits every task it did not
-        reach. Worth knowing before publishing rather than after a round.
-        """
-        return TASKS_PER_ROUND * (self.measured.ttft_p95_ms / 1000.0)
+        return TASKS_PER_ROUND * self.task_seconds
 
     @property
     def fits_round_budget(self) -> bool:
@@ -89,9 +97,13 @@ class SelfCheck:
             f"  peak_rss_bytes  {self.proposed.peak_rss_bytes}",
             f"  p95_latency_ms  {self.proposed.p95_latency_ms}",
         ]
-        scored = int(CPU_SECONDS_PER_ARTIFACT / max(0.001, self.measured.ttft_p95_ms / 1000.0))
+        scored = int(CPU_SECONDS_PER_ARTIFACT / max(0.001, self.task_seconds))
+        source = "measured" if self.measured_generation_seconds > 0.0 else "assumed"
         lines += [
             "",
+            f"per-task cost    {self.task_seconds:.1f} s   "
+            f"(prefill {self.measured.ttft_p95_ms / 1000.0:.1f} s + "
+            f"generation {self.generation_seconds_per_task:.1f} s {source})",
             f"round cost       {self.round_cpu_seconds:.0f} cpu-s for "
             f"{TASKS_PER_ROUND} tasks   budget {CPU_SECONDS_PER_ARTIFACT} cpu-s",
         ]
@@ -99,13 +111,15 @@ class SelfCheck:
             over = self.round_cpu_seconds / CPU_SECONDS_PER_ARTIFACT
             lines += [
                 "",
-                f"WARNING: a full round at this p95 costs about {over:.1f}x the "
-                f"budget, so this artifact would score on roughly the first "
-                f"{scored} of {TASKS_PER_ROUND} tasks and forfeit the rest. "
-                f"The envelope gate is per task and does not imply a round fits.",
+                f"OVER BUDGET: a full round at this per-task cost is about {over:.1f}x "
+                f"the budget, so this artifact would score on roughly the first "
+                f"{min(scored, TASKS_PER_ROUND)} of {TASKS_PER_ROUND} tasks and "
+                f"forfeit the rest.",
             ]
-        if not self.admissible:
+        if not self.gate.admitted:
             lines += ["", f"INADMISSIBLE: {self.gate.reason}"]
+        elif not self.fits_round_budget:
+            lines += ["", "INADMISSIBLE: estimated round cost exceeds the cpu budget"]
         return "\n".join(lines)
 
 
@@ -163,9 +177,15 @@ def selfcheck(
 
     measured: MeasuredEnvelope = result.value.envelope
     proposed = propose(measured, margin)
+    generation_seconds = (
+        plan.max_output_tokens / measured.tokens_per_second
+        if measured.tokens_per_second > 0.0
+        else 0.0
+    )
     return SelfCheck(
         measured=measured,
         proposed=proposed,
         gate=evaluate_gate(measured, proposed, hardware),
         hardware_class=hardware_class,
+        measured_generation_seconds=generation_seconds,
     )

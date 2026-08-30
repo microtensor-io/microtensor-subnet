@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any
 
 from microtensor.chain.anchor import ConfigAnchor
+from microtensor.coordinator.collect import DUPLICATE
 from microtensor.coordinator.report import CostBlock, QualityBlock, Report
 from microtensor.core.protocol import Evaluation, Fault
 from microtensor.validator.client import (
@@ -346,6 +347,9 @@ def emit_reports(
                 f"before it became unreachable: {exc}"
             )
         except Exception as exc:
+            if DUPLICATE in str(exc):
+                sent += 1
+                continue
             return sent, (f"the coordinator refused the report for {report.system_digest}: {exc}")
         sent += 1
 
