@@ -356,12 +356,15 @@ def _loopback(args: argparse.Namespace) -> int:
         world.context.close()
 
 
+NLTK_DATA_COMMIT = "550b6625bcef1f2abff2ff770a5a0d272c9c6b2a"
 NLTK_PACKAGES = (
-    "stopwords",
-    "punkt",
-    "words",
-    "vader_lexicon",
-    "averaged_perceptron_tagger",
+    ("corpora", "stopwords"),
+    ("corpora", "words"),
+    ("tokenizers", "punkt"),
+    ("tokenizers", "punkt_tab"),
+    ("sentiment", "vader_lexicon"),
+    ("taggers", "averaged_perceptron_tagger"),
+    ("taggers", "averaged_perceptron_tagger_eng"),
 )
 
 
@@ -404,17 +407,21 @@ def _env_setup(args: argparse.Namespace) -> int:
         _run_step([python, "-m", "pip", "install", "-r", str(requirements)])
 
         log.info("downloading nltk data into %s", nltk_dir)
-        nltk_dir.mkdir(parents=True, exist_ok=True)
-        script = "\n".join(
-            [
-                "import sys",
-                "import nltk",
-                f"packages = {list(NLTK_PACKAGES)!r}",
-                f"downloads = [nltk.download(p, download_dir={str(nltk_dir)!r}) for p in packages]",
-                "sys.exit(0 if all(downloads) else 1)",
-            ]
-        )
-        _run_step([python, "-c", script])
+        import io
+        import urllib.request
+        import zipfile
+
+        for category, name in NLTK_PACKAGES:
+            target = nltk_dir / category
+            target.mkdir(parents=True, exist_ok=True)
+            url = (
+                "https://raw.githubusercontent.com/nltk/nltk_data/"
+                f"{NLTK_DATA_COMMIT}/packages/{category}/{name}.zip"
+            )
+            log.info("fetching %s/%s", category, name)
+            with urllib.request.urlopen(url, timeout=120) as answer:  # noqa: S310 - pinned https
+                payload = answer.read()
+            zipfile.ZipFile(io.BytesIO(payload)).extractall(target)
 
         mpl_dir.mkdir(parents=True, exist_ok=True)
         (mpl_dir / "matplotlibrc").write_text(
