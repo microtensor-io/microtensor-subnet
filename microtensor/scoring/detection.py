@@ -47,10 +47,10 @@ def _bbox(value: Any) -> tuple[float, float, float, float] | None:
         return None
     if len(value) != BOX_FIELDS:
         return None
-    coords = [_number(v) for v in value]
-    if any(c is None for c in coords):
+    coords = [c for c in (_number(v) for v in value) if c is not None]
+    if len(coords) != BOX_FIELDS:
         return None
-    x, y, w, h = coords  # type: ignore[misc]
+    x, y, w, h = coords
     if w <= 0.0 or h <= 0.0 or x < 0.0 or y < 0.0:
         return None
     return (x, y, w, h)

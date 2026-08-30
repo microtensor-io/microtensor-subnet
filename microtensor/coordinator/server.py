@@ -230,7 +230,7 @@ class ServerClient:
         self,
         round_index: int,
         assignment: Mapping[str, Sequence[str]],
-        systems: Mapping[str, tuple[str, str, str]] | None = None,
+        systems: Mapping[str, tuple[str, str, str, str]] | None = None,
     ) -> dict[str, Any]:
         """Mirror who measures what, and which arena each system entered.
 

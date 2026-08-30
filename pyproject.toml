@@ -110,6 +110,8 @@ disallow_untyped_defs = true
 module = [
     "bittensor.*",
     "bittensor_wallet.*",
+    "jinja2.*",
+    "pycocotools.*",
     "substrateinterface.*",
     "boto3.*",
     "botocore.*",

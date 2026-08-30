@@ -402,10 +402,12 @@ class GgufEngine:
                 raise ValueError(message)
 
             environment.globals["raise_exception"] = _raise
-            return environment.from_string(template).render(
-                messages=messages,
-                add_generation_prompt=True,
-                enable_thinking=False,
+            return str(
+                environment.from_string(template).render(
+                    messages=messages,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
             )
         except Exception:
             return None

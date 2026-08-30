@@ -18,7 +18,7 @@ from microtensor.core.constants import (
     MIN_SCORED_FRACTION,
     REFERENCE_COST_MS,
 )
-from microtensor.core.protocol import Role
+from microtensor.core.protocol import Evaluation, Role
 from microtensor.core.tracks import HardwareClass, get_class
 from microtensor.provenance.record import ProvenanceUnavailable
 from microtensor.scoring import frontier
@@ -208,16 +208,17 @@ def _anchored_hardware(hardware_class: str, arena: object) -> HardwareClass:
     hardware = get_class(hardware_class)
     if arena is None:
         return hardware
-    overrides = {
-        field_name: value
-        for field_name, value in (
-            ("max_size_bytes", getattr(arena, "max_size_bytes", 0)),
-            ("max_rss_bytes", getattr(arena, "max_rss_bytes", 0)),
-            ("max_p95_ms", getattr(arena, "max_p95_ms", 0)),
-        )
-        if value
-    }
-    return replace(hardware, **overrides) if overrides else hardware
+    size = int(getattr(arena, "max_size_bytes", 0) or 0)
+    rss = int(getattr(arena, "max_rss_bytes", 0) or 0)
+    p95 = int(getattr(arena, "max_p95_ms", 0) or 0)
+    if not (size or rss or p95):
+        return hardware
+    return replace(
+        hardware,
+        max_size_bytes=size or hardware.max_size_bytes,
+        max_rss_bytes=rss or hardware.max_rss_bytes,
+        max_p95_ms=p95 or hardware.max_p95_ms,
+    )
 
 
 def _screen_derivation(
@@ -451,7 +452,7 @@ def _run_round(
             budget=arena.tasks_per_round if arena else context.config.tasks_per_round,
             round_index=round_.index,
         )
-        def publish(evaluation, participant, _plan=plan) -> None:
+        def publish(evaluation: Evaluation, participant: Participant, _plan: Plan = plan) -> None:
             if _plan.mode is not Mode.COORDINATED or context.coordinator is None:
                 return
             report = to_report(
