@@ -16,7 +16,9 @@ def _distribution_pins(root: Path) -> list[str]:
 
 
 def _is_cache(path: Path) -> bool:
-    return path.name.startswith("fontlist") or path.suffix == ".cache" or "__pycache__" in path.parts
+    if "__pycache__" in path.parts:
+        return True
+    return path.name.startswith("fontlist") or path.suffix == ".cache"
 
 
 def _tree_entries(root: Path, name: str) -> list[str]:
