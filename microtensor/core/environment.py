@@ -15,12 +15,16 @@ def _distribution_pins(root: Path) -> list[str]:
     return sorted(line for line in lines if line and not line.startswith("#"))
 
 
+def _is_cache(path: Path) -> bool:
+    return path.name.startswith("fontlist") or path.suffix == ".cache" or "__pycache__" in path.parts
+
+
 def _tree_entries(root: Path, name: str) -> list[str]:
     base = root / name
     if not base.is_dir():
         return []
     files = sorted(
-        (p for p in base.rglob("*") if p.is_file()),
+        (p for p in base.rglob("*") if p.is_file() and not _is_cache(p)),
         key=lambda p: p.relative_to(base).as_posix(),
     )
     return [f"{name}/{p.relative_to(base).as_posix()}:{digest_file(p)}" for p in files]
