@@ -177,8 +177,9 @@ def evaluate_gate(
     if measured.ttft_p95_ms > hardware.max_p95_ms:
         failures.append(GateFailure.LATENCY_CEILING)
 
-    if measured.conforming:
-        if measured.size_bytes > declared.size_bytes * (1.0 + DECLARATION_TOLERANCE_SIZE):
-            failures.append(GateFailure.SIZE_OVER_DECLARED)
+    if measured.conforming and measured.size_bytes > declared.size_bytes * (
+        1.0 + DECLARATION_TOLERANCE_SIZE
+    ):
+        failures.append(GateFailure.SIZE_OVER_DECLARED)
 
     return GateResult(admitted=not failures, failures=tuple(failures))

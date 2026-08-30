@@ -200,33 +200,65 @@ jobs:
           import json
           from pathlib import Path
 
+          from microtensor.core.tracks import competitions
+
           out = Path("/tmp/ci-corpus")
           out.mkdir(parents=True, exist_ok=True)
-          tasks, tests = [], []
-          for i in range(70):
-              partition = "rotating" if i < 45 else "fixed"
-              ref = f"code-ci-{i:03d}"
-              tasks.append({
-                  "ref": ref,
-                  "prompt": f"Task {ref}: write fn_{i}(xs) returning xs plus {i * 3}.",
-                  "gold": None,
-                  "partition": partition,
-                  "max_output_tokens": 128,
-                  "inputs": {},
-              })
-              tests.append({
-                  "ref": ref,
-                  "entry_point": f"fn_{i}",
-                  "tests": [
-                      {"args": [[j]], "expected": j, "edge": j == 0} for j in range(6)
-                  ],
-              })
-          (out / "code.jsonl").write_text(
-              "\n".join(json.dumps(t) for t in tasks) + "\n", encoding="utf-8"
-          )
-          (out / "code.tests.jsonl").write_text(
-              "\n".join(json.dumps(t) for t in tests) + "\n", encoding="utf-8"
-          )
+
+          def write(name, rows):
+              (out / name).write_text(
+                  "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+              )
+
+          def code_bundle(track):
+              tasks, tests = [], []
+              for i in range(70):
+                  partition = "rotating" if i < 45 else "fixed"
+                  ref = f"{track}-ci-{i:03d}"
+                  tasks.append({
+                      "ref": ref,
+                      "prompt": f"Task {ref}: write fn_{i}(xs) returning xs plus {i * 3}.",
+                      "gold": None,
+                      "partition": partition,
+                      "max_output_tokens": 128,
+                      "inputs": {},
+                  })
+                  tests.append({
+                      "ref": ref,
+                      "entry_point": f"fn_{i}",
+                      "tests": [
+                          {"args": [[j]], "expected": j, "edge": j == 0} for j in range(6)
+                      ],
+                  })
+              write(f"{track}.jsonl", tasks)
+              write(f"{track}.tests.jsonl", tests)
+
+          def extract_bundle(track):
+              tasks = []
+              for i in range(70):
+                  partition = "rotating" if i < 45 else "fixed"
+                  ref = f"{track}-ci-{i:03d}"
+                  chemical = f"compound{i}"
+                  disease = f"syndrome{i}"
+                  tasks.append({
+                      "ref": ref,
+                      "prompt": (
+                          f"Sentence {ref}: exposure to {chemical} was associated "
+                          f"with {disease} in the cohort."
+                      ),
+                      "gold": {"entities": [
+                          {"text": chemical, "type": "chemical"},
+                          {"text": disease, "type": "disease"},
+                      ]},
+                      "partition": partition,
+                      "max_output_tokens": 256,
+                      "inputs": {},
+                  })
+              write(f"{track}.jsonl", tasks)
+
+          builders = {"code": code_bundle, "extract": extract_bundle}
+          for track in sorted({t for t, _ in competitions()}):
+              builders[track](track)
           PY
           mt corpus check /tmp/ci-corpus --tasks-per-round 12
       - name: The package must build and carry both neuron entrypoints
