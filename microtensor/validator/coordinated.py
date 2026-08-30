@@ -272,6 +272,7 @@ def to_report(
     ablation: dict[str, float] | None = None,
     corpus_digest: str = "",
     components: dict[str, str] | None = None,
+    environment_digest: str = "",
 ) -> Report:
     """One measurement, in the shape the coordinator reconciles.
 
@@ -313,6 +314,7 @@ def to_report(
         engine_version=engine_version,
         corpus_version=corpus_version,
         corpus_digest=corpus_digest,
+        environment_digest=environment_digest,
     )
 
 

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import math
+import os
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from microtensor.core.constants import (
@@ -33,6 +38,7 @@ SAFE_MODULES = frozenset(
 )
 
 _ALLOW_UNSANDBOXED = False
+_ENV_ROOT: Path | None = None
 
 
 class ExecutionUnavailable(RuntimeError):
@@ -45,9 +51,10 @@ class TestCase:
     expected: Any
 
 
-def configure(*, allow_unsandboxed: bool) -> None:
-    global _ALLOW_UNSANDBOXED
+def configure(*, allow_unsandboxed: bool, env_root: str | Path | None = None) -> None:
+    global _ALLOW_UNSANDBOXED, _ENV_ROOT
     _ALLOW_UNSANDBOXED = allow_unsandboxed
+    _ENV_ROOT = Path(env_root) if env_root else None
 
 
 def parse_tests(payload: Sequence[Any]) -> tuple[TestCase, ...]:
@@ -202,6 +209,103 @@ def execute_pass_rate(
 
     if result.ok:
         return float(result.value["passed"]) / len(tests)
+    if result.fault is Fault.INFRASTRUCTURE:
+        raise ExecutionUnavailable(result.error)
+    return 0.0
+
+
+MODULE_GUARD = 'if __name__ == "__main__":\n    import unittest\n    unittest.main()\n'
+
+
+def module_sources(tests: Sequence[Any]) -> tuple[str, ...]:
+    return tuple(str(c["module"]) for c in tests if isinstance(c, dict) and "module" in c)
+
+
+def has_module_tests(gold: Any) -> bool:
+    return (
+        isinstance(gold, dict)
+        and isinstance(gold.get("tests"), (list, tuple))
+        and bool(module_sources(gold["tests"]))
+    )
+
+
+def assemble_module(code: str, sources: Sequence[str]) -> str:
+    return "\n\n".join([extract_code(code), *sources, MODULE_GUARD])
+
+
+def _interpreter(root: Path | None) -> str:
+    if root is not None:
+        for candidate in (
+            root / "venv" / "bin" / "python",
+            root / "venv" / "Scripts" / "python.exe",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+    return sys.executable
+
+
+def _module_env(root: Path | None) -> dict[str, str]:
+    if root is None:
+        return {}
+    return {"NLTK_DATA": str(root / "nltk_data"), "MPLCONFIGDIR": str(root / "mplconfig")}
+
+
+def _run_module(
+    source: str,
+    workdir: str,
+    interpreter: str,
+    env: dict[str, str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    path = os.path.join(workdir, "suite.py")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(source)
+    merged = {**os.environ, **env}
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [interpreter, path],
+            cwd=workdir,
+            env=merged,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"exit_code": None, "stderr": f"exceeded {timeout_seconds}s running the suite"}
+    return {"exit_code": proc.returncode, "stderr": proc.stderr[-2000:]}
+
+
+def execute_module_rate(
+    code: str,
+    tests: Sequence[Any],
+    *,
+    limits: Limits | None = None,
+    env_root: str | Path | None = None,
+) -> float:
+    sources = module_sources(tests)
+    if not sources:
+        return 0.0
+    root = Path(env_root) if env_root else _ENV_ROOT
+    bounded = limits or default_limits()
+    workdir = tempfile.mkdtemp(prefix="mt-module-")
+    try:
+        result = run_jailed(
+            _run_module,
+            assemble_module(code, sources),
+            workdir,
+            _interpreter(root),
+            _module_env(root),
+            max(1.0, float(bounded.wall_seconds) - 1.0),
+            limits=bounded,
+            allow_unsandboxed=_ALLOW_UNSANDBOXED,
+        )
+    except UnsupportedPlatform as exc:
+        raise ExecutionUnavailable(str(exc)) from exc
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    if result.ok:
+        return 1.0 if result.value["exit_code"] == 0 else 0.0
     if result.fault is Fault.INFRASTRUCTURE:
         raise ExecutionUnavailable(result.error)
     return 0.0

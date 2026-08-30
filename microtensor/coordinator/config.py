@@ -52,7 +52,7 @@ def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
     ceilings do. A second class opening, or a ceiling moving, changes them
     together, and none of it should need a release.
     """
-    return {
+    block: dict[str, Any] = {
         "allowed_base_models": sorted(value.get("allowed_base_models", [])),
         "cpu_seconds_per_artifact": int(
             value.get("cpu_seconds_per_artifact") or CPU_SECONDS_PER_ARTIFACT
@@ -64,6 +64,10 @@ def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
             if k in ("max_size_bytes", "max_rss_bytes", "max_p95_ms") and int(v) > 0
         },
     }
+    environment = value.get("environment_digest")
+    if environment:
+        block["environment_digest"] = str(environment)
+    return block
 
 
 def served_config(

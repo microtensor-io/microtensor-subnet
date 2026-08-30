@@ -91,6 +91,7 @@ class ValidatorContext:
     wallet: Any = None
     competitions: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     certifications: dict[str, dict[str, Any]] = field(default_factory=dict)
+    environment_digest: str = ""
     runs: CachedStore | None = None
     coordinator: Any = None
 
@@ -106,7 +107,6 @@ class ValidatorContext:
         coordinator: Any = None,
     ) -> ValidatorContext:
         validate_registry()
-        execution.configure(allow_unsandboxed=config.allow_unsandboxed)
         config.work_dir.mkdir(parents=True, exist_ok=True)
 
         for gate in unenforced():
@@ -138,7 +138,24 @@ class ValidatorContext:
 
         open_competitions = tuple(competitions())
 
-        from microtensor.envelope.certify import load_policies
+        from microtensor.envelope.certify import (
+            environment_root,
+            load_policies,
+            read_environment_digest,
+        )
+
+        execution.configure(
+            allow_unsandboxed=config.allow_unsandboxed,
+            env_root=environment_root(config.home),
+        )
+        environment_digest = read_environment_digest(environment_root(config.home))
+        if environment_digest:
+            log.info("evaluation environment %s", environment_digest)
+        else:
+            log.warning(
+                "no pinned evaluation environment at %s; run `mt validator env-setup`",
+                environment_root(config.home),
+            )
 
         return cls(
             config=config,
@@ -150,6 +167,7 @@ class ValidatorContext:
             wallet=wallet,
             competitions=open_competitions,
             certifications=load_policies(config.home),
+            environment_digest=environment_digest,
             runs=runs,
             coordinator=coordinator,
         )

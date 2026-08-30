@@ -15,6 +15,7 @@ QUALITY_SPREAD_WARNING = 0.01
 
 VERSION_MISMATCH = "engine or corpus version does not match the round"
 CORPUS_MISMATCH = "the worker's corpus does not hash to the one this round is measured against"
+ENVIRONMENT_MISMATCH = "report was measured in a different environment than the arena pins"
 UNASSIGNED = "worker was not assigned this system"
 DUPLICATE = "worker already reported this system this round"
 MALFORMED = "report is malformed"
@@ -91,6 +92,7 @@ def accept(
     corpus_version: str,
     already: Sequence[str] = (),
     corpus_digest: str = "",
+    environment_digest: str = "",
 ) -> None:
     """Whether a report may enter reconciliation. Raises with the reason.
 
@@ -113,6 +115,8 @@ def accept(
         raise ReportRejected(VERSION_MISMATCH)
     if corpus_digest and report.corpus_digest != corpus_digest:
         raise ReportRejected(f"{CORPUS_MISMATCH}: {report.corpus_digest or 'none declared'}")
+    if environment_digest and report.environment_digest != environment_digest:
+        raise ReportRejected(ENVIRONMENT_MISMATCH)
 
 
 def _publishable(values: Sequence[float]) -> list[int]:

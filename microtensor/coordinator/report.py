@@ -78,6 +78,7 @@ class Report:
     engine_version: str = ""
     corpus_version: str = ""
     corpus_digest: str = ""
+    environment_digest: str = ""
     fault: Fault | None = None
     fault_reason: str = ""
     signature: str = ""
@@ -100,6 +101,7 @@ class Report:
             "engine_version": self.engine_version,
             "corpus_version": self.corpus_version,
             "corpus_digest": self.corpus_digest,
+            "environment_digest": self.environment_digest,
             "fault": self.fault.value if self.fault else None,
             "fault_reason": self.fault_reason,
         }
@@ -123,6 +125,7 @@ class Report:
             engine_version=self.engine_version,
             corpus_version=self.corpus_version,
             corpus_digest=self.corpus_digest,
+            environment_digest=self.environment_digest,
             fault=self.fault,
             fault_reason=self.fault_reason,
             signature=signature,
@@ -146,6 +149,7 @@ class Report:
             engine_version=str(raw.get("engine_version", "")),
             corpus_version=str(raw.get("corpus_version", "")),
             corpus_digest=str(raw.get("corpus_digest", "")),
+            environment_digest=str(raw.get("environment_digest", "")),
             fault=Fault(fault) if fault else None,
             fault_reason=str(raw.get("fault_reason", "")),
             signature=str(raw.get("signature", "")),

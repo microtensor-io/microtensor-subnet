@@ -5,10 +5,12 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
-from microtensor.envelope.device import POLICY_ENV, DeviceProfile, detect
+from microtensor.core.hashing import canonical_hash
+from microtensor.envelope.device import POLICY_ENV, PROFILE_PREFIX, DeviceProfile, detect
 from microtensor.envelope.latency import Distribution, summarise
 from microtensor.envelope.sampler import ResidentSampler
 
@@ -50,6 +52,23 @@ class CertificationError(RuntimeError):
     pass
 
 
+ENVIRONMENT_DIR: Final[str] = "evaluation-env"
+
+
+def environment_root(home: Path) -> Path:
+    return home / ENVIRONMENT_DIR
+
+
+def read_environment_digest(root: Path) -> str:
+    if not root.is_dir():
+        return ""
+    try:
+        module = import_module("microtensor.core.environment")
+    except ImportError:
+        return ""
+    return str(module.environment_digest(root))
+
+
 @dataclass(frozen=True, slots=True)
 class Certification:
     class_id: str
@@ -58,10 +77,15 @@ class Certification:
     peak_rss_bytes: int
     device: DeviceProfile
     policy: dict[str, Any]
+    environment_digest: str = ""
 
     @property
     def digest(self) -> str:
-        return self.device.digest
+        if not self.environment_digest:
+            return self.device.digest
+        payload = self.device.to_dict()
+        payload["environment"] = self.environment_digest
+        return PROFILE_PREFIX + canonical_hash(payload)[7:23]
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -72,6 +96,7 @@ class Certification:
             "peak_rss_bytes": self.peak_rss_bytes,
             "device": self.device.to_dict(),
             "device_profile": self.digest,
+            "environment_digest": self.environment_digest,
             "policy": self.policy,
         }
 
@@ -96,6 +121,7 @@ def certify(
     policy: dict[str, Any] | None = None,
     *,
     repetitions: int = DEFAULT_REPETITIONS,
+    environment_digest: str = "",
 ) -> Certification:
     if class_id not in LAUNCH_CLASSES:
         raise CertificationError(
@@ -126,6 +152,7 @@ def certify(
         peak_rss_bytes=sampler.peak_bytes,
         device=device,
         policy=declared,
+        environment_digest=environment_digest,
     )
 
 
@@ -165,11 +192,15 @@ def fit_band(
     repetitions: int = DEFAULT_REPETITIONS,
     slack: float = BAND_SLACK,
     rss_slack: float = BAND_RSS_SLACK,
+    environment_digest: str = "",
 ) -> tuple[FittedBand, list[Certification]]:
     if runs < 3:
         raise CertificationError("fitting a band needs at least three runs")
 
-    results = [certify(class_id, policy, repetitions=repetitions) for _ in range(runs)]
+    results = [
+        certify(class_id, policy, repetitions=repetitions, environment_digest=environment_digest)
+        for _ in range(runs)
+    ]
     profiles = {c.digest for c in results}
     if len(profiles) != 1:
         raise CertificationError(

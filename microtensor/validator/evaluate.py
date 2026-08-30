@@ -29,7 +29,11 @@ from microtensor.harness.limits import Limits
 from microtensor.harness.registry import EngineUnavailable, available, load_builtin
 from microtensor.registry.fetch import ArtifactMismatch, Unfetchable
 from microtensor.registry.fetch import materialise as fetch_artifact
-from microtensor.scoring.execution import ExecutionUnavailable
+from microtensor.scoring.execution import (
+    ExecutionUnavailable,
+    execute_module_rate,
+    has_module_tests,
+)
 from microtensor.scoring.metrics import combine_partitions, partition_scores, score_task
 from microtensor.tasks.corpus import Task
 from microtensor.tasks.selection import RoundTasks, to_requests
@@ -208,9 +212,13 @@ def _outcome(task: Task, response: Response | None, metric: str, partition: str)
             error=response.error if response else "engine returned no response",
             fault=Fault.ARTIFACT,
         )
+    if has_module_tests(task.gold):
+        value = execute_module_rate(str(response.output), task.gold["tests"])
+    else:
+        value = score_task(metric, response.output, task.gold)
     return TaskOutcome(
         task_ref=task.ref,
-        score=score_task(metric, response.output, task.gold),
+        score=value,
         completed=True,
         partition=partition,
         latency_ms=response.total_ms,

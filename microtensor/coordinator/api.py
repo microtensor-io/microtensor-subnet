@@ -307,6 +307,13 @@ class Coordinator:
     def reputation(self) -> list[dict[str, Any]]:
         return [s.to_dict() for s in self.store.standings()]
 
+    def _expected_environment(self, system_digest: str) -> str:
+        entry = self.catalogue.get(system_digest)
+        if entry is None:
+            return ""
+        arena = self.arenas.get(f"{entry.track}/{entry.hardware_class}") or {}
+        return str(arena.get("environment_digest") or "")
+
     def submit(self, body: dict[str, Any], raw: bytes) -> dict[str, Any]:
         if len(raw) > REPORT_MAX_BYTES:
             raise ReportRejected(TOO_LARGE)
@@ -324,6 +331,7 @@ class Coordinator:
             corpus_version=self.corpus_version,
             already=already,
             corpus_digest=self.corpus_digest(),
+            environment_digest=self._expected_environment(report.system_digest),
         )
 
         self.store.record_report(report)

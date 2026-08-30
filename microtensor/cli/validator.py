@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from microtensor.chain.wallet import hotkey_address
@@ -38,7 +40,9 @@ from microtensor.envelope.certify import (
     LAUNCH_CLASSES,
     CertificationError,
     band_verdict,
+    environment_root,
     fit_band,
+    read_environment_digest,
 )
 from microtensor.envelope.certify import certify as certification_run
 from microtensor.envelope.certify import save as certify_save
@@ -98,6 +102,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="run the workload RUNS times and print a CERT_BANDS entry from the spread",
     )
     cert.set_defaults(handler=_certify)
+
+    env = inner.add_parser(
+        "env-setup", help="build the pinned evaluation environment and print its digest"
+    )
+    add_common_arguments(env)
+    env.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="environment directory (default $MT_HOME/evaluation-env)",
+    )
+    env.set_defaults(handler=_env_setup)
 
 
 def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
@@ -340,6 +356,88 @@ def _loopback(args: argparse.Namespace) -> int:
         world.context.close()
 
 
+NLTK_PACKAGES = (
+    "stopwords",
+    "punkt",
+    "words",
+    "vader_lexicon",
+    "averaged_perceptron_tagger",
+)
+
+
+def _requirements_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "deploy" / "evaluation-requirements.txt"
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _run_step(
+    command: list[str], *, env: dict[str, str] | None = None, capture: bool = False
+) -> str:
+    completed = subprocess.run(  # noqa: S603
+        command, check=True, env=env, capture_output=capture, text=True
+    )
+    return completed.stdout if capture else ""
+
+
+def _env_setup(args: argparse.Namespace) -> int:
+    root = (args.root or environment_root(Path(args.home))).expanduser().resolve()
+    requirements = _requirements_path()
+    if not requirements.is_file():
+        return fail(f"no pinned requirements at {requirements}")
+
+    root.mkdir(parents=True, exist_ok=True)
+    venv_dir = root / "venv"
+    nltk_dir = root / "nltk_data"
+    mpl_dir = root / "mplconfig"
+
+    try:
+        log.info("creating the venv at %s", venv_dir)
+        _run_step([sys.executable, "-m", "venv", str(venv_dir)])
+        python = str(_venv_python(venv_dir))
+
+        log.info("installing the pinned requirements from %s", requirements)
+        _run_step([python, "-m", "pip", "install", "-r", str(requirements)])
+
+        log.info("downloading nltk data into %s", nltk_dir)
+        nltk_dir.mkdir(parents=True, exist_ok=True)
+        script = "\n".join(
+            [
+                "import sys",
+                "import nltk",
+                f"packages = {list(NLTK_PACKAGES)!r}",
+                f"downloads = [nltk.download(p, download_dir={str(nltk_dir)!r}) for p in packages]",
+                "sys.exit(0 if all(downloads) else 1)",
+            ]
+        )
+        _run_step([python, "-c", script])
+
+        mpl_dir.mkdir(parents=True, exist_ok=True)
+        (mpl_dir / "matplotlibrc").write_text(
+            "backend: Agg\nfont.family: DejaVu Sans\n", encoding="utf-8"
+        )
+
+        log.info("building the matplotlib font cache under %s", mpl_dir)
+        cache_env = dict(os.environ)
+        cache_env["MPLCONFIGDIR"] = str(mpl_dir)
+        _run_step([python, "-c", "import matplotlib.font_manager"], env=cache_env)
+
+        frozen = _run_step([python, "-m", "pip", "freeze"], capture=True)
+        (root / "lock.txt").write_text(frozen, encoding="utf-8")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return fail(f"environment setup failed: {exc}")
+
+    digest = read_environment_digest(root)
+    print(f"root             {root}")
+    print(f"lock             {root / 'lock.txt'}")
+    print(f"environment      {digest}")
+    return 0
+
+
 def _certify(args: argparse.Namespace) -> int:
     policy = {
         key: value
@@ -351,6 +449,7 @@ def _certify(args: argparse.Namespace) -> int:
         }.items()
         if value is not None
     }
+    environment = read_environment_digest(environment_root(Path(args.home)))
 
     if args.fit_band:
         try:
@@ -359,6 +458,7 @@ def _certify(args: argparse.Namespace) -> int:
                 policy,
                 runs=args.fit_band,
                 repetitions=args.repetitions or DEFAULT_REPETITIONS,
+                environment_digest=environment,
             )
         except CertificationError as exc:
             return fail(str(exc))
@@ -376,6 +476,8 @@ def _certify(args: argparse.Namespace) -> int:
         )
         print(f"peak rss         {fitted.rss_observed / 1024**2:.0f} MiB")
         print(f"device profile   {results[-1].digest}")
+        if environment:
+            print(f"environment      {environment}")
         print("\npaste into CERT_BANDS in microtensor/envelope/certify.py:\n")
         print(fitted.as_constant())
         print(f"\nand set device_profile on the {fitted.class_id} class to:")
@@ -392,6 +494,7 @@ def _certify(args: argparse.Namespace) -> int:
             args.hardware_class,
             policy,
             repetitions=args.repetitions or DEFAULT_REPETITIONS,
+            environment_digest=environment,
         )
     except CertificationError as exc:
         return fail(str(exc))
@@ -404,6 +507,8 @@ def _certify(args: argparse.Namespace) -> int:
     print(f"p50 / p95        {certification.latency.p50:.1f} / {certification.latency.p95:.1f} ms")
     print(f"peak rss         {certification.peak_rss_bytes / 1024**2:.0f} MiB")
     print(f"device profile   {certification.digest}")
+    if certification.environment_digest:
+        print(f"environment      {certification.environment_digest}")
     print(f"policy           {json.dumps(certification.policy, sort_keys=True)}")
     print(f"band             {verdict}")
     print(f"\nsaved to {path}; envelope measurements will carry this profile")

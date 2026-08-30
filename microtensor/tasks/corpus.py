@@ -166,12 +166,18 @@ def load_tests(path: Path) -> dict[str, dict[str, Any]]:
             try:
                 row = json.loads(stripped)
                 ref = str(row["ref"])
-                bundle[ref] = {
-                    "entry_point": str(row["entry_point"]),
-                    "tests": list(row["tests"]),
-                }
+                tests = list(row["tests"])
             except (json.JSONDecodeError, KeyError, TypeError) as exc:
                 raise CorpusError(f"{path}:{number} is malformed: {exc}") from exc
+            for case in tests:
+                if not isinstance(case, dict) or (
+                    "module" not in case and not ("args" in case and "expected" in case)
+                ):
+                    raise CorpusError(
+                        f"{path}:{number} has a test case that is neither "
+                        f"pair shaped nor module shaped"
+                    )
+            bundle[ref] = {"entry_point": str(row["entry_point"]), "tests": tests}
     return bundle
 
 
