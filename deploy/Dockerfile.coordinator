@@ -7,7 +7,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY microtensor ./microtensor
 COPY neurons ./neurons
-RUN pip install --no-cache-dir ".[coordinator]"
+RUN pip install --no-cache-dir ".[coordinator,huggingface,s3]"
 
 ENV MT_ROLE=coordinator \
     MT_HOME=/var/lib/microtensor
