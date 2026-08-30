@@ -930,7 +930,16 @@ def _also_accepted() -> tuple[str, ...]:
     return tuple(hotkey.strip() for hotkey in named.split(",") if hotkey.strip())
 
 
-def _keep_registry_current(registry: Registry, client: Any) -> None:
+def _live_uids(store: CoordinatorStore, client: Any) -> dict[str, int]:
+    known = dict(store.uids())
+    try:
+        known.update(dict(client.snapshot().uid_by_hotkey))
+    except Exception as exc:
+        log.warning("the live uid map could not be read from chain: %s", exc)
+    return known
+
+
+def _keep_registry_current(registry: Registry, client: Any, service: Any = None) -> None:
     import threading
 
     def loop() -> None:
@@ -944,6 +953,11 @@ def _keep_registry_current(registry: Registry, client: Any) -> None:
             if found and found != registry.permitted:
                 registry.permitted = found
                 log.info("registry refreshed: %d permitted validators", len(found))
+            if service is not None:
+                try:
+                    service.uid_by_hotkey = dict(client.snapshot().uid_by_hotkey)
+                except Exception as exc:
+                    log.warning("the uid map could not be refreshed: %s", exc)
 
     threading.Thread(target=loop, name="registry-refresh", daemon=True).start()
 
@@ -977,7 +991,6 @@ def _serve(args: argparse.Namespace) -> int:
         else:
             log.info("registry holds %d permitted validators", len(permitted))
         registry = Registry(permitted)
-        _keep_registry_current(registry, client)
 
         service = Coordinator(
             store=store,
@@ -985,7 +998,7 @@ def _serve(args: argparse.Namespace) -> int:
             keyring=keyring,
             corpus_version=CORPUS_VERSION,
             corpora=_corpora(args, server),
-            uid_by_hotkey=store.uids(),
+            uid_by_hotkey=_live_uids(store, client),
             reserve=server.reserved if server is not None else None,
             signer=_signer(args),
             mirror_report=server.push_reports if server is not None else None,
@@ -993,6 +1006,7 @@ def _serve(args: argparse.Namespace) -> int:
             arena_source=(lambda: _arenas(server)) if server is not None else None,
             corpora_source=(lambda: _corpora(args, server)) if server is not None else None,
         )
+        _keep_registry_current(registry, client, service)
         app = build_app(service)
         log.info("serving the coordinator on %s:%d", args.host, args.port)
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")

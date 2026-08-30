@@ -259,7 +259,14 @@ def measured_weights(store: Any) -> dict[int, float]:
     than collapsing to the hold for the whole window.
     """
     published = store.newest_settlement() or {}
-    return {int(uid): float(value) for uid, value in published.get("weights", {}).items()}
+    weights = {int(uid): float(value) for uid, value in published.get("weights", {}).items()}
+    held = normalise_reserved(published.get("reserved"))
+    if held:
+        weights.pop(int(held["uid"]), None)
+    total = sum(weights.values())
+    if total > 0.0:
+        weights = {uid: value / total for uid, value in weights.items()}
+    return weights
 
 
 def standing_weights(
