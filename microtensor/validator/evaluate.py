@@ -125,7 +125,9 @@ def _evaluation(
         score_fixed=fixed,
         score_novel=novel,
         score_combined=(
-            combine_partitions(rotating, fixed, novel) if gate.admitted else 0.0
+            combine_partitions(rotating, fixed, novel, n_rotating, n_fixed, n_novel)
+            if gate.admitted
+            else 0.0
         ),
         n_rotating=n_rotating,
         n_fixed=n_fixed,
@@ -471,7 +473,7 @@ def evaluate_participant(
             )
         metric = get_track(tasks.track).metric
         outcomes, front_outcomes = outcomes_from(cascade.legs, tasks, metric)
-        front_only_score = combine_partitions(*partition_scores(front_outcomes)[:3])
+        front_only_score = combine_partitions(*partition_scores(front_outcomes))
         by_ref = {r.task_ref: r for r in cascade.responses()}
     else:
         outcomes, by_ref, failure = score(

@@ -214,10 +214,20 @@ def partition_scores(
 
 
 def combine_partitions(
-    score_rotating: float, score_fixed: float, score_novel: float = 0.0
+    score_rotating: float,
+    score_fixed: float,
+    score_novel: float = 0.0,
+    n_rotating: int = 1,
+    n_fixed: int = 1,
+    n_novel: int = 0,
 ) -> float:
-    return quantise(
-        ROTATING_FRACTION * score_rotating
-        + FIXED_FRACTION * score_fixed
-        + NOVEL_FRACTION * score_novel
-    )
+    parts = [
+        (ROTATING_FRACTION, score_rotating, n_rotating),
+        (FIXED_FRACTION, score_fixed, n_fixed),
+        (NOVEL_FRACTION, score_novel, n_novel),
+    ]
+    served = [(weight, score) for weight, score, count in parts if count > 0]
+    total = sum(weight for weight, _ in served)
+    if total <= 0.0:
+        return 0.0
+    return quantise(sum(weight * score for weight, score in served) / total)
