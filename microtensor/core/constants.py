@@ -25,7 +25,7 @@ def _ms(name: str, default: float) -> float:
 
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
-RELEASE_VERSION: Final[str] = "0.1.14"
+RELEASE_VERSION: Final[str] = "0.3.0"
 
 # What the rules are. Moves only when admission or scoring changes, because
 # validators on different values here measure the same round differently, and
