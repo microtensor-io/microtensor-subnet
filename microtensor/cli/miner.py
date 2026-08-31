@@ -285,11 +285,17 @@ def _selfcheck(args: argparse.Namespace) -> int:
 
 
 def _simulate(args: argparse.Namespace) -> int:
+    from microtensor.envelope.certify import environment_root
     from microtensor.miner.simulate import SimulationError, simulate
+    from microtensor.scoring import execution
     from microtensor.tasks.corpus import load_all
 
     try:
         config = _config(args)
+        execution.configure(
+            allow_unsandboxed=config.allow_unsandboxed,
+            env_root=environment_root(config.home),
+        )
         corpora = load_all(args.corpus, CORPUS_VERSION)
         corpus = corpora.get(config.track)
         if corpus is None:

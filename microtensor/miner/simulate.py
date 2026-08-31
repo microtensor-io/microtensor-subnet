@@ -115,6 +115,13 @@ def simulate(
     )
     result = CascadeResult(tuple(legs))
 
+    from microtensor.scoring.execution import execute_module_rate, has_module_tests
+
+    def scored(output: object, gold: object) -> float:
+        if has_module_tests(gold):
+            return execute_module_rate(str(output), gold["tests"])  # type: ignore[index]
+        return score_task(metric, output, gold)
+
     by_ref = {leg.task_ref: leg for leg in legs}
     end_to_end = 0.0
     front_only = 0.0
@@ -123,9 +130,9 @@ def simulate(
         if leg is None:
             continue
         if leg.response.ok:
-            end_to_end += score_task(metric, leg.response.output, task.gold)
+            end_to_end += scored(leg.response.output, task.gold)
         if leg.front_response.ok:
-            front_only += score_task(metric, leg.front_response.output, task.gold)
+            front_only += scored(leg.front_response.output, task.gold)
 
     count = len(tasks)
     quality = end_to_end / count
