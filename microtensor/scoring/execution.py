@@ -216,6 +216,23 @@ def execute_pass_rate(
 
 MODULE_GUARD = 'if __name__ == "__main__":\n    import unittest\n    unittest.main()\n'
 
+MODULE_PREAMBLE = """\
+import socket as _socket
+
+
+def _refused(*args, **kwargs):
+    raise OSError("network access is disabled in the evaluation jail")
+
+
+_socket.socket = _refused
+_socket.create_connection = _refused
+_socket.create_server = _refused
+_socket.socketpair = _refused
+_socket.getaddrinfo = _refused
+
+from solution import *  # noqa: E402,F403
+"""
+
 
 def module_sources(tests: Sequence[Any]) -> tuple[str, ...]:
     return tuple(str(c["module"]) for c in tests if isinstance(c, dict) and "module" in c)
@@ -229,8 +246,8 @@ def has_module_tests(gold: Any) -> bool:
     )
 
 
-def assemble_module(code: str, sources: Sequence[str]) -> str:
-    return "\n\n".join([extract_code(code), *sources, MODULE_GUARD])
+def assemble_module(code: str, sources: Sequence[str]) -> tuple[str, str]:
+    return extract_code(code), "\n\n".join([MODULE_PREAMBLE, *sources, MODULE_GUARD])
 
 
 def _interpreter(root: Path | None) -> str:
@@ -251,15 +268,18 @@ def _module_env(root: Path | None) -> dict[str, str]:
 
 
 def _run_module(
-    source: str,
+    solution: str,
+    suite: str,
     workdir: str,
     interpreter: str,
     env: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
+    with open(os.path.join(workdir, "solution.py"), "w", encoding="utf-8") as fh:
+        fh.write(solution)
     path = os.path.join(workdir, "suite.py")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(source)
+        fh.write(suite)
     merged = {**os.environ, **env}
     try:
         proc = subprocess.run(  # noqa: S603
@@ -290,9 +310,11 @@ def execute_module_rate(
     bounded = limits or default_limits()
     workdir = tempfile.mkdtemp(prefix="mt-module-")
     try:
+        solution, suite = assemble_module(code, sources)
         result = run_jailed(
             _run_module,
-            assemble_module(code, sources),
+            solution,
+            suite,
             workdir,
             _interpreter(root),
             _module_env(root),
