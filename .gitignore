@@ -39,6 +39,7 @@ work/
 # miner can train against.
 corpus/
 *.jsonl
+!microtensor/tasks/reference_fingerprints/*.jsonl
 
 # Secrets and local config
 .env
