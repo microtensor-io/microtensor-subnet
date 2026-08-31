@@ -14,9 +14,25 @@ from microtensor.chain.rounds import Round
 from microtensor.coordinator.assign import System, Worker
 from microtensor.coordinator.chain import ChainSource
 from microtensor.coordinator.settle import Entry, Settlement
-from microtensor.core.constants import PUBLIC_SERVER_URL
+from microtensor.core.constants import DEADLINE_MARGIN_BLOCKS, PUBLIC_SERVER_URL
 
 log = logging.getLogger("microtensor.coordinator")
+
+RUNNING_STATES = frozenset({"open", "closed", "settling"})
+
+
+def _window(current: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    try:
+        start = int(current["open_block"])
+        close = int(current["close_block"])
+        end = int(current["end_block"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    length = end - start + 1
+    close_margin = end + 1 - close
+    if length < 1 or not 0 < close_margin < length:
+        return None
+    return start, length, close_margin
 
 CREDENTIAL_HEADER = "x-mt-credential"
 BAD_SCHEME = "the server URL must be http or https"
@@ -31,6 +47,15 @@ class ServerUnreachable(RuntimeError):
 
     Never fatal. The subnet has to keep running with the server down, so every
     caller of this falls back to chain rather than stopping.
+    """
+
+
+class RoundNotOpen(RuntimeError):
+    """The control plane holds a round that is not taking work.
+
+    A scheduled round is one the operator has staged but not started, so the
+    coordinator idles rather than deriving a round of its own. Distinct from
+    unreachable: the server answered, and the answer was "not yet".
     """
 
 
@@ -302,20 +327,42 @@ class ServerSource:
             self.degraded = False
 
         self.config_hash = str(current.get("config_hash", ""))
-        derived = self.chain.open_round()
         stated = current.get("index", current.get("round"))
         if stated is None:
             log.warning("the control plane names no round index; deriving it from chain")
-            return derived
+            return self.chain.open_round()
         published = int(stated)
 
-        if published != derived.index:
-            raise ServerRefused(
-                f"the control plane is on round {published} but this chain gives "
-                f"{derived.index}; refusing to measure across that gap"
+        state = str(current.get("state", "")).lower()
+        if state and state not in RUNNING_STATES:
+            raise RoundNotOpen(
+                f"the control plane holds round {published} as {state}; "
+                "no round is taking work"
             )
 
-        return derived
+        window = _window(current)
+        if window is None:
+            log.warning(
+                "the control plane served round %d without a usable window; "
+                "deriving the schedule from chain",
+                published,
+            )
+            derived = self.chain.open_round()
+            if published != derived.index:
+                raise ServerRefused(
+                    f"the control plane is on round {published} but this chain gives "
+                    f"{derived.index}; refusing to measure across that gap"
+                )
+            return derived
+
+        start, length, close_margin = window
+        return Round(
+            index=published,
+            start_block=start,
+            length=length,
+            close_margin=close_margin,
+            deadline_margin=min(DEADLINE_MARGIN_BLOCKS, max(0, close_margin - 1)),
+        )
 
     def seed(self, round_: Round) -> str:
         return self.chain.seed(round_)

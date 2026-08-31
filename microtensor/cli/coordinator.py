@@ -18,6 +18,7 @@ from microtensor.coordinator.config import config_hash, served_config
 from microtensor.coordinator.release import Milestone, ReleaseError
 from microtensor.coordinator.release import build as build_release
 from microtensor.coordinator.server import (
+    RoundNotOpen,
     ServerClient,
     ServerRefused,
     ServerSource,
@@ -478,6 +479,9 @@ def _open(args: argparse.Namespace) -> int:
 
     try:
         round_ = source.open_round()
+    except RoundNotOpen as exc:
+        print(str(exc))
+        return 0
     except ServerRefused as exc:
         return fail(str(exc))
     systems, catalogue = source.systems(round_)
