@@ -7,6 +7,8 @@ services:
     container_name: microtensor-validator
     restart: unless-stopped
     stop_grace_period: 30m
+    cap_add:
+      - SYS_ADMIN
     environment:
       MT_NETUID: "${MT_NETUID:-92}"
       MT_NETWORK: "${MT_NETWORK:-finney}"
