@@ -99,6 +99,55 @@ def pin_threads() -> None:
     os.environ.update(DETERMINISTIC_ENV)
 
 
+CLONE_NEWUSER: Final[int] = 0x10000000
+CLONE_NEWNET: Final[int] = 0x40000000
+
+
+def network_available() -> bool:
+    return POSIX and sys.platform.startswith("linux")
+
+
+def _unshare(flags: int) -> None:
+    call = getattr(os, "unshare", None)
+    if call is not None:
+        call(flags)
+        return
+
+    import ctypes
+
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    if libc.unshare(flags) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def interfaces() -> list[str]:
+    try:
+        with open("/proc/net/dev", encoding="ascii") as handle:
+            lines = handle.read().splitlines()[2:]
+    except OSError:
+        return []
+    return [line.split(":", 1)[0].strip() for line in lines if ":" in line]
+
+
+def drop_network() -> None:
+    if not network_available():
+        raise UnsupportedPlatform(
+            "network isolation requires Linux namespaces; validators must run on Linux"
+        )
+
+    try:
+        _unshare(CLONE_NEWUSER | CLONE_NEWNET)
+    except OSError:
+        _unshare(CLONE_NEWNET)
+
+    remaining = [name for name in interfaces() if name != "lo"]
+    if remaining:
+        raise UnsupportedPlatform(
+            f"network namespace still exposes {', '.join(remaining)}"
+        )
+
+
 def apply(limits: Limits) -> None:
     resource = _resource()
 

@@ -15,6 +15,8 @@ from microtensor.harness.limits import (
     children_cpu_seconds,
     children_peak_rss,
     cpu_seconds_used,
+    drop_network,
+    network_available,
     peak_rss_bytes,
     pin_threads,
     sandbox_available,
@@ -151,9 +153,15 @@ def _install_cpu_alarm(conn: Any, limits: Limits | None) -> None:
 
 
 def _entry(
-    conn: Any, target: Callable[..., Any], args: tuple[Any, ...], limits: Limits | None
+    conn: Any,
+    target: Callable[..., Any],
+    args: tuple[Any, ...],
+    limits: Limits | None,
+    isolate: bool = False,
 ) -> None:
     try:
+        if isolate:
+            drop_network()
         pin_threads()
         if limits is not None:
             apply(limits)
@@ -203,17 +211,19 @@ def run_jailed(
     start_method: str = "spawn",
 ) -> JailResult:
     sandboxed = sandbox_available()
-    if not sandboxed and not allow_unsandboxed:
+    isolated = network_available()
+    if not (sandboxed and isolated) and not allow_unsandboxed:
         raise UnsupportedPlatform(
-            "refusing to execute an untrusted artifact without resource limits; "
-            "run the validator on Linux or pass allow_unsandboxed for local development"
+            "refusing to execute an untrusted artifact without resource limits and "
+            "network isolation; run the validator on Linux with Python 3.12 or newer, "
+            "or pass allow_unsandboxed for local development"
         )
 
     context: Any = mp.get_context(start_method)
     parent, child = context.Pipe(duplex=False)
     process = context.Process(
         target=_entry,
-        args=(child, target, args, limits if sandboxed else None),
+        args=(child, target, args, limits if sandboxed else None, isolated),
         daemon=True,
     )
 
