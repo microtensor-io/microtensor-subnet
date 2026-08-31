@@ -168,8 +168,8 @@ def _could_reach(a: Sequence[str], b: Sequence[str], threshold: float) -> bool:
         return False
     if min(len(a), len(b)) / longest < threshold:
         return False
-    shared = len(Counter(a) & Counter(b))
-    return (shared / longest) >= threshold * 0.75
+    shared = sum((Counter(a) & Counter(b)).values())
+    return (shared / longest) >= threshold
 
 
 def _ratio(a: Sequence[str], b: Sequence[str], threshold: float = 0.0) -> float:
