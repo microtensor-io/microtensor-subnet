@@ -11,7 +11,8 @@ from microtensor.core.tracks import get_track
 
 ROTATING: Final[str] = "rotating"
 FIXED: Final[str] = "fixed"
-PARTITIONS: Final[frozenset[str]] = frozenset({ROTATING, FIXED})
+TRAIN: Final[str] = "train"
+PARTITIONS: Final[frozenset[str]] = frozenset({ROTATING, FIXED, TRAIN})
 
 
 class CorpusError(ValueError):
@@ -98,6 +99,10 @@ class Corpus:
     @property
     def fixed(self) -> tuple[Task, ...]:
         return tuple(t for t in self.tasks if t.partition == FIXED)
+
+    @property
+    def train(self) -> tuple[Task, ...]:
+        return tuple(t for t in self.tasks if t.partition == TRAIN)
 
     @property
     def metric(self) -> str:
