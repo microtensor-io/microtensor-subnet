@@ -173,6 +173,9 @@ class ServerClient:
                 "allowed_base_models": list(arena.get("allowed_base_models", [])),
                 "corpus_version": str(arena.get("corpus_version", "")),
             }
+            environment = arena.get("environment_digest")
+            if environment:
+                block["environment_digest"] = str(environment)
             for field_name in ("cpu_seconds_per_artifact", "tasks_per_round"):
                 value = arena.get(field_name)
                 if isinstance(value, int) and value > 0:
