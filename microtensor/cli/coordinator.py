@@ -882,6 +882,7 @@ def _status(args: argparse.Namespace) -> int:
 
 
 REGISTRY_REFRESH_SECONDS = 300
+SUBMISSION_WATCH_SECONDS = 180
 
 
 def _worker_keyring(args: argparse.Namespace, server: ServerClient | None) -> KeyRing | None:
@@ -966,6 +967,39 @@ def _keep_registry_current(registry: Registry, client: Any, service: Any = None)
     threading.Thread(target=loop, name="registry-refresh", daemon=True).start()
 
 
+def _watch_submissions(client: Any, server: ServerClient) -> None:
+    import threading
+
+    from microtensor.chain.commitment import decode_all
+
+    def loop() -> None:
+        while True:
+            try:
+                current = server.current_round() or {}
+                index = current.get("index", current.get("round"))
+                state = str(current.get("state", "")).lower()
+                if index is not None and state == "open":
+                    snapshot = client.snapshot(refresh=True)
+                    raw = client.commitments(list(snapshot.hotkeys))
+                    seen = [
+                        {
+                            "hotkey": hotkey,
+                            "track": c.track,
+                            "hardware_class": c.hardware_class,
+                            "sealed": c.sealed,
+                        }
+                        for hotkey, c in decode_all(raw).items()
+                        if c.round_index == int(index)
+                    ]
+                    if seen:
+                        server.push_submissions(int(index), seen)
+            except Exception as exc:
+                log.debug("submission watch skipped a pass: %s", exc)
+            time.sleep(SUBMISSION_WATCH_SECONDS)
+
+    threading.Thread(target=loop, name="submission-watch", daemon=True).start()
+
+
 def _serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -1011,6 +1045,8 @@ def _serve(args: argparse.Namespace) -> int:
             corpora_source=(lambda: _corpora(args, server)) if server is not None else None,
         )
         _keep_registry_current(registry, client, service)
+        if server is not None:
+            _watch_submissions(client, server)
         app = build_app(service)
         log.info("serving the coordinator on %s:%d", args.host, args.port)
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")

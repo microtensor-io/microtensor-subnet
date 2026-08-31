@@ -167,6 +167,18 @@ class ServerClient:
     def push_settlement(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/v1/ingest/settlement", payload) or {}
 
+    def push_submissions(
+        self, round_index: int, submissions: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return (
+            self._call(
+                "POST",
+                "/v1/ingest/submissions",
+                {"round_index": round_index, "submissions": submissions},
+            )
+            or {}
+        )
+
     def push_reports(self, round_index: int, reports: list[dict[str, Any]]) -> dict[str, Any]:
         return (
             self._call(
