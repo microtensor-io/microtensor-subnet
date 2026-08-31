@@ -6,13 +6,14 @@ from dataclasses import dataclass
 
 from microtensor.core.constants import (
     FIXED_FRACTION,
+    NOVEL_FRACTION,
     ROTATING_FRACTION,
     TASKS_PER_ROUND,
 )
 from microtensor.core.hashing import round_seed, select_deterministic, task_nonce
 from microtensor.core.tracks import get_track
 from microtensor.harness.contract import Request
-from microtensor.tasks.corpus import FIXED, ROTATING, Corpus, CorpusError, Task
+from microtensor.tasks.corpus import FIXED, NOVEL, ROTATING, Corpus, CorpusError, Task
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,14 +24,15 @@ class RoundTasks:
     corpus_version: str
     rotating: tuple[Task, ...]
     fixed: tuple[Task, ...]
+    novel: tuple[Task, ...] = ()
     round_index: int = 0
 
     @property
     def all(self) -> tuple[Task, ...]:
-        return self.rotating + self.fixed
+        return self.rotating + self.fixed + self.novel
 
     def __len__(self) -> int:
-        return len(self.rotating) + len(self.fixed)
+        return len(self.rotating) + len(self.fixed) + len(self.novel)
 
     @property
     def refs(self) -> tuple[str, ...]:
@@ -41,10 +43,15 @@ def partition_sizes(
     budget: int = TASKS_PER_ROUND,
     rotating_fraction: float = ROTATING_FRACTION,
     fixed_fraction: float = FIXED_FRACTION,
-) -> tuple[int, int]:
-    if budget < 2:
+    novel_fraction: float = NOVEL_FRACTION,
+) -> tuple[int, int, int]:
+    if budget < 3:
         raise CorpusError("a round needs at least one task from each partition")
-    return math.ceil(rotating_fraction * budget), math.floor(fixed_fraction * budget)
+    return (
+        math.ceil(rotating_fraction * budget),
+        math.floor(fixed_fraction * budget),
+        math.floor(novel_fraction * budget),
+    )
 
 
 def competition_seed(block_hash: str, track: str, hardware_class: str) -> str:
@@ -59,15 +66,18 @@ def select(
     budget: int = TASKS_PER_ROUND,
     round_index: int = 0,
 ) -> RoundTasks:
-    want_rotating, want_fixed = partition_sizes(budget)
+    want_rotating, want_fixed, want_novel = partition_sizes(budget)
 
     rotating_refs = select_deterministic(
         [t.ref for t in corpus.rotating], seed, min(want_rotating, len(corpus.rotating))
     )
     fixed_pool = corpus.fixed
     fixed_refs = sorted(t.ref for t in fixed_pool)[:want_fixed] if want_fixed else []
+    novel_refs = select_deterministic(
+        [t.ref for t in corpus.novel], seed, min(want_novel, len(corpus.novel))
+    )
 
-    if not rotating_refs and not fixed_refs:
+    if not rotating_refs and not fixed_refs and not novel_refs:
         raise CorpusError(f"corpus for {corpus.track!r} yielded no tasks for this round")
 
     return RoundTasks(
@@ -77,6 +87,7 @@ def select(
         corpus_version=corpus.version,
         rotating=corpus.by_ref(rotating_refs),
         fixed=corpus.by_ref(fixed_refs),
+        novel=corpus.by_ref(novel_refs),
         round_index=round_index,
     )
 
@@ -105,4 +116,8 @@ def to_requests(
 
 
 def partition_of(tasks: RoundTasks, ref: str) -> str:
-    return ROTATING if ref in {t.ref for t in tasks.rotating} else FIXED
+    if ref in {t.ref for t in tasks.rotating}:
+        return ROTATING
+    if ref in {t.ref for t in tasks.novel}:
+        return NOVEL
+    return FIXED

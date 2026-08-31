@@ -12,7 +12,9 @@ from microtensor.core.tracks import get_track
 ROTATING: Final[str] = "rotating"
 FIXED: Final[str] = "fixed"
 TRAIN: Final[str] = "train"
-PARTITIONS: Final[frozenset[str]] = frozenset({ROTATING, FIXED, TRAIN})
+NOVEL: Final[str] = "novel"
+PARTITIONS: Final[frozenset[str]] = frozenset({ROTATING, FIXED, TRAIN, NOVEL})
+SCORED: Final[frozenset[str]] = frozenset({ROTATING, FIXED, NOVEL})
 
 
 class CorpusError(ValueError):
@@ -105,6 +107,10 @@ class Corpus:
         return tuple(t for t in self.tasks if t.partition == TRAIN)
 
     @property
+    def novel(self) -> tuple[Task, ...]:
+        return tuple(t for t in self.tasks if t.partition == NOVEL)
+
+    @property
     def metric(self) -> str:
         return get_track(self.track).metric
 
@@ -156,7 +162,12 @@ SIDECAR_SUFFIXES = (".tests.jsonl", ".train.jsonl", ".reference.jsonl")
 # check` reports against the authority that actually decides rather than
 # against a number of its own. Kept in step with MIN_TASKS in the server's
 # corpuscheck; a corpus below these cannot be attached to an arena at all.
-ADMISSION_MINIMUMS: Final[dict[str, int]] = {"train": 10, "fixed": 20, "rotating": 40}
+ADMISSION_MINIMUMS: Final[dict[str, int]] = {
+    "train": 10,
+    "fixed": 20,
+    "rotating": 40,
+    "novel": 20,
+}
 
 
 def load_tests(path: Path) -> dict[str, dict[str, Any]]:

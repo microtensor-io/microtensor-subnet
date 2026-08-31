@@ -23,15 +23,22 @@ class QualityBlock:
     rotating: float
     fixed: float
     combined: float
+    novel: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        return {"rotating": self.rotating, "fixed": self.fixed, "combined": self.combined}
+        return {
+            "rotating": self.rotating,
+            "fixed": self.fixed,
+            "novel": self.novel,
+            "combined": self.combined,
+        }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> QualityBlock:
         return cls(
             rotating=float(raw.get("rotating", 0.0)),
             fixed=float(raw.get("fixed", 0.0)),
+            novel=float(raw.get("novel", 0.0)),
             combined=float(raw.get("combined", 0.0)),
         )
 

@@ -299,6 +299,7 @@ def to_report(
         quality=QualityBlock(
             rotating=evaluation.score_rotating,
             fixed=evaluation.score_fixed,
+            novel=evaluation.score_novel,
             combined=evaluation.score_combined,
         ),
         resolve_rate=evaluation.resolve_rate,

@@ -5,7 +5,12 @@ import re
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, Final
 
-from microtensor.core.constants import ACCURACY_DECIMALS, FIXED_FRACTION, ROTATING_FRACTION
+from microtensor.core.constants import (
+    ACCURACY_DECIMALS,
+    FIXED_FRACTION,
+    NOVEL_FRACTION,
+    ROTATING_FRACTION,
+)
 from microtensor.core.protocol import TaskOutcome
 
 Metric = Callable[[Any, Any], float]
@@ -192,11 +197,27 @@ def aggregate(outcomes: Sequence[TaskOutcome]) -> float:
     return quantise(sum(o.score for o in outcomes) / len(outcomes))
 
 
-def partition_scores(outcomes: Sequence[TaskOutcome]) -> tuple[float, float, int, int]:
+def partition_scores(
+    outcomes: Sequence[TaskOutcome],
+) -> tuple[float, float, float, int, int, int]:
     rotating = [o for o in outcomes if o.partition == "rotating"]
     fixed = [o for o in outcomes if o.partition == "fixed"]
-    return aggregate(rotating), aggregate(fixed), len(rotating), len(fixed)
+    novel = [o for o in outcomes if o.partition == "novel"]
+    return (
+        aggregate(rotating),
+        aggregate(fixed),
+        aggregate(novel),
+        len(rotating),
+        len(fixed),
+        len(novel),
+    )
 
 
-def combine_partitions(score_rotating: float, score_fixed: float) -> float:
-    return quantise(ROTATING_FRACTION * score_rotating + FIXED_FRACTION * score_fixed)
+def combine_partitions(
+    score_rotating: float, score_fixed: float, score_novel: float = 0.0
+) -> float:
+    return quantise(
+        ROTATING_FRACTION * score_rotating
+        + FIXED_FRACTION * score_fixed
+        + NOVEL_FRACTION * score_novel
+    )

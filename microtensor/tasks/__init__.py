@@ -1,5 +1,6 @@
 from microtensor.tasks.corpus import (
     FIXED,
+    NOVEL,
     PARTITIONS,
     ROTATING,
     Corpus,
@@ -19,6 +20,7 @@ from microtensor.tasks.selection import (
 
 __all__ = [
     "FIXED",
+    "NOVEL",
     "PARTITIONS",
     "ROTATING",
     "Corpus",

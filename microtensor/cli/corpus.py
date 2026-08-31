@@ -88,12 +88,15 @@ def _check(args: argparse.Namespace) -> int:
     except CorpusError as exc:
         return fail(str(exc))
 
-    want_rotating, want_fixed = partition_sizes(args.tasks_per_round)
+    want_rotating, want_fixed, want_novel = partition_sizes(args.tasks_per_round)
     open_tracks = {t.id for t in enabled_tracks()}
     problems: list[str] = []
     advisories: list[str] = []
 
-    print(f"{'track':<14}{'total':>8}{'rotating':>10}{'fixed':>8}  {'digest':<18}status")
+    print(
+        f"{'track':<14}{'total':>8}{'rotating':>10}{'fixed':>8}{'novel':>7}  "
+        f"{'digest':<18}status"
+    )
     for name in sorted(corpora):
         corpus = corpora[name]
         notes: list[str] = []
@@ -108,6 +111,8 @@ def _check(args: argparse.Namespace) -> int:
             notes.append(f"rotating below the {ADMISSION_MINIMUMS['rotating']} upload minimum")
         if len(corpus.fixed) < ADMISSION_MINIMUMS["fixed"]:
             notes.append(f"fixed below the {ADMISSION_MINIMUMS['fixed']} upload minimum")
+        if corpus.novel and len(corpus.novel) < ADMISSION_MINIMUMS["novel"]:
+            notes.append(f"novel below the {ADMISSION_MINIMUMS['novel']} upload minimum")
 
         # Not a failure: the draw takes min(want, available), so a smaller
         # corpus simply supplies a smaller round. Said separately because
@@ -116,6 +121,8 @@ def _check(args: argparse.Namespace) -> int:
             soft.append(f"rotating {len(corpus.rotating)} of {want_rotating} per round")
         if len(corpus.fixed) < want_fixed:
             soft.append(f"fixed {len(corpus.fixed)} of {want_fixed} per round")
+        if corpus.novel and len(corpus.novel) < want_novel:
+            soft.append(f"novel {len(corpus.novel)} of {want_novel} per round")
 
         status = "ok" if not notes else "; ".join(notes)
         if not notes and soft:
@@ -124,7 +131,7 @@ def _check(args: argparse.Namespace) -> int:
         advisories.extend(f"{name}: {n}" for n in soft)
         print(
             f"{name:<14}{len(corpus):>8}{len(corpus.rotating):>10}"
-            f"{len(corpus.fixed):>8}  {_digest(corpus):<18}{status}"
+            f"{len(corpus.fixed):>8}{len(corpus.novel):>7}  {_digest(corpus):<18}{status}"
         )
 
     for name in sorted(corpora):

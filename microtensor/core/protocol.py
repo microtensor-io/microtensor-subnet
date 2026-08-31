@@ -145,6 +145,8 @@ class Evaluation:
     n_rotating: int
     n_fixed: int
     corpus_version: str
+    score_novel: float = 0.0
+    n_novel: int = 0
     resolve_rate: float = 1.0
     expected_ms: float = 0.0
     expected_j: float = 0.0

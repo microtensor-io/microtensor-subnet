@@ -35,8 +35,8 @@ from microtensor.scoring.execution import (
     has_module_tests,
 )
 from microtensor.scoring.metrics import combine_partitions, partition_scores, score_task
-from microtensor.tasks.corpus import Task
-from microtensor.tasks.selection import RoundTasks, to_requests
+from microtensor.tasks.corpus import FIXED, NOVEL, ROTATING, Task
+from microtensor.tasks.selection import RoundTasks, partition_of, to_requests
 from microtensor.validator.context import ValidatorContext
 from microtensor.validator.discover import Participant
 
@@ -106,8 +106,10 @@ def _evaluation(
     measured: MeasuredEnvelope | None = None,
     rotating: float = 0.0,
     fixed: float = 0.0,
+    novel: float = 0.0,
     n_rotating: int = 0,
     n_fixed: int = 0,
+    n_novel: int = 0,
     cascade: CascadeResult | None = None,
     front_only: float = 0.0,
 ) -> Evaluation:
@@ -121,9 +123,13 @@ def _evaluation(
         measured=measured,
         score_rotating=rotating,
         score_fixed=fixed,
-        score_combined=combine_partitions(rotating, fixed) if gate.admitted else 0.0,
+        score_novel=novel,
+        score_combined=(
+            combine_partitions(rotating, fixed, novel) if gate.admitted else 0.0
+        ),
         n_rotating=n_rotating,
         n_fixed=n_fixed,
+        n_novel=n_novel,
         corpus_version=tasks.corpus_version,
         resolve_rate=cascade.resolve_rate if cascade else 1.0,
         expected_ms=_expected_ms(cascade, measured),
@@ -287,13 +293,12 @@ def outcomes_from(
     that decides emission is the quality of what the system finally answered.
     """
     by_ref = {leg.task_ref: leg for leg in legs}
-    rotating = {t.ref for t in tasks.rotating}
 
     end_to_end: list[TaskOutcome] = []
     front_only: list[TaskOutcome] = []
     for task in tasks.all:
         leg = by_ref.get(task.ref)
-        partition = "rotating" if task.ref in rotating else "fixed"
+        partition = partition_of(tasks, task.ref)
         end_to_end.append(_outcome(task, leg.response if leg else None, metric, partition))
         front_only.append(
             _outcome(task, leg.front_response if leg else None, metric, partition)
@@ -340,14 +345,13 @@ def score(
     # the worker never reached are forfeit without any special case here.
     answered: Sequence[Response] = result.value if result.ok else result.partial
     by_ref: dict[str, Response] = {r.task_ref: r for r in answered}
-    rotating = {t.ref for t in tasks.rotating}
     try:
         outcomes = tuple(
             _outcome(
                 task,
                 by_ref.get(task.ref),
                 metric,
-                "rotating" if task.ref in rotating else "fixed",
+                partition_of(tasks, task.ref),
             )
             for task in tasks.all
         )
@@ -360,7 +364,7 @@ def score(
 
 def _detection_partition_scores(
     tasks: RoundTasks, by_ref: dict[str, Response]
-) -> tuple[float, float, int, int]:
+) -> tuple[float, float, float, int, int, int]:
     """COCO mAP per partition over the whole image set, not an average.
 
     A shared category list across both partitions keeps the class set stable,
@@ -375,57 +379,52 @@ def _detection_partition_scores(
         parse_detections,
     )
 
-    rotating = {t.ref for t in tasks.rotating}
-    rot_preds: list[list[Detection]] = []
-    rot_gold: list[object] = []
-    fix_preds: list[list[Detection]] = []
-    fix_gold: list[object] = []
+    buckets: dict[str, tuple[list[list[Detection]], list[object]]] = {
+        ROTATING: ([], []),
+        FIXED: ([], []),
+        NOVEL: ([], []),
+    }
     for task in tasks.all:
         response = by_ref.get(task.ref)
         preds = parse_detections(response.output) if response and response.ok else []
-        if task.ref in rotating:
-            rot_preds.append(preds)
-            rot_gold.append(task.gold)
-        else:
-            fix_preds.append(preds)
-            fix_gold.append(task.gold)
+        bucket = buckets[partition_of(tasks, task.ref)]
+        bucket[0].append(preds)
+        bucket[1].append(task.gold)
 
-    cats = category_ids([*rot_gold, *fix_gold])
+    cats = category_ids([g for _, gold in buckets.values() for g in gold])
     return (
-        coco_map(rot_preds, rot_gold, categories=cats),
-        coco_map(fix_preds, fix_gold, categories=cats),
-        len(rot_gold),
-        len(fix_gold),
+        coco_map(*buckets[ROTATING], categories=cats),
+        coco_map(*buckets[FIXED], categories=cats),
+        coco_map(*buckets[NOVEL], categories=cats),
+        len(buckets[ROTATING][1]),
+        len(buckets[FIXED][1]),
+        len(buckets[NOVEL][1]),
     )
 
 
 def _extraction_partition_scores(
     tasks: RoundTasks, by_ref: dict[str, Response]
-) -> tuple[float, float, int, int]:
+) -> tuple[float, float, float, int, int, int]:
     """Entity micro-F1 per partition, aggregated over the whole document set."""
     from microtensor.scoring.extraction import gold_entities, micro_f1, parse_entities
 
-    rotating = {t.ref for t in tasks.rotating}
-    rot_preds: list[set[tuple[str, str]] | None] = []
-    rot_gold: list[set[tuple[str, str]]] = []
-    fix_preds: list[set[tuple[str, str]] | None] = []
-    fix_gold: list[set[tuple[str, str]]] = []
+    buckets: dict[
+        str, tuple[list[set[tuple[str, str]] | None], list[set[tuple[str, str]]]]
+    ] = {ROTATING: ([], []), FIXED: ([], []), NOVEL: ([], [])}
     for task in tasks.all:
         response = by_ref.get(task.ref)
         preds = parse_entities(response.output) if response and response.ok else None
-        gold = gold_entities(task.gold)
-        if task.ref in rotating:
-            rot_preds.append(preds)
-            rot_gold.append(gold)
-        else:
-            fix_preds.append(preds)
-            fix_gold.append(gold)
+        bucket = buckets[partition_of(tasks, task.ref)]
+        bucket[0].append(preds)
+        bucket[1].append(gold_entities(task.gold))
 
     return (
-        micro_f1(rot_preds, rot_gold),
-        micro_f1(fix_preds, fix_gold),
-        len(rot_gold),
-        len(fix_gold),
+        micro_f1(*buckets[ROTATING]),
+        micro_f1(*buckets[FIXED]),
+        micro_f1(*buckets[NOVEL]),
+        len(buckets[ROTATING][1]),
+        len(buckets[FIXED][1]),
+        len(buckets[NOVEL][1]),
     )
 
 
@@ -472,7 +471,7 @@ def evaluate_participant(
             )
         metric = get_track(tasks.track).metric
         outcomes, front_outcomes = outcomes_from(cascade.legs, tasks, metric)
-        front_only_score = combine_partitions(*partition_scores(front_outcomes)[:2])
+        front_only_score = combine_partitions(*partition_scores(front_outcomes)[:3])
         by_ref = {r.task_ref: r for r in cascade.responses()}
     else:
         outcomes, by_ref, failure = score(
@@ -487,9 +486,9 @@ def evaluate_participant(
 
     dataset_scorer = _DATASET_METRICS.get(metric)
     if dataset_scorer is not None:
-        rotating, fixed, n_rotating, n_fixed = dataset_scorer(tasks, by_ref)
+        rotating, fixed, novel, n_rotating, n_fixed, n_novel = dataset_scorer(tasks, by_ref)
     else:
-        rotating, fixed, n_rotating, n_fixed = partition_scores(outcomes)
+        rotating, fixed, novel, n_rotating, n_fixed, n_novel = partition_scores(outcomes)
     return _evaluation(
         participant,
         tasks,
@@ -497,8 +496,10 @@ def evaluate_participant(
         measured=measured,
         rotating=rotating,
         fixed=fixed,
+        novel=novel,
         n_rotating=n_rotating,
         n_fixed=n_fixed,
+        n_novel=n_novel,
         cascade=cascade,
         front_only=front_only_score,
     )

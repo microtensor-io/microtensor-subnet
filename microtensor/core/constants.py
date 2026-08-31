@@ -34,7 +34,7 @@ RELEASE_VERSION: Final[str] = "0.1.14"
 # These were one constant. That made every release read as a rule change, so
 # auto-update held all of them forever waiting for an activation block that a
 # bug fix has no reason to declare.
-MECHANISM_VERSION: Final[str] = "0.2.0"
+MECHANISM_VERSION: Final[str] = "0.3.0"
 DEFAULT_NETUID: Final[int] = 92
 GENESIS_BLOCK: Final[int] = _blocks("MT_GENESIS_BLOCK", -17805488)
 
@@ -82,8 +82,9 @@ METAGRAPH_TTL_SECONDS: Final[int] = 300
 CHAIN_ATTEMPTS: Final[int] = 4
 CHAIN_BACKOFF_SECONDS: Final[float] = 2.0
 
-ROTATING_FRACTION: Final[float] = 0.70
+ROTATING_FRACTION: Final[float] = 0.60
 FIXED_FRACTION: Final[float] = 0.30
+NOVEL_FRACTION: Final[float] = 0.10
 TASKS_PER_ROUND: Final[int] = 200
 
 GENERATION_SECONDS_PER_TASK: Final[int] = 30
