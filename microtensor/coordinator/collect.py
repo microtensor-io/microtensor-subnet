@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from statistics import fmean, median
@@ -132,6 +133,12 @@ def reconcile(reports: Sequence[Report], advisory: Sequence[str] = ()) -> Reconc
 
     digest = reports[0].system_digest
     deciding = [r for r in reports if r.worker_hotkey not in advisory] or list(reports)
+
+    result_worker = os.environ.get("MT_RESULT_WORKER", "").strip()
+    if result_worker:
+        preferred = [r for r in deciding if r.worker_hotkey == result_worker]
+        if preferred:
+            deciding = preferred
 
     qualities = [quantise_quality(r.quality.combined) for r in deciding]
     keep = _publishable(qualities)
