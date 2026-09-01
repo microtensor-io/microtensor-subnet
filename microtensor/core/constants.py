@@ -25,7 +25,7 @@ def _ms(name: str, default: float) -> float:
 
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
-RELEASE_VERSION: Final[str] = "0.3.0"
+RELEASE_VERSION: Final[str] = "0.3.1"
 
 # What the rules are. Moves only when admission or scoring changes, because
 # validators on different values here measure the same round differently, and
@@ -187,7 +187,7 @@ PROVENANCE_PROJECT: Final[str] = "training-runs"
 # the competition and the allowlist. It does not prove a training run happened.
 # The store assumes exactly that, which is why every run bearing a hotkey is a
 # candidate and the checks decide rather than authorship.
-PROVENANCE_REQUIRED: Final[bool] = True
+PROVENANCE_REQUIRED: Final[bool] = False
 PROVENANCE_RETRIES: Final[int] = 3
 PROVENANCE_BACKOFF_SECONDS: Final[float] = 3.0
 
