@@ -84,6 +84,11 @@ class ArtifactManifest:
         }
 
     def digest(self) -> str:
+        body = self.body()
+        body.pop("source", None)
+        return canonical_hash(body)
+
+    def legacy_digest(self) -> str:
         return canonical_hash(self.body())
 
     def to_json(self) -> bytes:
@@ -136,11 +141,13 @@ class ArtifactManifest:
             return False, "commitment names a different round"
         if commitment.competition != (self.track, self.hardware_class):
             return False, "commitment names a different competition"
-        if commitment.source != self.source:
-            return False, "commitment names a different source"
-        if not digest_matches(commitment.manifest_digest, self.digest()):
-            return False, "manifest does not hash to the committed digest"
-        return True, ""
+        if digest_matches(commitment.manifest_digest, self.digest()):
+            return True, ""
+        if digest_matches(commitment.manifest_digest, self.legacy_digest()):
+            if commitment.source != self.source:
+                return False, "commitment names a different source"
+            return True, ""
+        return False, "manifest does not hash to the committed digest"
 
     @classmethod
     def from_json(cls, raw: bytes | str) -> ArtifactManifest:
