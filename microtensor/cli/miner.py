@@ -104,6 +104,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _add_settings_arguments(ship)
     ship.add_argument("--profile-seconds", type=int, default=60)
     ship.add_argument("--no-selfcheck", action="store_true")
+    ship.add_argument("--size-bytes", type=int)
+    ship.add_argument("--peak-rss-bytes", type=int)
+    ship.add_argument("--p95-latency-ms", type=int)
     ship.add_argument(
         "--sealed",
         action="store_true",
