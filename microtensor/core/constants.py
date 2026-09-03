@@ -155,6 +155,7 @@ MIN_ROUNDS_OBSERVED: Final[int] = _blocks("MT_MIN_ROUNDS_OBSERVED", 2)
 
 PAID_RANKS: Final[int] = 8
 RANK_DECAY: Final[float] = 0.85
+POSITION_SHARES: Final[tuple[float, ...]] = (0.30, 0.20, 0.14, 0.11, 0.09, 0.07, 0.05, 0.04)
 HYSTERESIS_EPSILON: Final[float] = 0.005
 INCUMBENT_DECAY: Final[float] = 0.05
 STALE_ROUNDS_BEFORE_EVICTION: Final[int] = 6

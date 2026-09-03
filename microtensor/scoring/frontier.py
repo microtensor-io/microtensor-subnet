@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from microtensor.core.constants import (
@@ -10,6 +10,7 @@ from microtensor.core.constants import (
     HV_QUANT_Q,
     INCUMBENT_DECAY,
     MIN_ROUNDS_OBSERVED,
+    POSITION_SHARES,
     REFERENCE_COST_MS,
     TRACK_THRESHOLD,
 )
@@ -215,6 +216,26 @@ def apply_incumbent_decay(
     return decayed
 
 
+def standing(
+    entrants: Sequence[Entrant],
+    areas: Mapping[str, float],
+    cost_ceiling: float = REFERENCE_COST_MS,
+) -> list[str]:
+    best: dict[str, tuple[int, float]] = {}
+    for entrant in entrants:
+        area = float(areas.get(entrant.key, 0.0))
+        if area > 0.0:
+            place = (1, area)
+        else:
+            place = (0, entrant.quality * (cost_ceiling - entrant.cost))
+        if entrant.key not in best or place > best[entrant.key]:
+            best[entrant.key] = place
+    return [
+        key
+        for key, _ in sorted(best.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[0]))
+    ]
+
+
 def allocate(
     entrants: Sequence[Entrant],
     *,
@@ -222,21 +243,22 @@ def allocate(
     threshold: float = TRACK_THRESHOLD,
     min_rounds: int = MIN_ROUNDS_OBSERVED,
     incumbent_decay: float = INCUMBENT_DECAY,
+    shares: Sequence[float] = POSITION_SHARES,
 ) -> dict[str, float]:
-    """Emission shares by exclusive hypervolume on the cost-quality frontier."""
+    """Emission shares by rank on the cost-quality frontier, paid down a ladder."""
     survivors = eligible(entrants, threshold, min_rounds)
     if not survivors:
         return {}
 
     members = frontier(to_points(survivors, cost_ceiling))
-    if not members:
+    areas = apply_incumbent_decay(exclusive_hypervolume(members), members, incumbent_decay)
+    order = standing(survivors, areas, cost_ceiling)[: len(shares)]
+    if not order:
         return {}
 
-    areas = exclusive_hypervolume(members)
-    decayed = apply_incumbent_decay(areas, members, incumbent_decay)
-
-    total = sum(v for v in decayed.values() if v > 0.0)
+    paid = {key: float(shares[index]) for index, key in enumerate(order)}
+    total = sum(paid.values())
     if total <= 0.0:
         return {}
 
-    return {k: v / total for k, v in decayed.items() if v > 0.0}
+    return {key: value / total for key, value in paid.items()}
