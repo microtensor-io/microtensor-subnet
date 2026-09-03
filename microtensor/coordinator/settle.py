@@ -33,6 +33,7 @@ class Entry:
     hardware_class: str
     quality: float
     expected_ms: float
+    source: str = ""
     committed_at: int = 0
     rounds_observed: int = 0
     stale_rounds: int = 0

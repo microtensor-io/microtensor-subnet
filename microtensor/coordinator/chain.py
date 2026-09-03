@@ -148,6 +148,7 @@ class ChainSource:
                 hardware_class=hardware_class,
                 quality=0.0,
                 expected_ms=0.0,
+                source=commitment.source,
                 committed_at=blocks.get(hotkey, round_.close_block),
             )
 

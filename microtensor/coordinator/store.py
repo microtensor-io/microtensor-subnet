@@ -259,6 +259,7 @@ class CoordinatorStore:
                 e.uid,
                 e.track,
                 e.hardware_class,
+                e.source,
                 e.committed_at,
                 e.rounds_observed,
                 e.stale_rounds,
@@ -270,14 +271,15 @@ class CoordinatorStore:
         self.db.executemany(
             """
             INSERT INTO catalogue (round_index, system_digest, miner_hotkey, uid,
-                                   track, hardware_class, committed_at,
+                                   track, hardware_class, source, committed_at,
                                    rounds_observed, stale_rounds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (round_index, system_digest) DO UPDATE SET
                 miner_hotkey = excluded.miner_hotkey,
                 uid = excluded.uid,
                 track = excluded.track,
                 hardware_class = excluded.hardware_class,
+                source = excluded.source,
                 committed_at = excluded.committed_at,
                 rounds_observed = excluded.rounds_observed,
                 stale_rounds = excluded.stale_rounds
@@ -571,6 +573,7 @@ class CoordinatorStore:
                 hardware_class=str(r["hardware_class"]),
                 quality=0.0,
                 expected_ms=0.0,
+                source=str(r["source"] or ""),
                 committed_at=int(r["committed_at"]),
                 rounds_observed=int(r["rounds_observed"]),
                 stale_rounds=int(r["stale_rounds"]),

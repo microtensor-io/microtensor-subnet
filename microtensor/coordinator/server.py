@@ -431,6 +431,7 @@ def publish_round(
     *,
     reports: list[dict[str, Any]],
     assignment: Mapping[str, Sequence[str]],
+    systems: Mapping[str, tuple[str, str, str, str]] | None = None,
 ) -> dict[str, int]:
     """Hand the archive everything the settlement was computed from.
 
@@ -446,7 +447,7 @@ def publish_round(
         stored["reports"] = int(answer.get("stored", 0))
 
     if assignment:
-        answer = client.push_assignments(settlement.round_index, assignment)
+        answer = client.push_assignments(settlement.round_index, assignment, systems)
         stored["assignments"] = int(answer.get("stored", 0))
 
     body = settlement.body()

@@ -235,4 +235,10 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
             "ALTER TABLE rounds ADD COLUMN phase TEXT NOT NULL DEFAULT 'legacy'",
         ),
     ),
+    (
+        7,
+        (
+            "ALTER TABLE catalogue ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+        ),
+    ),
 )

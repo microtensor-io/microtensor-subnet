@@ -722,8 +722,18 @@ def _settle(args: argparse.Namespace) -> int:
             reports = store.reports_payload(args.round)
             assignment = store.full_assignment(args.round)
             settlement = _settlement_of(store, args.round)
+            systems = {
+                digest: (e.track, e.hardware_class, e.miner_hotkey, e.source)
+                for digest, e in store.catalogue(args.round).items()
+            }
         try:
-            stored = publish_round(server, settlement, reports=reports, assignment=assignment)
+            stored = publish_round(
+                server,
+                settlement,
+                reports=reports,
+                assignment=assignment,
+                systems=systems,
+            )
             print(
                 f"archived on the control plane: {stored['reports']} reports, "
                 f"{stored['assignments']} assignments"
