@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 6
+SCHEMA_VERSION: Final[int] = 7
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
