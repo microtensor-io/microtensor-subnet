@@ -143,7 +143,10 @@ class CoordinatorClient:
                     raise CoordinatorUnreachable(
                         f"{url} returned {exc.code} after {self.retries} attempts"
                     ) from exc
-                raise CoordinatorRefused(f"{url} returned {exc.code}: {exc}") from exc
+                detail = _detail(exc)
+                raise CoordinatorRefused(
+                    f"{url} returned {exc.code}: {detail or exc}"
+                ) from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last = exc
                 if attempt + 1 < self.retries:
@@ -177,6 +180,14 @@ class CoordinatorClient:
         body = report.body()
         body["signature"] = report.signature
         return self._call("POST", "/v1/report", body) or {}
+
+    def reported(self, round_index: int, worker_hotkey: str) -> set[str]:
+        found = self._call("GET", f"/v1/reports/{round_index}") or {}
+        return {
+            str(row.get("system_digest", ""))
+            for row in found.get("reports", ())
+            if row.get("worker_hotkey") == worker_hotkey and row.get("system_digest")
+        }
 
     def corpus_index(self) -> dict[str, Any]:
         found: dict[str, Any] | None = self._call("GET", "/v1/corpus")

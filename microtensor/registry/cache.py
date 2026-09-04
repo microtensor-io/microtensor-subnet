@@ -11,6 +11,7 @@ from microtensor.core.constants import ARTIFACT_CACHE_CAP_BYTES
 INDEX_NAME = "index.json"
 STORE_NAME = "objects"
 DIGEST_PREFIX = "sha256:"
+DISK_FRACTION = 0.9
 
 
 class CacheError(RuntimeError):
@@ -23,6 +24,7 @@ class CacheEntry:
     size_bytes: int
     last_used: float
     sequence: int = 0
+    released: bool = False
 
 
 def _key(digest: str) -> str:
@@ -41,9 +43,9 @@ class ArtifactCache:
         if cap_bytes < 1:
             raise CacheError("cache cap must be positive")
         self.root = root
-        self.cap_bytes = cap_bytes
         self.store = root / STORE_NAME
         self.store.mkdir(parents=True, exist_ok=True)
+        self.cap_bytes = min(cap_bytes, int(shutil.disk_usage(self.store).total * DISK_FRACTION))
         self._index: dict[str, CacheEntry] = {}
         self._sequence = 0
         self._load_index()
@@ -64,6 +66,7 @@ class ArtifactCache:
                     size_bytes=int(value["size_bytes"]),
                     last_used=float(value["last_used"]),
                     sequence=int(value.get("sequence", 0)),
+                    released=bool(value.get("released", False)),
                 )
                 for key, value in payload.items()
             }
@@ -99,6 +102,7 @@ class ArtifactCache:
                 "size_bytes": entry.size_bytes,
                 "last_used": entry.last_used,
                 "sequence": entry.sequence,
+                "released": entry.released,
             }
             for key, entry in self._index.items()
         }
@@ -128,6 +132,19 @@ class ArtifactCache:
         )
         self._save_index()
 
+    def release(self, digest: str) -> None:
+        key = _key(digest)
+        entry = self._index.get(key)
+        if entry is None:
+            return
+        self._index[key] = CacheEntry(
+            entry.digest, entry.size_bytes, entry.last_used, entry.sequence, released=True
+        )
+        self._save_index()
+
+    def released(self) -> tuple[CacheEntry, ...]:
+        return tuple(e for e in self.entries() if e.released)
+
     @property
     def total_bytes(self) -> int:
         return sum(entry.size_bytes for entry in self._index.values())
@@ -142,7 +159,7 @@ class ArtifactCache:
             )
         protected = {_key(d) for d in keep}
         evicted: list[str] = []
-        for entry in self.entries():
+        for entry in self.released() + tuple(e for e in self.entries() if not e.released):
             if self.total_bytes + needed_bytes <= self.cap_bytes:
                 break
             key = _key(entry.digest)

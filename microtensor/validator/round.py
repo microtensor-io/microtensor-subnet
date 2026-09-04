@@ -30,7 +30,12 @@ from microtensor.validator.ablate import (
     OutputCache,
     contributions,
 )
-from microtensor.validator.client import CoordinatorRefused, SettlementRejected
+from microtensor.registry.cache import CacheError
+from microtensor.validator.client import (
+    CoordinatorRefused,
+    CoordinatorUnreachable,
+    SettlementRejected,
+)
 from microtensor.validator.context import ValidatorContext
 from microtensor.validator.coordinated import (
     ROUND_DRIFT,
@@ -428,6 +433,21 @@ def _run_round(
     expected = 0
     reports: list[Report] = []
     assigned = set(plan.systems)
+    if plan.mode is Mode.COORDINATED and context.coordinator is not None:
+        try:
+            done = context.coordinator.reported(plan.round_index, context.hotkey)
+        except (CoordinatorUnreachable, CoordinatorRefused) as exc:
+            log.warning("could not read this worker's filed reports, measuring the full plan: %s", exc)
+            done = set()
+        already = assigned & done
+        if already:
+            assigned -= already
+            log.info(
+                "round %d: %d of %d assigned systems already reported by this worker, skipping them",
+                plan.round_index,
+                len(already),
+                len(already) + len(assigned),
+            )
 
     for track, hardware_class in context.competitions:
         participants = roster.for_competition(track, hardware_class)
@@ -468,7 +488,14 @@ def _run_round(
                     ref.role.value: ref.artifact_digest for ref in participant.system.components
                 },
             )
-            emit_reports(context.coordinator, [report], wallet=context.wallet)
+            sent, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
+            if failure:
+                log.warning("report for %s did not land: %s", participant.hotkey, failure)
+            else:
+                try:
+                    context.cache.release(participant.manifest.artifact_digest)
+                except CacheError as exc:
+                    log.warning("could not release %s from the cache: %s", participant.hotkey, exc)
             if heartbeat is not None:
                 heartbeat()
 
