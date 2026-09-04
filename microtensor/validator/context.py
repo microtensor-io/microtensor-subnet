@@ -39,6 +39,7 @@ class ValidatorConfig:
     cache_cap_bytes: int = ARTIFACT_CACHE_CAP_BYTES
     cpu_seconds_per_artifact: int = CPU_SECONDS_PER_ARTIFACT
     profile_seconds: int = 60
+    parallel: int = 1
     allow_unsandboxed: bool = False
     dry_run: bool = False
     loopback: bool = False

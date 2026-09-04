@@ -330,7 +330,7 @@ class Coordinator:
         arena = self.arenas.get(f"{entry.track}/{entry.hardware_class}") or {}
         return str(arena.get("environment_digest") or "")
 
-    def lease(self, hotkey: str) -> dict[str, Any]:
+    def lease(self, hotkey: str, slots: int = 1) -> dict[str, Any]:
         row = self.store.latest_round()
         if row is None:
             return {"round": None, "lease": None, "reason": "no round is open"}
@@ -355,7 +355,13 @@ class Coordinator:
                 "reason": "worker is out of rotation after repeated failures",
             }
         found = self.store.lease(
-            index, hotkey, now, str(row.get("block_hash") or index), self._lease_ttl(), catalogue
+            index,
+            hotkey,
+            now,
+            str(row.get("block_hash") or index),
+            self._lease_ttl(),
+            catalogue,
+            slots=max(1, min(int(slots or 1), 64)),
         )
         if found is None:
             return {"round": index, "lease": None, "reason": "nothing is available to measure"}
@@ -869,7 +875,13 @@ def build_app(coordinator: Coordinator) -> Any:
         raw = await request.body()
         hotkey = authenticate(request, raw)
         authorised(request, hotkey)
-        return coordinator.lease(hotkey)
+        slots = 1
+        if raw:
+            try:
+                slots = int(dict(json.loads(raw)).get("slots", 1) or 1)
+            except (ValueError, TypeError):
+                slots = 1
+        return coordinator.lease(hotkey, slots)
 
     @app.post("/v1/release")
     async def release(request: Request) -> dict[str, Any]:
