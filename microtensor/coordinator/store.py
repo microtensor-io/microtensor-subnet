@@ -71,6 +71,17 @@ class CoordinatorStore:
             (round_index, seed_block, block_hash, close_block, config_hash, time.time()),
         )
 
+    def record_window(self, round_index: int, start_block: int, end_block: int) -> None:
+        if start_block <= 0 or end_block <= start_block:
+            return
+        self.db.execute(
+            """
+            UPDATE rounds SET start_block = ?, end_block = ?, phase = 'submissions'
+            WHERE round_index = ? AND start_block = 0
+            """,
+            (start_block, end_block, round_index),
+        )
+
     def open_submissions(
         self,
         round_index: int,
