@@ -32,8 +32,8 @@ from microtensor.registry.fetch import materialise as fetch_artifact
 from microtensor.scoring.execution import (
     ExecutionUnavailable,
     execute_module_rate,
-    has_module_tests,
     extract_code,
+    has_module_tests,
     screen_solution,
 )
 from microtensor.scoring.metrics import combine_partitions, partition_scores, score_task

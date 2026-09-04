@@ -378,8 +378,9 @@ def screen_solution(code: str) -> str:
                     return f"calls {func.id}"
                 if func.id in ("getattr", "setattr", "delattr") and node.args:
                     first = node.args[0]
-                    if isinstance(first, ast.Name) and aliases.get(first.id, first.id) in SCREENED_ROOTS:
-                        return f"reflects on {aliases.get(first.id, first.id)}"
+                    root = aliases.get(first.id, first.id) if isinstance(first, ast.Name) else ""
+                    if root in SCREENED_ROOTS:
+                        return f"reflects on {root}"
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             for needle in FORBIDDEN_STRINGS:
                 if needle in node.value:
@@ -398,9 +399,8 @@ def count_tests(sources: Sequence[str]) -> int:
             if not isinstance(node, ast.ClassDef):
                 continue
             for item in node.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith(
-                    "test"
-                ):
+                is_function = isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)
+                if is_function and item.name.startswith("test"):
                     total += 1
     return total
 

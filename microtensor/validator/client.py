@@ -185,7 +185,9 @@ class CoordinatorClient:
         found = self._call("POST", "/v1/lease", {})
         return None if found is None else dict(found)
 
-    def release(self, round_index: int, system_digest: str, cause: str, reason: str) -> dict[str, Any]:
+    def release(
+        self, round_index: int, system_digest: str, cause: str, reason: str
+    ) -> dict[str, Any]:
         body = {
             "round": round_index,
             "system_digest": system_digest,

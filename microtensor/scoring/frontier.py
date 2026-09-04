@@ -224,10 +224,7 @@ def standing(
     best: dict[str, tuple[int, float]] = {}
     for entrant in entrants:
         area = float(areas.get(entrant.key, 0.0))
-        if area > 0.0:
-            place = (1, area)
-        else:
-            place = (0, entrant.quality * (cost_ceiling - entrant.cost))
+        place = (1, area) if area > 0.0 else (0, entrant.quality * (cost_ceiling - entrant.cost))
         if entrant.key not in best or place > best[entrant.key]:
             best[entrant.key] = place
     return [
