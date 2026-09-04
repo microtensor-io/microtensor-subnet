@@ -52,6 +52,7 @@ def repo_name(track: str, hardware_class: str, round_index: int, hotkey: str) ->
 
 
 def snapshots(cache_dirs: list[Path]) -> dict[str, Path]:
+    skipped = 0
     """Every cached snapshot that carries a manifest, keyed by manifest digest.
 
     The digest is recomputed from the manifest bytes, never trusted from a
@@ -66,10 +67,13 @@ def snapshots(cache_dirs: list[Path]) -> dict[str, Path]:
             try:
                 manifest = ArtifactManifest.from_json(manifest_path.read_bytes())
             except Exception as exc:
-                log.warning("unreadable manifest at %s: %s", manifest_path, exc)
+                log.debug("unreadable manifest at %s: %s", manifest_path, exc)
+                skipped += 1
                 continue
             digest = manifest.digest().split(":", 1)[-1]
             found[digest] = manifest_path.parent
+    if skipped:
+        log.info("skipped %d cached snapshot(s) whose manifest could not be read", skipped)
     return found
 
 

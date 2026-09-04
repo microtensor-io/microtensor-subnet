@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 
 from microtensor.chain.rounds import (
@@ -57,9 +58,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _add_settings_arguments(init, required=True)
     init.set_defaults(handler=_init)
 
-    check = inner.add_parser("selfcheck", help="measure your own envelope before declaring it")
+    check = inner.add_parser(
+        "selfcheck", aliases=["check"], help="measure your own envelope before declaring it"
+    )
     _add_settings_arguments(check)
-    check.add_argument("--profile-seconds", type=int, default=60)
+    check.add_argument("--profile-seconds", type=_at_least_one_second, default=60)
     check.set_defaults(handler=_selfcheck)
 
     sim = inner.add_parser("simulate", help="run the cascade over the public training split")
@@ -102,7 +105,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     ship = inner.add_parser("ship", help="package, upload and publish in one step")
     _add_settings_arguments(ship)
-    ship.add_argument("--profile-seconds", type=int, default=60)
+    ship.add_argument("--profile-seconds", type=_at_least_one_second, default=60)
     ship.add_argument("--no-selfcheck", action="store_true")
     ship.add_argument("--size-bytes", type=int)
     ship.add_argument("--peak-rss-bytes", type=int)
@@ -159,6 +162,16 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     prov.set_defaults(handler=_provenance)
 
 
+def _at_least_one_second(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number of seconds") from exc
+    if seconds < 1:
+        raise argparse.ArgumentTypeError("profiling needs at least one second")
+    return seconds
+
+
 def _add_settings_arguments(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
     add_chain_arguments(parser)
     add_common_arguments(parser)
@@ -195,8 +208,22 @@ def _settings(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _wallet_from_saved(args: argparse.Namespace, home: Path) -> None:
+    saved = home / "miner.json"
+    if not saved.is_file():
+        return
+    try:
+        stored = json.loads(saved.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    for attr, env in (("wallet_name", "MT_WALLET_NAME"), ("wallet_hotkey", "MT_WALLET_HOTKEY")):
+        if getattr(args, attr, None) is None and not os.environ.get(env) and stored.get(attr):
+            setattr(args, attr, stored[attr])
+
+
 def _config(args: argparse.Namespace) -> MinerConfig:
     home = Path(args.home)
+    _wallet_from_saved(args, home)
     chain = chain_config(args)
     settings = _settings(args)
 
@@ -240,6 +267,23 @@ def _load_manifest_spec(config: MinerConfig) -> LoadManifest:
 
 
 def _init(args: argparse.Namespace) -> int:
+    saved = (Path(args.home) / "miner.json").is_file()
+    missing = [
+        flag
+        for flag, value in (
+            ("--artifact", args.artifact),
+            ("--track", args.track),
+            ("--hardware-class", args.hardware_class),
+            ("--source", args.source),
+        )
+        if value is None
+    ]
+    if missing and not saved:
+        return fail(
+            "mt miner init needs " + " ".join(missing) + " the first time; nothing was saved"
+        )
+    if missing:
+        print("keeping the saved values for " + ", ".join(missing))
     try:
         config = _config(args)
         path = config.save()
