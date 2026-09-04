@@ -60,12 +60,12 @@ jobs:
       - run: pip install ".[validator,dev]"
       - name: Emission shares must sum to one
         run: python -c "from microtensor.core.tracks import validate_registry; validate_registry()"
-      - name: The launch scope must be the one live competition
+      - name: The launch scope must be the live competitions
         run: |
           python - <<'PY'
           from microtensor.core.constants import CLASS_WEIGHTS
           from microtensor.core.tracks import competitions
-          expected = [("code", "mt-3g")]
+          expected = [("code", "mt-3g"), ("classify", "mt-3g")]
           assert competitions() == expected, competitions()
           assert sum(CLASS_WEIGHTS.values()) == 1.0, CLASS_WEIGHTS
           print(competitions())
