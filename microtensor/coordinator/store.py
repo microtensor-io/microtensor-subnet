@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from hashlib import sha256
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,6 @@ from microtensor.coordinator.schema import MIGRATIONS, SCHEMA_VERSION
 from microtensor.coordinator.settle import Entry, Settlement
 from microtensor.core.protocol import Fault
 from microtensor.store.db import Database
-
 
 WORK_AVAILABLE = "available"
 WORK_IN_PROGRESS = "in_progress"
@@ -346,7 +345,8 @@ class CoordinatorStore:
                      WHERE l.round_index = w.round_index AND l.system_digest = w.system_digest
                        AND l.state IN (?, ?)) AS taken,
                    EXISTS(SELECT 1 FROM leases l2
-                           WHERE l2.round_index = w.round_index AND l2.system_digest = w.system_digest
+                           WHERE l2.round_index = w.round_index
+                             AND l2.system_digest = w.system_digest
                              AND l2.worker_hotkey = ?) AS seen
             FROM work w
             WHERE w.round_index = ? AND w.state IN (?, ?)
@@ -420,7 +420,8 @@ class CoordinatorStore:
         self, round_index: int, system_digest: str, worker_hotkey: str, now: float
     ) -> bool:
         row = self.db.one(
-            "SELECT state FROM leases WHERE round_index = ? AND system_digest = ? AND worker_hotkey = ?",
+            "SELECT state FROM leases "
+            "WHERE round_index = ? AND system_digest = ? AND worker_hotkey = ?",
             (round_index, system_digest, worker_hotkey),
         )
         if row is None:
@@ -442,7 +443,8 @@ class CoordinatorStore:
         max_attempts: int,
     ) -> str:
         row = self.db.one(
-            "SELECT state FROM leases WHERE round_index = ? AND system_digest = ? AND worker_hotkey = ?",
+            "SELECT state FROM leases "
+            "WHERE round_index = ? AND system_digest = ? AND worker_hotkey = ?",
             (round_index, system_digest, worker_hotkey),
         )
         if row is None or str(row["state"]) != LEASE_IN_PROGRESS:
@@ -453,7 +455,8 @@ class CoordinatorStore:
             return WORK_FAILED
         self._close_lease(round_index, system_digest, worker_hotkey, LEASE_RECLAIMED, now, reason)
         self.db.execute(
-            "DELETE FROM assignments WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
+            "DELETE FROM assignments "
+            "WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
             (round_index, worker_hotkey, system_digest),
         )
         self._bump_attempts(round_index, system_digest, now, max_attempts)
@@ -487,7 +490,8 @@ class CoordinatorStore:
             digest, worker = str(r["system_digest"]), str(r["worker_hotkey"])
             self._close_lease(round_index, digest, worker, LEASE_RECLAIMED, now, "lease expired")
             self.db.execute(
-                "DELETE FROM assignments WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
+                "DELETE FROM assignments "
+                "WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
                 (round_index, worker, digest),
             )
             self._bump_attempts(round_index, digest, now, max_attempts)
@@ -507,7 +511,8 @@ class CoordinatorStore:
 
     def _lease_count(self, round_index: int, digest: str, state: str) -> int:
         row = self.db.one(
-            "SELECT COUNT(*) AS n FROM leases WHERE round_index = ? AND system_digest = ? AND state = ?",
+            "SELECT COUNT(*) AS n FROM leases "
+            "WHERE round_index = ? AND system_digest = ? AND state = ?",
             (round_index, digest, state),
         )
         return int(row["n"]) if row else 0
@@ -532,7 +537,8 @@ class CoordinatorStore:
 
     def _bump_attempts(self, round_index: int, digest: str, now: float, max_attempts: int) -> None:
         self.db.execute(
-            "UPDATE work SET attempts = attempts + 1, updated_at = ? WHERE round_index = ? AND system_digest = ?",
+            "UPDATE work SET attempts = attempts + 1, updated_at = ? "
+            "WHERE round_index = ? AND system_digest = ?",
             (now, round_index, digest),
         )
         row = self.db.one(

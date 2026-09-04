@@ -411,7 +411,8 @@ def build(
     ]
     for e in held:
         log.warning(
-            "round %d: %s scored %.4f from %d worker; held from emission until a second worker agrees",
+            "round %d: %s scored %.4f from %d worker; "
+            "held from emission until a second worker agrees",
             round_index,
             e.system_digest,
             e.quality,

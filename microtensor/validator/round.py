@@ -4,9 +4,9 @@ import dataclasses
 import logging
 import time
 from collections.abc import Callable, Iterator, Sequence
-from typing import Any
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from microtensor.chain.anchor import AnchorError, read_anchor
 from microtensor.chain.metagraph import MetagraphSnapshot
@@ -22,6 +22,7 @@ from microtensor.core.constants import (
 from microtensor.core.protocol import Evaluation, Role
 from microtensor.core.tracks import HardwareClass, get_class
 from microtensor.provenance.record import ProvenanceUnavailable
+from microtensor.registry.cache import CacheError
 from microtensor.scoring import frontier
 from microtensor.store.state import ABSTAINED, SETTLED
 from microtensor.tasks.selection import competition_seed, select
@@ -31,7 +32,6 @@ from microtensor.validator.ablate import (
     OutputCache,
     contributions,
 )
-from microtensor.registry.cache import CacheError
 from microtensor.validator.client import (
     CoordinatorRefused,
     CoordinatorUnreachable,
@@ -512,13 +512,17 @@ def _run_round(
             try:
                 done = context.coordinator.reported(plan.round_index, context.hotkey)
             except (CoordinatorUnreachable, CoordinatorRefused) as exc:
-                log.warning("could not read this worker's filed reports, measuring the full plan: %s", exc)
+                log.warning(
+                    "could not read this worker's filed reports, measuring the full plan: %s",
+                    exc,
+                )
                 done = set()
             already = assigned & done
             if already:
                 assigned -= already
                 log.info(
-                    "round %d: %d of %d assigned systems already reported by this worker, skipping them",
+                    "round %d: %d of %d assigned systems already reported by this worker, "
+                    "skipping them",
                     plan.round_index,
                     len(already),
                     len(already) + len(assigned),
@@ -561,7 +565,7 @@ def _run_round(
                     ref.role.value: ref.artifact_digest for ref in participant.system.components
                 },
             )
-            sent, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
+            _, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
             if failure:
                 log.warning("report for %s did not land: %s", participant.hotkey, failure)
             else:

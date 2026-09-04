@@ -6,11 +6,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from microtensor.chain.client import ChainClient
-from microtensor.chain.commitment import Commitment, Reveal, build_commitment, commitment_hash, short_digest
+from microtensor.chain.commitment import (
+    Commitment,
+    Reveal,
+    build_commitment,
+    commitment_hash,
+    short_digest,
+)
 from microtensor.chain.rounds import Round, round_for_block
 from microtensor.core.constants import BLOCK_TIME_SECONDS, POLL_INTERVAL_SECONDS
 from microtensor.miner.config import MinerConfig
-from microtensor.miner.package import load_packaged, load_manifest_by_digest
+from microtensor.miner.package import load_manifest_by_digest, load_packaged
 from microtensor.registry.manifest import ArtifactManifest
 
 log = logging.getLogger("microtensor.miner.publish")

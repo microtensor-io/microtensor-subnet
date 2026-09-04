@@ -113,6 +113,12 @@ def verify_request(
     return uid
 
 
+AssignmentMirror = Callable[
+    [int, Mapping[str, Sequence[str]], Mapping[str, tuple[str, str, str, str]]],
+    Any,
+]
+
+
 @dataclass(slots=True)
 class Coordinator:
     """The service logic, independent of the HTTP layer.
@@ -133,7 +139,7 @@ class Coordinator:
     reserve: Callable[[], dict[str, Any]] | None = None
     signer: Callable[[dict[str, Any]], str] | None = None
     mirror_report: Callable[[int, list[dict[str, Any]]], Any] | None = None
-    mirror_assignment: Callable[[int, Mapping[str, Sequence[str]], Mapping[str, tuple[str, str, str, str]]], Any] | None = None
+    mirror_assignment: AssignmentMirror | None = None
     arenas: dict[str, dict[str, Any]] = None  # type: ignore[assignment]
     # Re-reads the arena list and corpora so an arena activated after this
     # process started reaches the served config without a restart. A snapshot
@@ -338,10 +344,16 @@ class Coordinator:
             self.store.strike_worker(
                 worker, now, f"lease on {digest} expired", WORKER_STRIKES, WORKER_COOLDOWN_SECONDS
             )
-            log.warning("round %d: reclaimed %s from %s after its lease expired", index, digest, worker)
+            log.warning(
+                "round %d: reclaimed %s from %s after its lease expired", index, digest, worker
+            )
         self.store.touch_worker(hotkey, now)
         if not self.store.worker_healthy(hotkey, now):
-            return {"round": index, "lease": None, "reason": "worker is out of rotation after repeated failures"}
+            return {
+                "round": index,
+                "lease": None,
+                "reason": "worker is out of rotation after repeated failures",
+            }
         found = self.store.lease(
             index, hotkey, now, str(row.get("block_hash") or index), self._lease_ttl(), catalogue
         )
@@ -428,7 +440,9 @@ class Coordinator:
 
         self.store.record_report(report)
         now = time.time()
-        self.store.complete_lease(report.round_index, report.system_digest, report.worker_hotkey, now)
+        self.store.complete_lease(
+            report.round_index, report.system_digest, report.worker_hotkey, now
+        )
         if report.fault is Fault.ARTIFACT:
             self.store.fail_work(report.round_index, report.system_digest, now)
         self._mirror(report)
