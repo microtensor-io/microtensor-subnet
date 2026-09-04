@@ -551,6 +551,13 @@ the single-artifact path exactly, which is how the network runs today.
 
 ### Emission follows the frontier, not a rank
 
+Frontier standing decides the order; payment runs down a fixed ladder. The top
+eight positions receive 30/20/14/11/9/7/5/4 of the miner pool: frontier members
+first, by exclusive hypervolume, then the remaining eligible systems by the area
+each covers under the reference cost. Two deployed values ride in the anchored
+round config and are worth knowing: `reference_cost_ms` is 10000, and
+`min_rounds_observed` is 1, so a first-round submission is eligible at once.
+
 Among admissible systems there is no further scalar. Systems are placed on the
 cost-quality plane, the eps-non-dominated set is the frontier, and emission is
 proportional to exclusive hypervolume: what the frontier loses if that system

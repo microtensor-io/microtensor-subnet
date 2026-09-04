@@ -46,6 +46,14 @@ submissions exist, in the same shape as the disabled track stubs.
 
 ---
 
+### The code track is raw completion
+
+The validator hands your model the task prompt exactly as the corpus holds it,
+with no chat template, decodes greedily, and takes the longest fenced Python
+block from what comes back. An instruct-tuned model driven this way scores
+below its own capability: train on raw prompts, or bake the template into the
+artifact so the raw prompt is what the model expects.
+
 ## 2 · Declare honestly, because the mechanism makes it your best move
 
 You declare an envelope. The validator measures one. Both are checked:
@@ -390,6 +398,15 @@ Supported schemes: `hf`, `https`, `s3`, `r2`, `ipfs`.
 
 ---
 
+### Upload pins the commit
+
+`mt miner upload` pushes to the branch of your `hf:` source, reads back the
+commit it created, and rewrites the saved `source` to `<repo>@<sha>`. You never
+push to a pinned commit by hand, and the pointer can never name a revision that
+lacks the files. `mt miner publish --upload` does both in one step. Every
+manifest you sign is also kept under `.manifests/` in the artifact directory,
+so packaging twice in a round cannot orphan the key of the one you committed.
+
 ## 9 · Timing
 
 ```
@@ -549,6 +566,7 @@ Pass `--offline` to print the local half without asking the API.
 | any component declares a base model off the allowlist | rejected at discovery, reason names the component |
 | any component has no training run | rejected at discovery, reason names the component |
 | router reads a feature that is not on the allowlist | rejected at discovery |
+| a code-track completion reaches for `sys.exit`, `os._exit`, `os.environ`, `signal`, `ctypes`, `importlib`, `__import__`, `exec`/`eval`, `getattr` on `os`/`sys`, `/proc`, or function internals such as `__closure__` | that task scores 0, reason recorded |
 | router graph contains a disallowed operator | rejected at discovery |
 | router artifact is over 4 MiB | rejected at discovery |
 | specialist placed anywhere but the host profile | rejected at discovery |
