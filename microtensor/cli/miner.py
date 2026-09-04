@@ -438,19 +438,24 @@ def _provenance(args: argparse.Namespace) -> int:
     return 0 if report.verdict.admissible else 2
 
 
-def _do_upload(config: MinerConfig) -> int:
+def _do_upload(config: MinerConfig) -> str:
     manifest = load_packaged(config)
     plan = plan_upload(
         config.artifact_dir, config.scheme, config.locator, publishable_files(manifest)
     )
-    upload(plan, config.artifact_dir)
+    locator = upload(plan, config.artifact_dir)
     print(f"uploaded {len(plan.files)} files ({plan.total_bytes / 1024**3:.2f} GiB)")
-    return 0
+    pinned = f"{config.scheme}:{locator}"
+    if pinned != config.source:
+        config.with_overrides(source=pinned).save()
+        print(f"pinned      {pinned}")
+    return pinned
 
 
 def _upload(args: argparse.Namespace) -> int:
     try:
-        return _do_upload(_config(args))
+        _do_upload(_config(args))
+        return 0
     except (MinerConfigError, PackageError, UploadError) as exc:
         return fail(str(exc))
 
@@ -479,7 +484,7 @@ def _publish(args: argparse.Namespace) -> int:
             )
 
         if args.upload:
-            _do_upload(config)
+            config = config.with_overrides(source=_do_upload(config))
 
         _require_provenance(config, hotkey, load_packaged(config).artifact_digest, client.block())
         published = publish(config, client, round_.index)
@@ -546,7 +551,7 @@ def _ship(args: argparse.Namespace) -> int:
         )
         print(f"packaged   {len(manifest.files)} files, {manifest.total_bytes / 1024**3:.2f} GiB")
 
-        _do_upload(config)
+        config = config.with_overrides(source=_do_upload(config))
         _require_provenance(
             config, hotkey_address(wallet), manifest.artifact_digest, client.block()
         )

@@ -13,6 +13,7 @@ from microtensor.registry.manifest import ArtifactManifest, ManifestError, build
 log = logging.getLogger("microtensor.miner.package")
 
 MANIFEST_NAME = "manifest.json"
+MANIFEST_ARCHIVE = ".manifests"
 
 
 class PackageError(RuntimeError):
@@ -32,7 +33,6 @@ def package(
 
     hotkey = hotkey_address(wallet)
     staged = config.artifact_dir / MANIFEST_NAME
-    staged.unlink(missing_ok=True)
 
     sealed = None
     if seal:
@@ -67,6 +67,7 @@ def package(
         raise PackageError(reason)
 
     signed = manifest.signed_with(sign_payload(wallet, manifest.body()))
+    keep_manifest(config, round_index, signed)
     staged.write_bytes(signed.to_json())
 
     if seal:
@@ -116,6 +117,38 @@ def load_packaged(config: MinerConfig) -> ArtifactManifest:
         return ArtifactManifest.from_json(config.manifest_path.read_bytes())
     except ManifestError as exc:
         raise PackageError(str(exc)) from exc
+
+
+def manifests_dir(config: MinerConfig) -> Path:
+    return config.artifact_dir / MANIFEST_ARCHIVE
+
+
+def keep_manifest(config: MinerConfig, round_index: int, manifest: ArtifactManifest) -> Path:
+    from microtensor.chain.commitment import short_digest
+
+    target = manifests_dir(config)
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / f"r{round_index}-{short_digest(manifest.digest())}.json"
+    path.write_bytes(manifest.to_json())
+    return path
+
+
+def load_manifest_by_digest(
+    config: MinerConfig, round_index: int, manifest_digest: str
+) -> ArtifactManifest | None:
+    from microtensor.chain.commitment import CommitmentError, short_digest
+
+    try:
+        name = f"r{round_index}-{short_digest(manifest_digest)}.json"
+    except CommitmentError:
+        return None
+    path = manifests_dir(config) / name
+    if not path.is_file():
+        return None
+    try:
+        return ArtifactManifest.from_json(path.read_bytes())
+    except ManifestError:
+        return None
 
 
 def publishable_files(manifest: ArtifactManifest) -> list[str]:

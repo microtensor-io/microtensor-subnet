@@ -185,6 +185,8 @@ def _recovered(
     downstream, and the artifact is still verified against the digest the miner
     signed, so a stale record cannot admit anything the chain would not have.
     """
+    from microtensor.chain.commitment import Reveal, commitment_hash
+
     try:
         observed = context.state.observed_submissions(round_.index)
     except Exception as exc:
@@ -199,7 +201,7 @@ def _recovered(
         if found is None:
             continue
         track, hardware_class, digest, source = found
-        out[hotkey] = Commitment(
+        candidate = Commitment(
             round_index=round_.index,
             track=track,
             hardware_class=hardware_class,
@@ -207,6 +209,20 @@ def _recovered(
             source=source,
             sealed=True,
         )
+        reveal = Reveal.decode(payload)
+        if (
+            reveal is not None
+            and reveal.commitment_hash
+            and reveal.commitment_hash != commitment_hash(candidate)
+        ):
+            log.warning(
+                "round %d: %s revealed against a commitment this validator did not record; "
+                "the pointer is not restored",
+                round_.index,
+                hotkey,
+            )
+            continue
+        out[hotkey] = candidate
     if out:
         log.info(
             "round %d: %d pointer(s) restored from record after being overwritten by a reveal",

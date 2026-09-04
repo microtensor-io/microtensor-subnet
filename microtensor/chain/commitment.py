@@ -125,6 +125,7 @@ class Reveal:
     round_index: int
     manifest_digest: str
     key: str
+    commitment_hash: str = ""
 
     def __post_init__(self) -> None:
         if self.round_index < 0:
@@ -133,11 +134,16 @@ class Reveal:
             raise CommitmentError("digest must be at least 16 hex chars")
         if not _HEX.match(self.key) or len(self.key) != 64:
             raise CommitmentError("key must be 64 hex chars")
+        if self.commitment_hash and (
+            not _HEX.match(self.commitment_hash) or len(self.commitment_hash) != 16
+        ):
+            raise CommitmentError("commitment hash must be 16 hex chars")
 
     def encode(self) -> str:
-        payload = FIELD_SEPARATOR.join(
-            (REVEAL_TAG, str(self.round_index), self.manifest_digest, self.key)
-        )
+        fields = [REVEAL_TAG, str(self.round_index), self.manifest_digest, self.key]
+        if self.commitment_hash:
+            fields.append(self.commitment_hash)
+        payload = FIELD_SEPARATOR.join(fields)
         if len(payload.encode("utf-8")) > MAX_COMMITMENT_BYTES:
             raise CommitmentError("reveal is over the chain limit")
         return payload
@@ -147,16 +153,23 @@ class Reveal:
         if not raw:
             return None
         parts = raw.strip().split(FIELD_SEPARATOR)
-        if len(parts) != 4 or parts[0] != REVEAL_TAG:
+        if len(parts) not in (4, 5) or parts[0] != REVEAL_TAG:
             return None
         try:
             return cls(
                 round_index=int(parts[1]),
                 manifest_digest=parts[2].lower(),
                 key=parts[3].lower(),
+                commitment_hash=parts[4].lower() if len(parts) == 5 else "",
             )
         except (CommitmentError, ValueError):
             return None
+
+
+def commitment_hash(commitment: Commitment) -> str:
+    from microtensor.core.hashing import digest_bytes
+
+    return short_digest(digest_bytes(commitment.encode().encode("utf-8")), 16)
 
 
 def build_commitment(

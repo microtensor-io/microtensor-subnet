@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ class UploadUnsupported(UploadError):
     pass
 
 
-Uploader = Callable[[str, Path, Sequence[str]], None]
+Uploader = Callable[[str, Path, Sequence[str]], "str | None"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +32,10 @@ class UploadPlan:
         return tuple(f"{self.scheme}:{self.locator}/{name}" for name in self.files)
 
 
-def _upload_hf(locator: str, root: Path, files: Sequence[str]) -> None:
+_SHA = re.compile(r"^[0-9a-f]{7,64}$")
+
+
+def _upload_hf(locator: str, root: Path, files: Sequence[str]) -> str:
     try:
         from huggingface_hub import HfApi
     except ImportError as exc:
@@ -41,22 +45,37 @@ def _upload_hf(locator: str, root: Path, files: Sequence[str]) -> None:
         ) from exc
 
     repo_id, _, revision = locator.partition("@")
+    branch = None if not revision or _SHA.match(revision.lower()) else revision
+    if revision and branch is None:
+        log.info("hf:%s pins a commit; uploading to the default branch and re-pinning", locator)
     api = HfApi()
     try:
         api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
-        for name in files:
-            api.upload_file(
-                path_or_fileobj=str(root / name),
-                path_in_repo=name,
-                repo_id=repo_id,
-                repo_type="model",
-                revision=revision or None,
-            )
+        commit = api.upload_folder(
+            folder_path=str(root),
+            repo_id=repo_id,
+            repo_type="model",
+            revision=branch,
+            allow_patterns=list(files),
+        )
     except Exception as exc:
         raise UploadError(f"upload to hf:{locator} failed: {exc}") from exc
+    sha = str(getattr(commit, "oid", "") or "")
+    if not sha:
+        try:
+            sha = str(
+                api.list_repo_commits(repo_id, repo_type="model", revision=branch)[0].commit_id
+            )
+        except Exception as exc:
+            raise UploadError(
+                f"uploaded to hf:{repo_id} but could not read back the commit to pin: {exc}"
+            ) from exc
+    if not _SHA.match(sha.lower()):
+        raise UploadError(f"hf:{repo_id} returned an unusable commit id {sha!r}")
+    return f"{repo_id}@{sha}"
 
 
-def _upload_object_store(locator: str, root: Path, files: Sequence[str]) -> None:
+def _upload_object_store(locator: str, root: Path, files: Sequence[str]) -> str | None:
     try:
         import boto3
     except ImportError as exc:
@@ -74,7 +93,7 @@ def _upload_object_store(locator: str, root: Path, files: Sequence[str]) -> None
         raise UploadError(f"upload to {bucket} failed: {exc}") from exc
 
 
-def _upload_https(locator: str, root: Path, files: Sequence[str]) -> None:
+def _upload_https(locator: str, root: Path, files: Sequence[str]) -> str | None:
     raise UploadUnsupported(
         f"https://{locator} is a plain web host; publish the files with your own "
         "tooling, then run `mt miner publish` without --upload"
@@ -110,7 +129,7 @@ def plan_upload(root: Path, scheme: str, locator: str, files: Sequence[str]) -> 
     )
 
 
-def upload(plan: UploadPlan, root: Path) -> None:
+def upload(plan: UploadPlan, root: Path) -> str:
     log.info(
         "uploading %d files (%.2f GiB) to %s:%s",
         len(plan.files),
@@ -118,5 +137,6 @@ def upload(plan: UploadPlan, root: Path) -> None:
         plan.scheme,
         plan.locator,
     )
-    uploader_for(plan.scheme)(plan.locator, root, plan.files)
+    pinned = uploader_for(plan.scheme)(plan.locator, root, plan.files)
     log.info("upload complete")
+    return pinned or plan.locator
