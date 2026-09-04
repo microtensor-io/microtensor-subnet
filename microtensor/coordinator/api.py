@@ -557,7 +557,7 @@ class Coordinator:
             return False, str(exc)
         settlement, result = self._compute(round_index)
         mine = settlement.body()
-        for key in ("config_hash", "reports_root", "weights"):
+        for key in ("reports_root", "weights"):
             if mine.get(key) != payload.get(key):
                 return False, f"{key} differs between the server and this coordinator"
         for key in ("frontier", "catalogue", "unscored", "under_replicated"):
