@@ -6,11 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from microtensor.chain.client import ChainClient
-from microtensor.chain.commitment import Commitment, Reveal, build_commitment
+from microtensor.chain.commitment import Commitment, Reveal, build_commitment, commitment_hash, short_digest
 from microtensor.chain.rounds import Round, round_for_block
 from microtensor.core.constants import BLOCK_TIME_SECONDS, POLL_INTERVAL_SECONDS
 from microtensor.miner.config import MinerConfig
-from microtensor.miner.package import load_packaged
+from microtensor.miner.package import load_packaged, load_manifest_by_digest
 from microtensor.registry.manifest import ArtifactManifest
 
 log = logging.getLogger("microtensor.miner.publish")
@@ -143,6 +143,7 @@ def reveal(
         round_index=round_index,
         manifest_digest=manifest.digest().split(":", 1)[-1][:32],
         key=key,
+        commitment_hash=commitment_hash(commitment_for(config, manifest, round_index)),
     ).encode()
     if not client.publish(payload):
         raise PublishError("the chain rejected the reveal")
@@ -206,10 +207,27 @@ class PublishLoop:
     def _maybe_reveal(self, round_: Round, block: int) -> None:
         if round_.index in self.revealed or block < round_.close_block:
             return
-        try:
-            manifest = load_packaged(self.config)
-        except Exception:
+        published = next((p for p in self.published if p.round_index == round_.index), None)
+        if published is None:
             return
+        manifest = load_manifest_by_digest(
+            self.config, round_.index, published.commitment.manifest_digest
+        )
+        if manifest is None:
+            try:
+                manifest = load_packaged(self.config)
+            except Exception:
+                return
+            if short_digest(manifest.digest()) != short_digest(
+                published.commitment.manifest_digest
+            ):
+                log.warning(
+                    "round %d: the packaged manifest is not the one committed on chain, "
+                    "so no key can be revealed for it",
+                    round_.index,
+                )
+                self.revealed.add(round_.index)
+                return
         if manifest.sealed is None or manifest.round_index != round_.index:
             self.revealed.add(round_.index)
             return
