@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,7 @@ class ArtifactCache:
         self.cap_bytes = min(cap_bytes, int(shutil.disk_usage(self.store).total * DISK_FRACTION))
         self._index: dict[str, CacheEntry] = {}
         self._sequence = 0
+        self._lock = threading.RLock()
         self._load_index()
 
     @property
@@ -117,30 +119,33 @@ class ArtifactCache:
         return _key(digest) in self._index and self.path_for(digest).is_dir()
 
     def get(self, digest: str) -> Path | None:
-        if not self.has(digest):
-            return None
-        self.touch(digest)
-        return self.path_for(digest)
+        with self._lock:
+            if not self.has(digest):
+                return None
+            self.touch(digest)
+            return self.path_for(digest)
 
     def touch(self, digest: str) -> None:
-        key = _key(digest)
-        entry = self._index.get(key)
-        if entry is None:
-            return
-        self._index[key] = CacheEntry(
-            entry.digest, entry.size_bytes, time.time(), self._next_sequence()
-        )
-        self._save_index()
+        with self._lock:
+            key = _key(digest)
+            entry = self._index.get(key)
+            if entry is None:
+                return
+            self._index[key] = CacheEntry(
+                entry.digest, entry.size_bytes, time.time(), self._next_sequence()
+            )
+            self._save_index()
 
     def release(self, digest: str) -> None:
-        key = _key(digest)
-        entry = self._index.get(key)
-        if entry is None:
-            return
-        self._index[key] = CacheEntry(
-            entry.digest, entry.size_bytes, entry.last_used, entry.sequence, released=True
-        )
-        self._save_index()
+        with self._lock:
+            key = _key(digest)
+            entry = self._index.get(key)
+            if entry is None:
+                return
+            self._index[key] = CacheEntry(
+                entry.digest, entry.size_bytes, entry.last_used, entry.sequence, released=True
+            )
+            self._save_index()
 
     def released(self) -> tuple[CacheEntry, ...]:
         return tuple(e for e in self.entries() if e.released)
@@ -153,53 +158,59 @@ class ArtifactCache:
         return tuple(sorted(self._index.values(), key=lambda e: (e.sequence, e.digest)))
 
     def reserve(self, needed_bytes: int, *, keep: frozenset[str] = frozenset()) -> list[str]:
-        if needed_bytes > self.cap_bytes:
-            raise CacheError(
-                f"artifact needs {needed_bytes} bytes, over the {self.cap_bytes} byte cache cap"
-            )
-        protected = {_key(d) for d in keep}
-        evicted: list[str] = []
-        for entry in self.released() + tuple(e for e in self.entries() if not e.released):
-            if self.total_bytes + needed_bytes <= self.cap_bytes:
-                break
-            key = _key(entry.digest)
-            if key in protected:
-                continue
-            self.drop(entry.digest)
-            evicted.append(entry.digest)
-        if self.total_bytes + needed_bytes > self.cap_bytes:
-            raise CacheError("cache cannot free enough space without evicting a protected artifact")
-        return evicted
+        with self._lock:
+            if needed_bytes > self.cap_bytes:
+                raise CacheError(
+                    f"artifact needs {needed_bytes} bytes, over the {self.cap_bytes} byte cache cap"
+                )
+            protected = {_key(d) for d in keep}
+            evicted: list[str] = []
+            for entry in self.released() + tuple(e for e in self.entries() if not e.released):
+                if self.total_bytes + needed_bytes <= self.cap_bytes:
+                    break
+                key = _key(entry.digest)
+                if key in protected:
+                    continue
+                self.drop(entry.digest)
+                evicted.append(entry.digest)
+            if self.total_bytes + needed_bytes > self.cap_bytes:
+                raise CacheError(
+                    "cache cannot free enough space without evicting a protected artifact"
+                )
+            return evicted
 
     def adopt(self, digest: str, staged: Path) -> Path:
-        if not staged.is_dir():
-            raise CacheError(f"{staged} is not a staged artifact directory")
-        destination = self.path_for(digest)
-        if destination.exists():
-            shutil.rmtree(staged, ignore_errors=True)
-            self.touch(digest)
+        with self._lock:
+            if not staged.is_dir():
+                raise CacheError(f"{staged} is not a staged artifact directory")
+            destination = self.path_for(digest)
+            if destination.exists():
+                shutil.rmtree(staged, ignore_errors=True)
+                self.touch(digest)
+                return destination
+
+            size = _tree_size(staged)
+            self.reserve(size)
+            staged.replace(destination)
+            self._index[_key(digest)] = CacheEntry(
+                digest=DIGEST_PREFIX + _key(digest),
+                size_bytes=size,
+                last_used=time.time(),
+                sequence=self._next_sequence(),
+            )
+            self._save_index()
             return destination
 
-        size = _tree_size(staged)
-        self.reserve(size)
-        staged.replace(destination)
-        self._index[_key(digest)] = CacheEntry(
-            digest=DIGEST_PREFIX + _key(digest),
-            size_bytes=size,
-            last_used=time.time(),
-            sequence=self._next_sequence(),
-        )
-        self._save_index()
-        return destination
-
     def drop(self, digest: str) -> None:
-        key = _key(digest)
-        shutil.rmtree(self.store / key, ignore_errors=True)
-        self._index.pop(key, None)
-        self._save_index()
+        with self._lock:
+            key = _key(digest)
+            shutil.rmtree(self.store / key, ignore_errors=True)
+            self._index.pop(key, None)
+            self._save_index()
 
     def clear(self) -> None:
-        for key in list(self._index):
-            shutil.rmtree(self.store / key, ignore_errors=True)
-        self._index.clear()
-        self._save_index()
+        with self._lock:
+            for key in list(self._index):
+                shutil.rmtree(self.store / key, ignore_errors=True)
+            self._index.clear()
+            self._save_index()

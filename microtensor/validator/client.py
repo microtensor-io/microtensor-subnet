@@ -181,8 +181,9 @@ class CoordinatorClient:
         body["signature"] = report.signature
         return self._call("POST", "/v1/report", body) or {}
 
-    def lease(self) -> dict[str, Any] | None:
-        found = self._call("POST", "/v1/lease", {})
+    def lease(self, slots: int = 1) -> dict[str, Any] | None:
+        body = {"slots": int(slots)} if slots > 1 else {}
+        found = self._call("POST", "/v1/lease", body)
         return None if found is None else dict(found)
 
     def release(

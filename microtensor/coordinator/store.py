@@ -320,11 +320,18 @@ class CoordinatorStore:
         return strikes
 
     def current_lease(self, round_index: int, worker_hotkey: str) -> dict[str, Any] | None:
-        row = self.db.one(
-            "SELECT * FROM leases WHERE round_index = ? AND worker_hotkey = ? AND state = ?",
+        held = self.current_leases(round_index, worker_hotkey)
+        return held[0] if held else None
+
+    def current_leases(self, round_index: int, worker_hotkey: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            """
+            SELECT * FROM leases WHERE round_index = ? AND worker_hotkey = ? AND state = ?
+            ORDER BY leased_at
+            """,
             (round_index, worker_hotkey, LEASE_IN_PROGRESS),
         )
-        return dict(row) if row else None
+        return [dict(r) for r in rows]
 
     def lease(
         self,
@@ -334,10 +341,13 @@ class CoordinatorStore:
         seed: str,
         ttl_seconds: int,
         catalogue: Mapping[str, Entry],
+        slots: int = 1,
     ) -> dict[str, Any] | None:
-        held = self.current_lease(round_index, worker_hotkey)
-        if held is not None:
-            return held
+        held = self.current_leases(round_index, worker_hotkey)
+        if held and slots <= 1:
+            return held[0]
+        if len(held) >= max(1, slots):
+            return None
         rows = self.db.query(
             """
             SELECT w.system_digest, w.replication, w.attempts,
@@ -414,7 +424,10 @@ class CoordinatorStore:
             ),
         )
         self._settle_work_state(round_index, digest, now)
-        return self.current_lease(round_index, worker_hotkey)
+        for row in self.current_leases(round_index, worker_hotkey):
+            if row["system_digest"] == digest:
+                return row
+        return None
 
     def complete_lease(
         self, round_index: int, system_digest: str, worker_hotkey: str, now: float

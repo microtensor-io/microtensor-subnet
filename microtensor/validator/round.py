@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
+import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
@@ -15,9 +17,11 @@ from microtensor.chain.weights import quantise_weights
 from microtensor.coordinator.report import Report
 from microtensor.core.constants import (
     COORDINATOR_HOTKEY,
+    CPU_SECONDS_PER_ARTIFACT,
     MECHANISM_VERSION,
     MIN_SCORED_FRACTION,
     REFERENCE_COST_MS,
+    TASKS_PER_ROUND,
 )
 from microtensor.core.protocol import Evaluation, Role
 from microtensor.core.tracks import HardwareClass, get_class
@@ -187,7 +191,7 @@ def _leased(
     rejected = {digest: reason for _, digest, reason in roster.rejected}
     while True:
         try:
-            found = context.coordinator.lease()
+            found = context.coordinator.lease(context.config.parallel)
         except (CoordinatorUnreachable, CoordinatorRefused) as exc:
             log.warning("round %d: no lease could be taken: %s", plan.round_index, exc)
             return
@@ -234,6 +238,227 @@ def _give_back(
         except Exception as exc:
             log.warning("could not release the lease on %s: %s", digest, exc)
     holding.clear()
+
+
+class _Tally:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.expected = 0
+        self.scored = 0
+        self.reports: list[Report] = []
+
+    def add(self, expected: int, scored: int, reports: Sequence[Report]) -> None:
+        with self.lock:
+            self.expected += expected
+            self.scored += scored
+            self.reports.extend(reports)
+
+
+_TASKS_LOCK = threading.Lock()
+
+
+def _core_groups(count: int) -> list[set[int]]:
+    reader = getattr(os, "sched_getaffinity", None)
+    cores = sorted(reader(0)) if reader is not None else list(range(os.cpu_count() or 1))
+    groups: list[set[int]] = [set() for _ in range(max(1, count))]
+    for index, core in enumerate(cores):
+        groups[index % len(groups)].add(core)
+    return [g if g else set(cores) for g in groups]
+
+
+def _pin(cores: set[int]) -> None:
+    setter = getattr(os, "sched_setaffinity", None)
+    if setter is None or not cores:
+        return
+    try:
+        setter(0, cores)
+    except OSError as exc:
+        log.warning("could not pin this runner to cores %s: %s", sorted(cores), exc)
+
+
+def _measure_batch(
+    context: ValidatorContext,
+    plan: Plan,
+    roster: Roster,
+    round_: Round,
+    block_hash: str,
+    heartbeat: Callable[[], None] | None,
+    track: str,
+    hardware_class: str,
+    participants: tuple[Participant, ...],
+    tasks_by: dict[tuple[str, str], Any],
+    tally: _Tally,
+    leasing: bool,
+    holding: dict[str, str],
+) -> str | None:
+    arena = plan.budgets.get((track, hardware_class))
+    hardware = _anchored_hardware(hardware_class, arena)
+    with _TASKS_LOCK:
+        tasks = tasks_by.get((track, hardware_class))
+        if tasks is None:
+            tasks = select(
+                context.corpus(track),
+                competition_seed(block_hash, track, hardware_class),
+                hardware_class,
+                budget=arena.tasks_per_round if arena else context.config.tasks_per_round,
+                round_index=round_.index,
+            )
+            tasks_by[(track, hardware_class)] = tasks
+            if arena is not None:
+                for flag, given, default, anchored in (
+                    (
+                        "cpu-seconds",
+                        context.config.cpu_seconds_per_artifact,
+                        CPU_SECONDS_PER_ARTIFACT,
+                        arena.cpu_seconds_per_artifact,
+                    ),
+                    (
+                        "tasks-per-round",
+                        context.config.tasks_per_round,
+                        TASKS_PER_ROUND,
+                        arena.tasks_per_round,
+                    ),
+                ):
+                    if given != default and given != anchored:
+                        log.warning(
+                            "round %d: the anchored config sets %s to %d for %s/%s, "
+                            "so --%s %d is ignored",
+                            round_.index,
+                            flag.replace("-", "_"),
+                            anchored,
+                            track,
+                            hardware_class,
+                            flag,
+                            given,
+                        )
+
+    def publish(evaluation: Evaluation, participant: Participant, _plan: Plan = plan) -> None:
+        if _plan.mode is not Mode.COORDINATED or context.coordinator is None:
+            return
+        report = to_report(
+            evaluation,
+            round_index=_plan.round_index,
+            worker_hotkey=context.hotkey,
+            environment_digest=context.environment_digest,
+            system_digest=participant.commitment.manifest_digest,
+            engine_version=MECHANISM_VERSION,
+            corpus_version=context.config.corpus_version,
+            corpus_digest=context.corpus_digest,
+            components={
+                ref.role.value: ref.artifact_digest for ref in participant.system.components
+            },
+        )
+        _, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
+        if failure:
+            log.warning("report for %s did not land: %s", participant.hotkey, failure)
+        else:
+            try:
+                if leasing:
+                    context.cache.drop(participant.manifest.artifact_digest)
+                else:
+                    context.cache.release(participant.manifest.artifact_digest)
+            except CacheError as exc:
+                log.warning("could not clear %s from the cache: %s", participant.hotkey, exc)
+        if heartbeat is not None:
+            heartbeat()
+
+    try:
+        result = evaluate_competition(
+            context,
+            participants,
+            tasks,
+            cpu_seconds=arena.cpu_seconds_per_artifact if arena else 0,
+            hardware=hardware,
+            on_evaluated=publish,
+        )
+    except Abstain as exc:
+        if leasing and holding:
+            _give_back(context, plan, holding, "worker", str(exc))
+        return str(exc)
+
+    price_components(context, round_.index, track, hardware_class, participants)
+    _screen_derivation(context, round_.index, participants)
+
+    reports: list[Report] = []
+    if plan.mode is Mode.COORDINATED:
+        reports = [
+            to_report(
+                evaluation,
+                round_index=plan.round_index,
+                worker_hotkey=context.hotkey,
+                environment_digest=context.environment_digest,
+                system_digest=participant.commitment.manifest_digest,
+                engine_version=MECHANISM_VERSION,
+                corpus_version=context.config.corpus_version,
+                corpus_digest=context.corpus_digest,
+                components={
+                    ref.role.value: ref.artifact_digest for ref in participant.system.components
+                },
+            )
+            for evaluation, participant in zip(result.evaluations, participants, strict=True)
+        ]
+    tally.add(
+        len(participants),
+        sum(1 for e in result.evaluations if e.measured is not None),
+        reports,
+    )
+    return None
+
+
+def _run_parallel(
+    context: ValidatorContext,
+    plan: Plan,
+    roster: Roster,
+    round_: Round,
+    block_hash: str,
+    heartbeat: Callable[[], None] | None,
+    tasks_by: dict[tuple[str, str], Any],
+    tally: _Tally,
+) -> str | None:
+    runners = max(1, context.config.parallel)
+    groups = _core_groups(runners)
+    stop = threading.Event()
+    reasons: list[str] = []
+    lock = threading.Lock()
+    log.info("round %d: evaluating up to %d leased artifacts at once", round_.index, runners)
+
+    def run(index: int) -> None:
+        holding: dict[str, str] = {}
+        _pin(groups[index])
+        for track, hardware_class, participants in _leased(context, plan, roster, holding):
+            if stop.is_set():
+                _give_back(context, plan, holding, "worker", "validator is stopping this round")
+                return
+            reason = _measure_batch(
+                context,
+                plan,
+                roster,
+                round_,
+                block_hash,
+                heartbeat,
+                track,
+                hardware_class,
+                participants,
+                tasks_by,
+                tally,
+                True,
+                holding,
+            )
+            if reason is not None:
+                with lock:
+                    reasons.append(reason)
+                stop.set()
+                return
+
+    threads = [
+        threading.Thread(target=run, args=(i,), name=f"runner-{i}", daemon=True)
+        for i in range(runners)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return reasons[0] if reasons else None
 
 
 def _report_inadmissible(context: ValidatorContext, plan: Plan, roster: Roster) -> None:
@@ -530,90 +755,35 @@ def _run_round(
         batches = _planned(context, roster, assigned)
 
     tasks_by: dict[tuple[str, str], Any] = {}
-    for track, hardware_class, participants in batches:
-        expected += len(participants)
-
-        # The arena's numbers, not this build's. They describe the same model
-        # class the latency ceilings do, so they travel with the anchored
-        # config and a worker on an older build still runs the round its
-        # peers are running.
-        arena = plan.budgets.get((track, hardware_class))
-        hardware = _anchored_hardware(hardware_class, arena)
-        tasks = tasks_by.get((track, hardware_class))
-        if tasks is None:
-            tasks = select(
-                context.corpus(track),
-                competition_seed(block_hash, track, hardware_class),
-                hardware_class,
-                budget=arena.tasks_per_round if arena else context.config.tasks_per_round,
-                round_index=round_.index,
-            )
-            tasks_by[(track, hardware_class)] = tasks
-        def publish(evaluation: Evaluation, participant: Participant, _plan: Plan = plan) -> None:
-            if _plan.mode is not Mode.COORDINATED or context.coordinator is None:
-                return
-            report = to_report(
-                evaluation,
-                round_index=_plan.round_index,
-                worker_hotkey=context.hotkey,
-                environment_digest=context.environment_digest,
-                system_digest=participant.commitment.manifest_digest,
-                engine_version=MECHANISM_VERSION,
-                corpus_version=context.config.corpus_version,
-                corpus_digest=context.corpus_digest,
-                components={
-                    ref.role.value: ref.artifact_digest for ref in participant.system.components
-                },
-            )
-            _, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
-            if failure:
-                log.warning("report for %s did not land: %s", participant.hotkey, failure)
-            else:
-                try:
-                    if leasing:
-                        context.cache.drop(participant.manifest.artifact_digest)
-                    else:
-                        context.cache.release(participant.manifest.artifact_digest)
-                except CacheError as exc:
-                    log.warning("could not clear %s from the cache: %s", participant.hotkey, exc)
-            if heartbeat is not None:
-                heartbeat()
-
-        try:
-            result = evaluate_competition(
+    tally = _Tally()
+    if leasing and context.config.parallel > 1:
+        halted = _run_parallel(
+            context, plan, roster, round_, block_hash, heartbeat, tasks_by, tally
+        )
+        if halted is not None:
+            return abstain(halted, roster)
+    else:
+        for track, hardware_class, participants in batches:
+            halted = _measure_batch(
                 context,
+                plan,
+                roster,
+                round_,
+                block_hash,
+                heartbeat,
+                track,
+                hardware_class,
                 participants,
-                tasks,
-                cpu_seconds=arena.cpu_seconds_per_artifact if arena else 0,
-                hardware=hardware,
-                on_evaluated=publish,
+                tasks_by,
+                tally,
+                leasing,
+                holding,
             )
-        except Abstain as exc:
-            if leasing and holding:
-                _give_back(context, plan, holding, "worker", str(exc))
-            return abstain(str(exc), roster)
-        scored += sum(1 for e in result.evaluations if e.measured is not None)
-
-        price_components(context, round_.index, track, hardware_class, participants)
-        _screen_derivation(context, round_.index, participants)
-
-        if plan.mode is Mode.COORDINATED:
-            reports.extend(
-                to_report(
-                    evaluation,
-                    round_index=plan.round_index,
-                    worker_hotkey=context.hotkey,
-                    environment_digest=context.environment_digest,
-                    system_digest=participant.commitment.manifest_digest,
-                    engine_version=MECHANISM_VERSION,
-                    corpus_version=context.config.corpus_version,
-                    corpus_digest=context.corpus_digest,
-                    components={
-                        ref.role.value: ref.artifact_digest for ref in participant.system.components
-                    },
-                )
-                for evaluation, participant in zip(result.evaluations, participants, strict=True)
-            )
+            if halted is not None:
+                return abstain(halted, roster)
+    expected = tally.expected
+    scored = tally.scored
+    reports = tally.reports
 
     if expected and scored / expected < MIN_SCORED_FRACTION:
         return abstain(

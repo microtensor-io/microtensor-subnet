@@ -132,6 +132,12 @@ def _add_validator_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cache-cap-bytes", type=int, default=ARTIFACT_CACHE_CAP_BYTES)
     parser.add_argument("--cpu-seconds", type=int, default=CPU_SECONDS_PER_ARTIFACT)
     parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help="leased artifacts to evaluate at once, each on its own cores (experimental)",
+    )
+    parser.add_argument(
         "--profile-seconds",
         type=int,
         default=int(os.environ.get("MT_PROFILE_SECONDS", "150")),
@@ -225,6 +231,7 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
         cache_cap_bytes=args.cache_cap_bytes,
         cpu_seconds_per_artifact=args.cpu_seconds,
         profile_seconds=args.profile_seconds,
+        parallel=max(1, args.parallel),
         allow_unsandboxed=args.allow_unsandboxed,
         dry_run=args.dry_run,
         degraded=degraded,
