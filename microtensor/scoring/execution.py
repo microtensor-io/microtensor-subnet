@@ -225,6 +225,7 @@ if __name__ == "__main__":
 
 MODULE_PREAMBLE = """\
 import difflib as _difflib
+import ctypes as _ctypes
 import json as _json
 import logging as _logging
 import os as _os
@@ -246,12 +247,21 @@ def _mt_install():
         "os.forkpty",
         "os.exec",
         "os.posix_spawn",
-        "ctypes.dlopen",
-        "ctypes.call_function",
-        "ctypes.cdata",
         "sys.settrace",
         "sys.setprofile",
     }
+    foreign = {"ctypes.dlopen", "ctypes.call_function", "ctypes.cdata"}
+    ctypes_dir = _os.path.dirname(_os.path.abspath(_ctypes.__file__))
+
+    def from_solution():
+        frame = _sys._getframe(2)
+        while frame is not None:
+            name = frame.f_code.co_filename
+            if name.startswith("<frozen") or _os.path.abspath(name).startswith(ctypes_dir):
+                frame = frame.f_back
+                continue
+            return name.startswith("<") or _os.path.basename(name) == "solution.py"
+        return False
 
     def hook(event, args):
         if event == "open":
@@ -264,6 +274,8 @@ def _mt_install():
                 raise PermissionError("only the test suite writes the result file")
         elif event in blocked:
             raise PermissionError(event + " is not available in the evaluation jail")
+        elif event in foreign and from_solution():
+            raise PermissionError(event + " is not available to the solution")
 
     _sys.addaudithook(hook)
 
