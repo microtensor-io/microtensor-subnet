@@ -187,6 +187,31 @@ class ServerClient:
             or {}
         )
 
+    def push_catalogue(
+        self,
+        round_index: int,
+        entries: list[dict[str, Any]],
+        uids: Mapping[str, int] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"round_index": round_index, "entries": entries}
+        if uids:
+            body["uids"] = {str(k): int(v) for k, v in uids.items()}
+        return self._call("POST", "/v1/ingest/catalogue", body) or {}
+
+    def directives(self) -> list[dict[str, Any]]:
+        found = self._call("GET", "/v1/control/directives") or []
+        return [dict(d) for d in found] if isinstance(found, list) else []
+
+    def ack_directive(self, directive_id: str, ok: bool, detail: str = "") -> dict[str, Any]:
+        return (
+            self._call(
+                "POST",
+                f"/v1/control/directives/{directive_id}/ack",
+                {"ok": ok, "detail": detail[:1000]},
+            )
+            or {}
+        )
+
     def arenas(self) -> dict[str, dict[str, Any]]:
         """Per-arena configuration the anchored config carries.
 

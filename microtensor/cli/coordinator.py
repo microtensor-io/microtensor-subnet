@@ -5,13 +5,14 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from microtensor.chain.rounds import is_release_boundary, release_cutoff_block
 from microtensor.chain.weights import WeightVector, quantise_weights
 from microtensor.cli.common import add_chain_arguments, add_common_arguments, fail
-from microtensor.coordinator.api import Coordinator, Registry
+from microtensor.coordinator.api import Coordinator, Registry, SettleBlocked
 from microtensor.coordinator.assign import System, Worker, assign, by_worker, under_replicated
 from microtensor.coordinator.chain import ChainSource, RoundSource
 from microtensor.coordinator.config import config_hash, served_config
@@ -25,7 +26,7 @@ from microtensor.coordinator.server import (
     ServerUnreachable,
     publish_round,
 )
-from microtensor.coordinator.settle import Settlement, standing_weights
+from microtensor.coordinator.settle import Entry, Settlement, standing_weights
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.coordinator.tokens import KeyRing
 from microtensor.core.constants import (
@@ -110,6 +111,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     _add_server_arguments(settle)
     settle.set_defaults(handler=_settle)
+
+    flush = inner.add_parser("flush", help="mirror queued reports to the control plane")
+    add_common_arguments(flush)
+    _add_server_arguments(flush)
+    flush.set_defaults(handler=_flush)
 
     weights = inner.add_parser(
         "weights", help="set weights from the reserved hold, with or without a round"
@@ -358,6 +364,7 @@ def _freeze(args: argparse.Namespace) -> int:
     systems, catalogue = source.systems(round_)
     workers = source.workers()
 
+    frozen: dict[str, Entry] = {}
     with _store(args) as store:
         store.freeze_round(index, block_hash=seed)
         if systems and workers:
@@ -370,13 +377,17 @@ def _freeze(args: argparse.Namespace) -> int:
                     for s in systems
                 },
             )
-            store.record_catalogue(index, observed(catalogue, store.observations(index)))
+            frozen = observed(catalogue, store.observations(index))
+            store.record_catalogue(index, frozen)
             store.seed_work(index, [s.digest for s in systems], args.replication)
-        store.record_metagraph(index, source.uids())
+        uids = source.uids()
+        store.record_metagraph(index, uids)
 
     if not systems:
         print(f"round {index} frozen with no submissions; it settles on the hold")
         return 0
+    if server is not None:
+        _mirror_catalogue(server, index, frozen, uids)
     print(f"round {index} frozen: {len(systems)} systems, seed from block {close}")
     print(f"  assignments {sum(len(v) for v in mapping.values())}")
     return 0
@@ -712,44 +723,18 @@ def _settle(args: argparse.Namespace) -> int:
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
             signer=_signer(args),
+            mirror_report=server.push_reports if server is not None else None,
         )
-        published = service.settle(args.round)
+        try:
+            published = service.settle(args.round)
+        except SettleBlocked as exc:
+            return fail(str(exc))
 
     if published is None:
         return fail(f"round {args.round} has not reached quorum yet")
 
     if server is not None:
-        with _store(args) as store:
-            reports = store.reports_payload(args.round)
-            assignment = store.full_assignment(args.round)
-            settlement = _settlement_of(store, args.round)
-            systems = {
-                digest: (e.track, e.hardware_class, e.miner_hotkey, e.source)
-                for digest, e in store.catalogue(args.round).items()
-            }
-        try:
-            stored = publish_round(
-                server,
-                settlement,
-                reports=reports,
-                assignment=assignment,
-                systems=systems,
-            )
-            print(
-                f"archived on the control plane: {stored['reports']} reports, "
-                f"{stored['assignments']} assignments"
-            )
-        except (ServerUnreachable, ServerRefused) as exc:
-            log.error(
-                "the settlement was computed and set on chain but not archived: %s. "
-                "The reports are still local; re-run this command to push them.",
-                exc,
-            )
-
-        with _store(args) as store:
-            _push_telemetry(store, server, args.round)
-            for version in _cut_releases(store, server, args.round):
-                print(f"released {version}")
+        _archive_round(args, server, args.round)
 
     print(json.dumps(published, indent=2, sort_keys=True))
     return 0
@@ -894,6 +879,8 @@ def _status(args: argparse.Namespace) -> int:
 
 REGISTRY_REFRESH_SECONDS = 300
 SUBMISSION_WATCH_SECONDS = 180
+DIRECTIVE_POLL_SECONDS = 15
+OUTBOX_FLUSH_SECONDS = 20
 
 
 def _worker_keyring(args: argparse.Namespace, server: ServerClient | None) -> KeyRing | None:
@@ -978,6 +965,176 @@ def _keep_registry_current(registry: Registry, client: Any, service: Any = None)
     threading.Thread(target=loop, name="registry-refresh", daemon=True).start()
 
 
+def _archive_round(args: argparse.Namespace, server: ServerClient, round_index: int) -> None:
+    with _store(args) as store:
+        reports = store.reports_payload(round_index)
+        assignment = store.full_assignment(round_index)
+        settlement = _settlement_of(store, round_index)
+        systems = {
+            digest: (e.track, e.hardware_class, e.miner_hotkey, e.source)
+            for digest, e in store.catalogue(round_index).items()
+        }
+    try:
+        stored = publish_round(
+            server,
+            settlement,
+            reports=reports,
+            assignment=assignment,
+            systems=systems,
+        )
+        print(
+            f"archived on the control plane: {stored['reports']} reports, "
+            f"{stored['assignments']} assignments"
+        )
+    except (ServerUnreachable, ServerRefused) as exc:
+        log.error(
+            "the settlement was computed and set on chain but not archived: %s. "
+            "The reports are still local; re-run this command to push them.",
+            exc,
+        )
+    with _store(args) as store:
+        _push_telemetry(store, server, round_index)
+        for version in _cut_releases(store, server, round_index):
+            print(f"released {version}")
+
+
+def _flush(args: argparse.Namespace) -> int:
+    server = _server(args)
+    if server is None:
+        return fail("no control plane is configured; pass --server")
+    with _store(args) as store:
+        service = Coordinator(store=store, registry=Registry({}), mirror_report=server.push_reports)
+        sent, deferred = service.flush_outbox()
+    print(f"mirrored {sent} reports; {deferred} deferred")
+    return 0 if not deferred else 1
+
+
+def _mirror_catalogue(
+    server: ServerClient,
+    round_index: int,
+    catalogue: Mapping[str, Entry],
+    uids: Mapping[str, int],
+) -> None:
+    entries = [
+        {
+            "system_digest": e.system_digest,
+            "miner_hotkey": e.miner_hotkey,
+            "uid": e.uid,
+            "track": e.track,
+            "hardware_class": e.hardware_class,
+            "source": e.source,
+            "committed_at": e.committed_at,
+            "rounds_observed": e.rounds_observed,
+            "stale_rounds": e.stale_rounds,
+        }
+        for e in catalogue.values()
+    ]
+    try:
+        server.push_catalogue(round_index, entries, uids)
+    except (ServerUnreachable, ServerRefused) as exc:
+        log.warning("the catalogue was not mirrored to the control plane: %s", exc)
+
+
+def _flush_outbox(service: Coordinator) -> None:
+    import threading
+
+    def loop() -> None:
+        while True:
+            try:
+                service.flush_outbox()
+            except Exception as exc:
+                log.debug("outbox flush skipped a pass: %s", exc)
+            time.sleep(OUTBOX_FLUSH_SECONDS)
+
+    threading.Thread(target=loop, name="report-outbox", daemon=True).start()
+
+
+def _follow_directives(
+    args: argparse.Namespace, server: ServerClient, service: Coordinator
+) -> None:
+    import threading
+
+    def loop() -> None:
+        while True:
+            try:
+                for directive in server.directives():
+                    _handle_directive(args, server, service, directive)
+            except Exception as exc:
+                log.debug("directive poll skipped a pass: %s", exc)
+            time.sleep(DIRECTIVE_POLL_SECONDS)
+
+    threading.Thread(target=loop, name="directives", daemon=True).start()
+
+
+def _handle_directive(
+    args: argparse.Namespace,
+    server: ServerClient,
+    service: Coordinator,
+    directive: Mapping[str, Any],
+) -> None:
+    directive_id = str(directive.get("id", ""))
+    kind = str(directive.get("kind", ""))
+    payload = dict(directive.get("payload") or {})
+    raw_index = directive.get("round_index")
+    index = int(raw_index) if raw_index is not None else None
+    if not directive_id or not kind:
+        return
+    with _store(args) as store:
+        seen = store.directive(directive_id)
+        if seen is not None and seen.get("finished_at"):
+            server.ack_directive(directive_id, bool(seen.get("ok")), str(seen.get("detail", "")))
+            return
+        store.record_directive(directive_id, kind, index, time.time())
+    ok, detail = _run_directive(args, server, service, kind, index, payload)
+    with _store(args) as store:
+        store.finish_directive(directive_id, ok, detail, time.time())
+    server.ack_directive(directive_id, ok, detail)
+    log.info("directive %s (%s) %s: %s", directive_id, kind, "done" if ok else "failed", detail)
+
+
+def _run_directive(
+    args: argparse.Namespace,
+    server: ServerClient,
+    service: Coordinator,
+    kind: str,
+    index: int | None,
+    payload: dict[str, Any],
+) -> tuple[bool, str]:
+    try:
+        if kind == "freeze_round":
+            ns = argparse.Namespace(**vars(args))
+            ns.round = index
+            ns.replication = int(payload.get("replication", COORDINATOR_REPLICATION))
+            code = _freeze(ns)
+            return code == 0, f"freeze exited {code}"
+        if kind == "settle_round":
+            if index is None:
+                return False, "settle_round names no round"
+            ns = argparse.Namespace(**vars(args))
+            ns.round = index
+            ns.partial = bool(payload.get("partial", False))
+            code = _settle(ns)
+            return code == 0, f"settle exited {code}"
+        if kind == "publish_settlement":
+            ok, detail = service.adopt(payload)
+            if ok and index is not None:
+                _archive_round(args, server, index)
+            return ok, detail
+        if kind == "end_arena":
+            if index is None:
+                return False, "end_arena names no round"
+            counts = service.end_arena(
+                index,
+                str(payload.get("track", "")),
+                str(payload.get("hardware_class", "")),
+                str(payload.get("reason", "")),
+            )
+            return True, json.dumps(counts, sort_keys=True)
+        return False, f"unknown directive kind {kind!r}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def _watch_submissions(client: Any, server: ServerClient) -> None:
     import threading
 
@@ -1059,6 +1216,8 @@ def _serve(args: argparse.Namespace) -> int:
         _keep_registry_current(registry, client, service)
         if server is not None:
             _watch_submissions(client, server)
+            _flush_outbox(service)
+            _follow_directives(args, server, service)
         app = build_app(service)
         log.info("serving the coordinator on %s:%d", args.host, args.port)
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")

@@ -42,6 +42,18 @@ except ImportError:
 
 log = logging.getLogger("microtensor.coordinator")
 
+
+class SettleBlocked(RuntimeError):
+    pass
+
+
+def _outbox_key(row: Mapping[str, Any]) -> tuple[int, str, str]:
+    return int(row["round_index"]), str(row["worker_hotkey"]), str(row["system_digest"])
+
+
+def _unordered(items: Any) -> list[str]:
+    return sorted(json.dumps(item, sort_keys=True) for item in items)
+
 SIGNATURE_HEADER = "x-mt-signature"
 HOTKEY_HEADER = "x-mt-hotkey"
 TIMESTAMP_HEADER = "x-mt-timestamp"
@@ -463,13 +475,115 @@ class Coordinator:
         """
         if self.mirror_report is None:
             return
-
-        body = report.body()
-        body["signature"] = report.signature
         try:
-            self.mirror_report(report.round_index, [body])
+            self.flush_outbox(limit=50)
         except Exception as exc:
-            log.warning("a report was not mirrored to the control plane: %s", exc)
+            log.warning("the report outbox did not flush: %s", exc)
+
+    def flush_outbox(self, now: float | None = None, limit: int = 200) -> tuple[int, int]:
+        now = time.time() if now is None else now
+        pending = self.store.outbox_pending(now, limit)
+        if not pending:
+            return 0, 0
+        if self.mirror_report is None:
+            self.store.outbox_delivered([_outbox_key(row) for row in pending])
+            return 0, 0
+        sent = deferred = 0
+        by_round: dict[int, list[dict[str, Any]]] = {}
+        for row in pending:
+            by_round.setdefault(int(row["round_index"]), []).append(row)
+        for round_index, rows in sorted(by_round.items()):
+            keys = [_outbox_key(row) for row in rows]
+            try:
+                self.mirror_report(round_index, [row["body"] for row in rows])
+            except Exception as exc:
+                self.store.outbox_deferred(keys, now)
+                deferred += len(rows)
+                log.warning(
+                    "%d reports for round %d were not mirrored to the control plane: %s",
+                    len(rows),
+                    round_index,
+                    exc,
+                )
+                continue
+            self.store.outbox_delivered(keys)
+            sent += len(rows)
+        return sent, deferred
+
+    def _drain_or_block(self, round_index: int) -> None:
+        if self.mirror_report is None:
+            return
+        if self.store.outbox_size(round_index):
+            self.flush_outbox()
+        pending = self.store.outbox_size(round_index)
+        if pending:
+            raise SettleBlocked(
+                f"{pending} reports for round {round_index} are not yet mirrored "
+                "to the control plane"
+            )
+
+    def _compute(self, round_index: int) -> tuple[Settlement, Any]:
+        from microtensor.coordinator.assign import under_replicated
+
+        by_system = self.store.reports_by_system(round_index)
+        advisory = self.store.advisory()
+        result = intake(by_system, advisory=advisory)
+        row = self.store.round(round_index) or {}
+        settlement = build_settlement(
+            round_index,
+            config_hash=str(row.get("config_hash", "")),
+            corpus_version=self.corpus_version,
+            reconciled=result.reconciled,
+            catalogue=self.store.catalogue(round_index) or self.catalogue,
+            report_digests=self.store.report_digests(round_index),
+            unscored=result.unscored,
+            under_replicated=under_replicated(self.store.full_assignment(round_index)),
+            advisory=advisory,
+            coldkeys=self.coldkeys,
+            reserved=self._reserved(),
+            dropped=self._dropped(round_index, int(row.get("seed_block", 0) or 0)),
+        )
+        return settlement, result
+
+    def adopt(self, payload: Mapping[str, Any]) -> tuple[bool, str]:
+        raw_index = payload.get("round", payload.get("round_index"))
+        if raw_index is None:
+            return False, "the settlement names no round"
+        round_index = int(raw_index)
+        self.absorb(round_index)
+        try:
+            self._drain_or_block(round_index)
+        except SettleBlocked as exc:
+            return False, str(exc)
+        settlement, result = self._compute(round_index)
+        mine = settlement.body()
+        for key in ("config_hash", "reports_root", "weights"):
+            if mine.get(key) != payload.get(key):
+                return False, f"{key} differs between the server and this coordinator"
+        for key in ("frontier", "catalogue", "unscored", "under_replicated"):
+            if _unordered(mine.get(key) or ()) != _unordered(payload.get(key) or ()):
+                return False, f"{key} differs between the server and this coordinator"
+        self.store.record_divergences(round_index, result.divergences)
+        self._update_reputation(round_index, result)
+        self.store.publish(self._signed(settlement))
+        from microtensor.coordinator.settle import snapshots_from
+
+        snapshots, summaries = snapshots_from(settlement.body(), result.reconciled)
+        self.store.record_frontier(round_index, snapshots, summaries)
+        log.info(
+            "round %d adopted from the control plane: %d weights, %d frontier entries",
+            round_index,
+            len(settlement.weights),
+            len(settlement.frontier),
+        )
+        return True, f"round {round_index} verified and signed"
+
+    def end_arena(
+        self, round_index: int, track: str, hardware_class: str, reason: str = ""
+    ) -> dict[str, int]:
+        counts = self.store.close_arena(round_index, track, hardware_class, time.time(), reason)
+        log.info("arena %s/%s ended for round %d: %s", track, hardware_class, round_index, counts)
+        return counts
 
     def settle(self, round_index: int) -> dict[str, Any] | None:
         """Reconcile, settle, and publish once quorum is reached.
@@ -485,6 +599,7 @@ class Coordinator:
         frontier, and a weight vector that names only the reserved uid.
         """
         self.absorb(round_index)
+        self._drain_or_block(round_index)
 
         expected = self.store.expected_reports(round_index)
         received = self.store.report_count(round_index)
@@ -503,31 +618,9 @@ class Coordinator:
                 round_index,
             )
 
-        by_system = self.store.reports_by_system(round_index)
-        advisory = self.store.advisory()
-        result = intake(by_system, advisory=advisory)
-
+        settlement, result = self._compute(round_index)
         self.store.record_divergences(round_index, result.divergences)
         self._update_reputation(round_index, result)
-
-        row = self.store.round(round_index) or {}
-        assignment = self.store.full_assignment(round_index)
-        from microtensor.coordinator.assign import under_replicated
-
-        settlement = build_settlement(
-            round_index,
-            config_hash=str(row.get("config_hash", "")),
-            corpus_version=self.corpus_version,
-            reconciled=result.reconciled,
-            catalogue=self.store.catalogue(round_index) or self.catalogue,
-            report_digests=digests,
-            unscored=result.unscored,
-            under_replicated=under_replicated(assignment),
-            advisory=advisory,
-            coldkeys=self.coldkeys,
-            reserved=self._reserved(),
-            dropped=self._dropped(round_index, int(row.get("seed_block", 0) or 0)),
-        )
         self.store.publish(self._signed(settlement))
 
         from microtensor.coordinator.settle import snapshots_from

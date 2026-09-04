@@ -19,10 +19,13 @@ WORK_AVAILABLE = "available"
 WORK_IN_PROGRESS = "in_progress"
 WORK_COMPLETE = "complete"
 WORK_FAILED = "failed"
+WORK_RETIRED = "retired"
 LEASE_IN_PROGRESS = "in_progress"
 LEASE_COMPLETE = "complete"
 LEASE_FAILED = "failed"
 LEASE_RECLAIMED = "reclaimed"
+OUTBOX_BACKOFF_SECONDS = 30.0
+OUTBOX_BACKOFF_CAP_SECONDS = 600.0
 
 
 class CoordinatorStore:
@@ -917,6 +920,28 @@ class CoordinatorStore:
         }
 
     def record_report(self, report: Report) -> None:
+        body = report.body()
+        body["signature"] = report.signature
+        with self.db.transaction():
+            self._insert_report(report)
+            self.db.execute(
+                """
+                INSERT INTO report_outbox (
+                    round_index, worker_hotkey, system_digest, body,
+                    attempts, next_at, queued_at
+                ) VALUES (?, ?, ?, ?, 0, 0, ?)
+                ON CONFLICT (round_index, worker_hotkey, system_digest) DO NOTHING
+                """,
+                (
+                    report.round_index,
+                    report.worker_hotkey,
+                    report.system_digest,
+                    json.dumps(body, sort_keys=True),
+                    time.time(),
+                ),
+            )
+
+    def _insert_report(self, report: Report) -> None:
         self.db.execute(
             """
             INSERT INTO reports (
@@ -951,6 +976,146 @@ class CoordinatorStore:
                 time.time(),
             ),
         )
+
+    def outbox_pending(self, now: float, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            """
+            SELECT round_index, worker_hotkey, system_digest, body, attempts
+            FROM report_outbox WHERE next_at <= ?
+            ORDER BY queued_at LIMIT ?
+            """,
+            (now, limit),
+        )
+        return [
+            {
+                "round_index": int(r["round_index"]),
+                "worker_hotkey": str(r["worker_hotkey"]),
+                "system_digest": str(r["system_digest"]),
+                "body": json.loads(r["body"]),
+                "attempts": int(r["attempts"]),
+            }
+            for r in rows
+        ]
+
+    def outbox_size(self, round_index: int | None = None) -> int:
+        if round_index is None:
+            row = self.db.one("SELECT COUNT(*) AS n FROM report_outbox")
+        else:
+            row = self.db.one(
+                "SELECT COUNT(*) AS n FROM report_outbox WHERE round_index = ?", (round_index,)
+            )
+        return int(row["n"]) if row else 0
+
+    def outbox_delivered(self, keys: Sequence[tuple[int, str, str]]) -> None:
+        if not keys:
+            return
+        self.db.executemany(
+            "DELETE FROM report_outbox "
+            "WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
+            [tuple(k) for k in keys],
+        )
+
+    def outbox_deferred(self, keys: Sequence[tuple[int, str, str]], now: float) -> None:
+        for round_index, worker, digest in keys:
+            row = self.db.one(
+                "SELECT attempts FROM report_outbox "
+                "WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
+                (round_index, worker, digest),
+            )
+            attempts = int(row["attempts"]) + 1 if row else 1
+            delay = min(OUTBOX_BACKOFF_CAP_SECONDS, OUTBOX_BACKOFF_SECONDS * attempts)
+            self.db.execute(
+                "UPDATE report_outbox SET attempts = ?, next_at = ? "
+                "WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
+                (attempts, now + delay, round_index, worker, digest),
+            )
+
+    def close_arena(
+        self, round_index: int, track: str, hardware_class: str, now: float, reason: str = ""
+    ) -> dict[str, int]:
+        digests = [
+            str(r["system_digest"])
+            for r in self.db.query(
+                "SELECT system_digest FROM catalogue "
+                "WHERE round_index = ? AND track = ? AND hardware_class = ?",
+                (round_index, track, hardware_class),
+            )
+        ]
+        counts = {"systems": len(digests), "leases": 0, "work": 0, "assignments": 0}
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO arena_closures "
+                "(round_index, track, hardware_class, closed_at, reason) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (round_index, track, hardware_class) DO NOTHING",
+                (round_index, track, hardware_class, now, reason[:300]),
+            )
+            for digest in digests:
+                held = self.db.query(
+                    "SELECT worker_hotkey FROM leases "
+                    "WHERE round_index = ? AND system_digest = ? AND state = ?",
+                    (round_index, digest, LEASE_IN_PROGRESS),
+                )
+                for lease in held:
+                    self._close_lease(
+                        round_index,
+                        digest,
+                        str(lease["worker_hotkey"]),
+                        LEASE_RECLAIMED,
+                        now,
+                        "arena ended",
+                    )
+                    counts["leases"] += 1
+                state = self.work_state(round_index, digest)
+                if state and state != WORK_COMPLETE:
+                    self.db.execute(
+                        "UPDATE work SET state = ?, updated_at = ? "
+                        "WHERE round_index = ? AND system_digest = ?",
+                        (WORK_RETIRED, now, round_index, digest),
+                    )
+                    counts["work"] += 1
+                unmeasured = self.db.query(
+                    "SELECT worker_hotkey FROM assignments "
+                    "WHERE round_index = ? AND system_digest = ? AND worker_hotkey NOT IN ("
+                    "  SELECT worker_hotkey FROM reports "
+                    "  WHERE round_index = ? AND system_digest = ?)",
+                    (round_index, digest, round_index, digest),
+                )
+                for row in unmeasured:
+                    self.db.execute(
+                        "DELETE FROM assignments "
+                        "WHERE round_index = ? AND system_digest = ? AND worker_hotkey = ?",
+                        (round_index, digest, str(row["worker_hotkey"])),
+                    )
+                counts["assignments"] += len(unmeasured)
+        return counts
+
+    def arena_closed(self, round_index: int, track: str, hardware_class: str) -> bool:
+        row = self.db.one(
+            "SELECT 1 FROM arena_closures "
+            "WHERE round_index = ? AND track = ? AND hardware_class = ?",
+            (round_index, track, hardware_class),
+        )
+        return row is not None
+
+    def record_directive(
+        self, directive_id: str, kind: str, round_index: int | None, now: float
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO directives (id, kind, round_index, received_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (id) DO NOTHING",
+            (directive_id, kind, round_index, now),
+        )
+
+    def finish_directive(self, directive_id: str, ok: bool, detail: str, now: float) -> None:
+        self.db.execute(
+            "UPDATE directives SET finished_at = ?, ok = ?, detail = ? WHERE id = ?",
+            (now, int(ok), detail[:1000], directive_id),
+        )
+
+    def directive(self, directive_id: str) -> dict[str, Any] | None:
+        row = self.db.one("SELECT * FROM directives WHERE id = ?", (directive_id,))
+        return dict(row) if row else None
 
     def has_report(self, round_index: int, worker_hotkey: str, system_digest: str) -> bool:
         row = self.db.one(
