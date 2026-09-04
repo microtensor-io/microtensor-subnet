@@ -126,6 +126,8 @@ LEASE_SECONDS: Final[int] = 3600
 LEASE_MAX_ATTEMPTS: Final[int] = 2
 WORKER_STRIKES: Final[int] = 3
 WORKER_COOLDOWN_SECONDS: Final[int] = 3600
+ANOMALY_QUALITY: Final[float] = 0.98
+ANOMALY_MIN_REPLICATION: Final[int] = 2
 COORDINATOR_URL: Final[str] = os.environ.get(
     "MT_COORDINATOR_URL", "https://coordinator.microtensor.cloud"
 ).strip()

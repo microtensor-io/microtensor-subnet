@@ -8,6 +8,7 @@ from hashlib import sha256
 from typing import Any
 
 from microtensor.coordinator.collect import Reconciled
+from microtensor.core.constants import ANOMALY_MIN_REPLICATION, ANOMALY_QUALITY
 from microtensor.scoring import frontier
 from microtensor.scoring.weights import (
     apply_concentration_cap,
@@ -403,7 +404,21 @@ def build(
 ) -> Settlement:
     """The canonical settlement for one round."""
     entries = to_entries(reconciled, catalogue)
-    per_competition = allocate(entries)
+    held = [
+        e
+        for e in entries
+        if e.quality >= ANOMALY_QUALITY and e.replication < ANOMALY_MIN_REPLICATION
+    ]
+    for e in held:
+        log.warning(
+            "round %d: %s scored %.4f from %d worker; held from emission until a second worker agrees",
+            round_index,
+            e.system_digest,
+            e.quality,
+            e.replication,
+        )
+    withheld = {e.system_digest for e in held}
+    per_competition = allocate([e for e in entries if e.system_digest not in withheld])
     combined = combine_competitions(per_competition)
 
     capped = combined

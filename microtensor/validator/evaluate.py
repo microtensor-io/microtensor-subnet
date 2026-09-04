@@ -33,6 +33,8 @@ from microtensor.scoring.execution import (
     ExecutionUnavailable,
     execute_module_rate,
     has_module_tests,
+    extract_code,
+    screen_solution,
 )
 from microtensor.scoring.metrics import combine_partitions, partition_scores, score_task
 from microtensor.tasks.corpus import FIXED, NOVEL, ROTATING, Task
@@ -220,6 +222,17 @@ def _outcome(task: Task, response: Response | None, metric: str, partition: str)
             error=response.error if response else "engine returned no response",
             fault=Fault.ARTIFACT,
         )
+    if metric == "execution_pass_rate":
+        reason = screen_solution(extract_code(str(response.output)))
+        if reason:
+            return TaskOutcome(
+                task_ref=task.ref,
+                score=0.0,
+                completed=False,
+                partition=partition,
+                error=f"solution screened: {reason}",
+                fault=Fault.ARTIFACT,
+            )
     if has_module_tests(task.gold):
         value = execute_module_rate(str(response.output), task.gold["tests"])
     else:
