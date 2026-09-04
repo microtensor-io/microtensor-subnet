@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from hashlib import sha256
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,16 @@ from microtensor.coordinator.schema import MIGRATIONS, SCHEMA_VERSION
 from microtensor.coordinator.settle import Entry, Settlement
 from microtensor.core.protocol import Fault
 from microtensor.store.db import Database
+
+
+WORK_AVAILABLE = "available"
+WORK_IN_PROGRESS = "in_progress"
+WORK_COMPLETE = "complete"
+WORK_FAILED = "failed"
+LEASE_IN_PROGRESS = "in_progress"
+LEASE_COMPLETE = "complete"
+LEASE_FAILED = "failed"
+LEASE_RECLAIMED = "reclaimed"
 
 
 class CoordinatorStore:
@@ -248,6 +259,291 @@ class CoordinatorStore:
         for row in rows:
             out.setdefault(str(row["system_digest"]), []).append(str(row["worker_hotkey"]))
         return {k: tuple(v) for k, v in out.items()}
+
+    def seed_work(self, round_index: int, digests: Sequence[str], replication: int) -> int:
+        rows = [
+            (round_index, digest, WORK_AVAILABLE, max(1, int(replication)), 0, time.time())
+            for digest in digests
+        ]
+        if not rows:
+            return 0
+        before = self.work_count(round_index)
+        self.db.executemany(
+            """
+            INSERT INTO work (round_index, system_digest, state, replication, attempts, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index, system_digest) DO NOTHING
+            """,
+            rows,
+        )
+        return self.work_count(round_index) - before
+
+    def work_count(self, round_index: int) -> int:
+        row = self.db.one("SELECT COUNT(*) AS n FROM work WHERE round_index = ?", (round_index,))
+        return int(row["n"]) if row else 0
+
+    def work_summary(self, round_index: int) -> dict[str, int]:
+        rows = self.db.query(
+            "SELECT state, COUNT(*) AS n FROM work WHERE round_index = ? GROUP BY state",
+            (round_index,),
+        )
+        return {str(r["state"]): int(r["n"]) for r in rows}
+
+    def worker_healthy(self, hotkey: str, now: float) -> bool:
+        row = self.db.one("SELECT unhealthy_until FROM worker_health WHERE hotkey = ?", (hotkey,))
+        return row is None or float(row["unhealthy_until"]) <= now
+
+    def touch_worker(self, hotkey: str, now: float) -> None:
+        self.db.execute(
+            """
+            INSERT INTO worker_health (hotkey, strikes, unhealthy_until, last_seen)
+            VALUES (?, 0, 0, ?)
+            ON CONFLICT (hotkey) DO UPDATE SET last_seen = excluded.last_seen
+            """,
+            (hotkey, now),
+        )
+
+    def strike_worker(
+        self, hotkey: str, now: float, note: str, limit: int, cooldown_seconds: int
+    ) -> int:
+        self.touch_worker(hotkey, now)
+        self.db.execute(
+            "UPDATE worker_health SET strikes = strikes + 1, note = ? WHERE hotkey = ?",
+            (note[:300], hotkey),
+        )
+        row = self.db.one("SELECT strikes FROM worker_health WHERE hotkey = ?", (hotkey,))
+        strikes = int(row["strikes"]) if row else 0
+        if strikes >= limit:
+            self.db.execute(
+                "UPDATE worker_health SET unhealthy_until = ?, strikes = 0 WHERE hotkey = ?",
+                (now + cooldown_seconds, hotkey),
+            )
+        return strikes
+
+    def current_lease(self, round_index: int, worker_hotkey: str) -> dict[str, Any] | None:
+        row = self.db.one(
+            "SELECT * FROM leases WHERE round_index = ? AND worker_hotkey = ? AND state = ?",
+            (round_index, worker_hotkey, LEASE_IN_PROGRESS),
+        )
+        return dict(row) if row else None
+
+    def lease(
+        self,
+        round_index: int,
+        worker_hotkey: str,
+        now: float,
+        seed: str,
+        ttl_seconds: int,
+        catalogue: Mapping[str, Entry],
+    ) -> dict[str, Any] | None:
+        held = self.current_lease(round_index, worker_hotkey)
+        if held is not None:
+            return held
+        rows = self.db.query(
+            """
+            SELECT w.system_digest, w.replication, w.attempts,
+                   (SELECT COUNT(*) FROM leases l
+                     WHERE l.round_index = w.round_index AND l.system_digest = w.system_digest
+                       AND l.state IN (?, ?)) AS taken,
+                   EXISTS(SELECT 1 FROM leases l2
+                           WHERE l2.round_index = w.round_index AND l2.system_digest = w.system_digest
+                             AND l2.worker_hotkey = ?) AS seen
+            FROM work w
+            WHERE w.round_index = ? AND w.state IN (?, ?)
+            """,
+            (
+                LEASE_IN_PROGRESS,
+                LEASE_COMPLETE,
+                worker_hotkey,
+                round_index,
+                WORK_AVAILABLE,
+                WORK_IN_PROGRESS,
+            ),
+        )
+        candidates = [
+            r for r in rows if int(r["taken"]) < int(r["replication"]) and not int(r["seen"])
+        ]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda r: (
+                int(r["taken"]),
+                sha256(f"{seed}\n{r['system_digest']}\n{worker_hotkey}".encode()).digest(),
+            )
+        )
+        chosen = candidates[0]
+        digest = str(chosen["system_digest"])
+        entry = catalogue.get(digest)
+        self.db.execute(
+            """
+            INSERT INTO leases (round_index, system_digest, worker_hotkey, state, attempt,
+                                leased_at, expires_at, closed_at, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, '')
+            ON CONFLICT (round_index, system_digest, worker_hotkey) DO UPDATE SET
+                state = excluded.state,
+                attempt = excluded.attempt,
+                leased_at = excluded.leased_at,
+                expires_at = excluded.expires_at,
+                closed_at = NULL,
+                reason = ''
+            """,
+            (
+                round_index,
+                digest,
+                worker_hotkey,
+                LEASE_IN_PROGRESS,
+                int(chosen["attempts"]) + 1,
+                now,
+                now + ttl_seconds,
+            ),
+        )
+        self.db.execute(
+            """
+            INSERT INTO assignments (round_index, worker_hotkey, system_digest,
+                                     track, hardware_class, miner_hotkey)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (round_index, worker_hotkey, system_digest) DO NOTHING
+            """,
+            (
+                round_index,
+                worker_hotkey,
+                digest,
+                entry.track if entry else "",
+                entry.hardware_class if entry else "",
+                entry.miner_hotkey if entry else "",
+            ),
+        )
+        self._settle_work_state(round_index, digest, now)
+        return self.current_lease(round_index, worker_hotkey)
+
+    def complete_lease(
+        self, round_index: int, system_digest: str, worker_hotkey: str, now: float
+    ) -> bool:
+        row = self.db.one(
+            "SELECT state FROM leases WHERE round_index = ? AND system_digest = ? AND worker_hotkey = ?",
+            (round_index, system_digest, worker_hotkey),
+        )
+        if row is None:
+            return False
+        if str(row["state"]) == LEASE_COMPLETE:
+            return True
+        self._close_lease(round_index, system_digest, worker_hotkey, LEASE_COMPLETE, now, "")
+        self._settle_work_state(round_index, system_digest, now)
+        return True
+
+    def fail_lease(
+        self,
+        round_index: int,
+        system_digest: str,
+        worker_hotkey: str,
+        cause: str,
+        reason: str,
+        now: float,
+        max_attempts: int,
+    ) -> str:
+        row = self.db.one(
+            "SELECT state FROM leases WHERE round_index = ? AND system_digest = ? AND worker_hotkey = ?",
+            (round_index, system_digest, worker_hotkey),
+        )
+        if row is None or str(row["state"]) != LEASE_IN_PROGRESS:
+            return self.work_state(round_index, system_digest)
+        if cause == "artifact":
+            self._close_lease(round_index, system_digest, worker_hotkey, LEASE_FAILED, now, reason)
+            self.fail_work(round_index, system_digest, now)
+            return WORK_FAILED
+        self._close_lease(round_index, system_digest, worker_hotkey, LEASE_RECLAIMED, now, reason)
+        self.db.execute(
+            "DELETE FROM assignments WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
+            (round_index, worker_hotkey, system_digest),
+        )
+        self._bump_attempts(round_index, system_digest, now, max_attempts)
+        return self.work_state(round_index, system_digest)
+
+    def fail_work(self, round_index: int, system_digest: str, now: float) -> None:
+        self.db.execute(
+            "UPDATE work SET state = ?, updated_at = ? WHERE round_index = ? AND system_digest = ?",
+            (WORK_FAILED, now, round_index, system_digest),
+        )
+
+    def work_state(self, round_index: int, system_digest: str) -> str:
+        row = self.db.one(
+            "SELECT state FROM work WHERE round_index = ? AND system_digest = ?",
+            (round_index, system_digest),
+        )
+        return str(row["state"]) if row else ""
+
+    def reclaim_expired(
+        self, round_index: int, now: float, max_attempts: int
+    ) -> list[tuple[str, str]]:
+        rows = self.db.query(
+            """
+            SELECT system_digest, worker_hotkey FROM leases
+            WHERE round_index = ? AND state = ? AND expires_at < ?
+            """,
+            (round_index, LEASE_IN_PROGRESS, now),
+        )
+        out: list[tuple[str, str]] = []
+        for r in rows:
+            digest, worker = str(r["system_digest"]), str(r["worker_hotkey"])
+            self._close_lease(round_index, digest, worker, LEASE_RECLAIMED, now, "lease expired")
+            self.db.execute(
+                "DELETE FROM assignments WHERE round_index = ? AND worker_hotkey = ? AND system_digest = ?",
+                (round_index, worker, digest),
+            )
+            self._bump_attempts(round_index, digest, now, max_attempts)
+            out.append((digest, worker))
+        return out
+
+    def _close_lease(
+        self, round_index: int, digest: str, worker: str, state: str, now: float, reason: str
+    ) -> None:
+        self.db.execute(
+            """
+            UPDATE leases SET state = ?, closed_at = ?, reason = ?
+            WHERE round_index = ? AND system_digest = ? AND worker_hotkey = ?
+            """,
+            (state, now, reason[:300], round_index, digest, worker),
+        )
+
+    def _lease_count(self, round_index: int, digest: str, state: str) -> int:
+        row = self.db.one(
+            "SELECT COUNT(*) AS n FROM leases WHERE round_index = ? AND system_digest = ? AND state = ?",
+            (round_index, digest, state),
+        )
+        return int(row["n"]) if row else 0
+
+    def _settle_work_state(self, round_index: int, digest: str, now: float) -> None:
+        row = self.db.one(
+            "SELECT state, replication FROM work WHERE round_index = ? AND system_digest = ?",
+            (round_index, digest),
+        )
+        if row is None or str(row["state"]) == WORK_FAILED:
+            return
+        if self._lease_count(round_index, digest, LEASE_COMPLETE) >= int(row["replication"]):
+            state = WORK_COMPLETE
+        elif self._lease_count(round_index, digest, LEASE_IN_PROGRESS) > 0:
+            state = WORK_IN_PROGRESS
+        else:
+            state = WORK_AVAILABLE
+        self.db.execute(
+            "UPDATE work SET state = ?, updated_at = ? WHERE round_index = ? AND system_digest = ?",
+            (state, now, round_index, digest),
+        )
+
+    def _bump_attempts(self, round_index: int, digest: str, now: float, max_attempts: int) -> None:
+        self.db.execute(
+            "UPDATE work SET attempts = attempts + 1, updated_at = ? WHERE round_index = ? AND system_digest = ?",
+            (now, round_index, digest),
+        )
+        row = self.db.one(
+            "SELECT attempts FROM work WHERE round_index = ? AND system_digest = ?",
+            (round_index, digest),
+        )
+        exhausted = row is not None and int(row["attempts"]) >= max_attempts
+        if exhausted and self._lease_count(round_index, digest, LEASE_COMPLETE) == 0:
+            self.fail_work(round_index, digest, now)
+            return
+        self._settle_work_state(round_index, digest, now)
 
     def record_catalogue(self, round_index: int, catalogue: Mapping[str, Entry]) -> None:
         """Store which systems this round covers and who owns them."""

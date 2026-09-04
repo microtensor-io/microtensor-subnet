@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from microtensor.chain.wallet import verify_bytes
 from microtensor.coordinator.assign import System, Worker, assign
 from microtensor.coordinator.collect import (
+    DUPLICATE,
+    MALFORMED,
     ReportRejected,
     intake,
     quorum_reached,
@@ -24,8 +26,14 @@ from microtensor.coordinator.tokens import TOKEN_HEADER, KeyRing, TokenInvalid
 from microtensor.coordinator.tokens import verify as verify_token
 from microtensor.core.constants import (
     COORDINATOR_QUORUM,
+    COORDINATOR_REPLICATION,
+    LEASE_MAX_ATTEMPTS,
+    LEASE_SECONDS,
     REPORT_MAX_BYTES,
+    WORKER_COOLDOWN_SECONDS,
+    WORKER_STRIKES,
 )
+from microtensor.core.protocol import Fault
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -125,6 +133,7 @@ class Coordinator:
     reserve: Callable[[], dict[str, Any]] | None = None
     signer: Callable[[dict[str, Any]], str] | None = None
     mirror_report: Callable[[int, list[dict[str, Any]]], Any] | None = None
+    mirror_assignment: Callable[[int, Mapping[str, Sequence[str]], Mapping[str, tuple[str, str, str, str]]], Any] | None = None
     arenas: dict[str, dict[str, Any]] = None  # type: ignore[assignment]
     # Re-reads the arena list and corpora so an arena activated after this
     # process started reaches the served config without a restart. A snapshot
@@ -180,6 +189,7 @@ class Coordinator:
             "corpus_digest": self.corpus_digest(),
             "round": index,
             "settled": self.store.settlement(index) is not None,
+            "leasing": True,
             "phase": row.get("phase", "legacy"),
             "start_block": row.get("start_block"),
             "seed_block": row["seed_block"],
@@ -314,6 +324,80 @@ class Coordinator:
         arena = self.arenas.get(f"{entry.track}/{entry.hardware_class}") or {}
         return str(arena.get("environment_digest") or "")
 
+    def lease(self, hotkey: str) -> dict[str, Any]:
+        row = self.store.latest_round()
+        if row is None:
+            return {"round": None, "lease": None, "reason": "no round is open"}
+        index = int(row["round_index"])
+        now = time.time()
+        catalogue = self.store.catalogue(index)
+        if catalogue and self.store.work_count(index) == 0:
+            depth = self.store.round_replication(index) or COORDINATOR_REPLICATION
+            self.store.seed_work(index, sorted(catalogue), depth)
+        for digest, worker in self.store.reclaim_expired(index, now, LEASE_MAX_ATTEMPTS):
+            self.store.strike_worker(
+                worker, now, f"lease on {digest} expired", WORKER_STRIKES, WORKER_COOLDOWN_SECONDS
+            )
+            log.warning("round %d: reclaimed %s from %s after its lease expired", index, digest, worker)
+        self.store.touch_worker(hotkey, now)
+        if not self.store.worker_healthy(hotkey, now):
+            return {"round": index, "lease": None, "reason": "worker is out of rotation after repeated failures"}
+        found = self.store.lease(
+            index, hotkey, now, str(row.get("block_hash") or index), self._lease_ttl(), catalogue
+        )
+        if found is None:
+            return {"round": index, "lease": None, "reason": "nothing is available to measure"}
+        entry = catalogue.get(str(found["system_digest"]))
+        self._mirror_assignment(index, catalogue)
+        return {
+            "round": index,
+            "lease": {
+                "system_digest": found["system_digest"],
+                "track": entry.track if entry else "",
+                "hardware_class": entry.hardware_class if entry else "",
+                "miner_hotkey": entry.miner_hotkey if entry else "",
+                "source": entry.source if entry else "",
+                "attempt": int(found["attempt"]),
+                "expires_at": float(found["expires_at"]),
+            },
+        }
+
+    def release(self, hotkey: str, body: dict[str, Any]) -> dict[str, Any]:
+        index = int(body.get("round", 0) or 0)
+        digest = str(body.get("system_digest", ""))
+        cause = "artifact" if str(body.get("cause", "")) == "artifact" else "worker"
+        reason = str(body.get("reason", ""))
+        if not index or not digest:
+            raise ReportRejected(MALFORMED)
+        now = time.time()
+        state = self.store.fail_lease(index, digest, hotkey, cause, reason, now, LEASE_MAX_ATTEMPTS)
+        if cause == "worker":
+            self.store.strike_worker(hotkey, now, reason, WORKER_STRIKES, WORKER_COOLDOWN_SECONDS)
+        self._mirror_assignment(index, self.store.catalogue(index))
+        return {"released": True, "state": state}
+
+    def _lease_ttl(self) -> int:
+        cpu = max(
+            (int(dict(a).get("cpu_seconds_per_artifact") or 0) for a in self.arenas.values()),
+            default=0,
+        )
+        return max(LEASE_SECONDS, 3 * cpu + 900)
+
+    def _mirror_assignment(self, round_index: int, catalogue: Mapping[str, Entry]) -> None:
+        if self.mirror_assignment is None:
+            return
+        try:
+            self.mirror_assignment(
+                round_index,
+                self.store.full_assignment(round_index),
+                {
+                    d: (e.track, e.hardware_class, e.miner_hotkey, e.source)
+                    for d, e in catalogue.items()
+                },
+            )
+        except Exception as exc:
+            log.warning("the assignment map was not mirrored to the control plane: %s", exc)
+
     def submit(self, body: dict[str, Any], raw: bytes) -> dict[str, Any]:
         if len(raw) > REPORT_MAX_BYTES:
             raise ReportRejected(TOO_LARGE)
@@ -324,17 +408,29 @@ class Coordinator:
 
         from microtensor.coordinator.collect import accept
 
-        accept(
-            report,
-            assigned=assigned,
-            engine_version=self.engine_version,
-            corpus_version=self.corpus_version,
-            already=already,
-            corpus_digest=self.corpus_digest(),
-            environment_digest=self._expected_environment(report.system_digest),
-        )
+        try:
+            accept(
+                report,
+                assigned=assigned,
+                engine_version=self.engine_version,
+                corpus_version=self.corpus_version,
+                already=already,
+                corpus_digest=self.corpus_digest(),
+                environment_digest=self._expected_environment(report.system_digest),
+            )
+        except ReportRejected as exc:
+            if str(exc) != DUPLICATE:
+                raise
+            self.store.complete_lease(
+                report.round_index, report.system_digest, report.worker_hotkey, time.time()
+            )
+            return {"accepted": True, "already": True, "digest": report.digest()}
 
         self.store.record_report(report)
+        now = time.time()
+        self.store.complete_lease(report.round_index, report.system_digest, report.worker_hotkey, now)
+        if report.fault is Fault.ARTIFACT:
+            self.store.fail_work(report.round_index, report.system_digest, now)
         self._mirror(report)
         return {"accepted": True, "digest": report.digest()}
 
@@ -753,6 +849,27 @@ def build_app(coordinator: Coordinator) -> Any:
             raise HTTPException(status_code=403, detail="a worker may only read its own work")
         authorised(request, caller)
         return coordinator.assignment(hotkey)
+
+    @app.post("/v1/lease")
+    async def lease(request: Request) -> dict[str, Any]:
+        raw = await request.body()
+        hotkey = authenticate(request, raw)
+        authorised(request, hotkey)
+        return coordinator.lease(hotkey)
+
+    @app.post("/v1/release")
+    async def release(request: Request) -> dict[str, Any]:
+        raw = await request.body()
+        hotkey = authenticate(request, raw)
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="body is not valid JSON") from exc
+        authorised(request, hotkey)
+        try:
+            return coordinator.release(hotkey, body)
+        except ReportRejected as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/v1/report")
     async def report(request: Request) -> dict[str, Any]:

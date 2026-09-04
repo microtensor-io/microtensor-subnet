@@ -3,7 +3,8 @@ from __future__ import annotations
 import dataclasses
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from typing import Any
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -164,6 +165,75 @@ def adopted(round_index: int, weights: dict[int, float]) -> Settlement:
         blended={},
         vector=quantise_weights(weights),
     )
+
+
+def _planned(
+    context: ValidatorContext, roster: Roster, assigned: set[str]
+) -> Iterator[tuple[str, str, tuple[Participant, ...]]]:
+    for track, hardware_class in context.competitions:
+        participants = tuple(
+            p
+            for p in roster.for_competition(track, hardware_class)
+            if p.commitment.manifest_digest in assigned
+        )
+        if participants:
+            yield track, hardware_class, participants
+
+
+def _leased(
+    context: ValidatorContext, plan: Plan, roster: Roster, holding: dict[str, str]
+) -> Iterator[tuple[str, str, tuple[Participant, ...]]]:
+    by_digest = {p.commitment.manifest_digest: p for p in roster.participants}
+    rejected = {digest: reason for _, digest, reason in roster.rejected}
+    while True:
+        try:
+            found = context.coordinator.lease()
+        except (CoordinatorUnreachable, CoordinatorRefused) as exc:
+            log.warning("round %d: no lease could be taken: %s", plan.round_index, exc)
+            return
+        lease = (found or {}).get("lease") if found else None
+        if not lease:
+            log.info(
+                "round %d: %s",
+                plan.round_index,
+                (found or {}).get("reason") or "the coordinator has nothing to lease",
+            )
+            return
+        digest = str(lease.get("system_digest", ""))
+        participant = by_digest.get(digest)
+        if participant is None:
+            reason = rejected.get(digest, "not admissible on this validator")
+            if digest in rejected:
+                report = inadmissible_report(
+                    round_index=plan.round_index,
+                    worker_hotkey=context.hotkey,
+                    system_digest=digest,
+                    engine_version=MECHANISM_VERSION,
+                    corpus_version=context.config.corpus_version,
+                    corpus_digest=context.corpus_digest,
+                    reason=reason,
+                )
+                _, failure = emit_reports(context.coordinator, [report], wallet=context.wallet)
+                if failure:
+                    log.warning("could not report %s as inadmissible: %s", digest, failure)
+            _give_back(context, plan, {digest: ""}, "artifact", reason)
+            continue
+        holding.clear()
+        holding[digest] = str(lease.get("expires_at", ""))
+        track, hardware_class = participant.competition
+        yield track, hardware_class, (participant,)
+        holding.clear()
+
+
+def _give_back(
+    context: ValidatorContext, plan: Plan, holding: dict[str, str], cause: str, reason: str
+) -> None:
+    for digest in list(holding):
+        try:
+            context.coordinator.release(plan.round_index, digest, cause, reason)
+        except Exception as exc:
+            log.warning("could not release the lease on %s: %s", digest, exc)
+    holding.clear()
 
 
 def _report_inadmissible(context: ValidatorContext, plan: Plan, roster: Roster) -> None:
@@ -432,31 +502,31 @@ def _run_round(
     scored = 0
     expected = 0
     reports: list[Report] = []
-    assigned = set(plan.systems)
-    if plan.mode is Mode.COORDINATED and context.coordinator is not None:
-        try:
-            done = context.coordinator.reported(plan.round_index, context.hotkey)
-        except (CoordinatorUnreachable, CoordinatorRefused) as exc:
-            log.warning("could not read this worker's filed reports, measuring the full plan: %s", exc)
-            done = set()
-        already = assigned & done
-        if already:
-            assigned -= already
-            log.info(
-                "round %d: %d of %d assigned systems already reported by this worker, skipping them",
-                plan.round_index,
-                len(already),
-                len(already) + len(assigned),
-            )
+    holding: dict[str, str] = {}
+    leasing = plan.leasing and plan.mode is Mode.COORDINATED and context.coordinator is not None
+    if leasing:
+        batches = _leased(context, plan, roster, holding)
+    else:
+        assigned = set(plan.systems)
+        if plan.mode is Mode.COORDINATED and context.coordinator is not None:
+            try:
+                done = context.coordinator.reported(plan.round_index, context.hotkey)
+            except (CoordinatorUnreachable, CoordinatorRefused) as exc:
+                log.warning("could not read this worker's filed reports, measuring the full plan: %s", exc)
+                done = set()
+            already = assigned & done
+            if already:
+                assigned -= already
+                log.info(
+                    "round %d: %d of %d assigned systems already reported by this worker, skipping them",
+                    plan.round_index,
+                    len(already),
+                    len(already) + len(assigned),
+                )
+        batches = _planned(context, roster, assigned)
 
-    for track, hardware_class in context.competitions:
-        participants = roster.for_competition(track, hardware_class)
-        if assigned is not None:
-            participants = tuple(
-                p for p in participants if p.commitment.manifest_digest in assigned
-            )
-        if not participants:
-            continue
+    tasks_by: dict[tuple[str, str], Any] = {}
+    for track, hardware_class, participants in batches:
         expected += len(participants)
 
         # The arena's numbers, not this build's. They describe the same model
@@ -465,13 +535,16 @@ def _run_round(
         # peers are running.
         arena = plan.budgets.get((track, hardware_class))
         hardware = _anchored_hardware(hardware_class, arena)
-        tasks = select(
-            context.corpus(track),
-            competition_seed(block_hash, track, hardware_class),
-            hardware_class,
-            budget=arena.tasks_per_round if arena else context.config.tasks_per_round,
-            round_index=round_.index,
-        )
+        tasks = tasks_by.get((track, hardware_class))
+        if tasks is None:
+            tasks = select(
+                context.corpus(track),
+                competition_seed(block_hash, track, hardware_class),
+                hardware_class,
+                budget=arena.tasks_per_round if arena else context.config.tasks_per_round,
+                round_index=round_.index,
+            )
+            tasks_by[(track, hardware_class)] = tasks
         def publish(evaluation: Evaluation, participant: Participant, _plan: Plan = plan) -> None:
             if _plan.mode is not Mode.COORDINATED or context.coordinator is None:
                 return
@@ -493,9 +566,12 @@ def _run_round(
                 log.warning("report for %s did not land: %s", participant.hotkey, failure)
             else:
                 try:
-                    context.cache.release(participant.manifest.artifact_digest)
+                    if leasing:
+                        context.cache.drop(participant.manifest.artifact_digest)
+                    else:
+                        context.cache.release(participant.manifest.artifact_digest)
                 except CacheError as exc:
-                    log.warning("could not release %s from the cache: %s", participant.hotkey, exc)
+                    log.warning("could not clear %s from the cache: %s", participant.hotkey, exc)
             if heartbeat is not None:
                 heartbeat()
 
@@ -509,6 +585,8 @@ def _run_round(
                 on_evaluated=publish,
             )
         except Abstain as exc:
+            if leasing and holding:
+                _give_back(context, plan, holding, "worker", str(exc))
             return abstain(str(exc), roster)
         scored += sum(1 for e in result.evaluations if e.measured is not None)
 

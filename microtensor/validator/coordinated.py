@@ -64,6 +64,7 @@ class Plan:
     reason: str = ""
     allowlists: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
     budgets: dict[tuple[str, str], RoundBudget] = field(default_factory=dict)
+    leasing: bool = False
 
     @property
     def coordinated(self) -> bool:
@@ -193,6 +194,9 @@ def plan_round(
     config_hash = str(current.get("config_hash", ""))
     allowlists = allowlists_from(dict(current.get("config", {})))
     budgets = budgets_from(dict(current.get("config", {})))
+    leasing = bool(current.get("leasing"))
+    if systems is None and leasing:
+        systems = ()
 
     if systems is not None and assigned_round is not None and assigned_round != round_index:
         raise CoordinatorDisagrees(
@@ -209,7 +213,7 @@ def plan_round(
             reason=NO_ASSIGNMENT_DOC,
         )
 
-    if not systems:
+    if not systems and not leasing:
         log.info("round %d: the coordinator assigned this worker nothing", round_index)
         return Plan(
             mode=Mode.IDLE,
@@ -227,6 +231,7 @@ def plan_round(
         config_hash=config_hash,
         allowlists=allowlists,
         budgets=budgets,
+        leasing=leasing,
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 7
+SCHEMA_VERSION: Final[int] = 8
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -239,6 +239,45 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
         7,
         (
             "ALTER TABLE catalogue ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+        ),
+    ),
+    (
+        8,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS work (
+                round_index   INTEGER NOT NULL,
+                system_digest TEXT    NOT NULL,
+                state         TEXT    NOT NULL,
+                replication   INTEGER NOT NULL DEFAULT 1,
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                updated_at    REAL    NOT NULL DEFAULT 0,
+                PRIMARY KEY (round_index, system_digest)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS leases (
+                round_index   INTEGER NOT NULL,
+                system_digest TEXT    NOT NULL,
+                worker_hotkey TEXT    NOT NULL,
+                state         TEXT    NOT NULL,
+                attempt       INTEGER NOT NULL DEFAULT 1,
+                leased_at     REAL    NOT NULL,
+                expires_at    REAL    NOT NULL,
+                closed_at     REAL,
+                reason        TEXT    NOT NULL DEFAULT '',
+                PRIMARY KEY (round_index, system_digest, worker_hotkey)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS worker_health (
+                hotkey          TEXT PRIMARY KEY,
+                strikes         INTEGER NOT NULL DEFAULT 0,
+                unhealthy_until REAL    NOT NULL DEFAULT 0,
+                last_seen       REAL    NOT NULL DEFAULT 0,
+                note            TEXT    NOT NULL DEFAULT ''
+            )
+            """,
         ),
     ),
 )

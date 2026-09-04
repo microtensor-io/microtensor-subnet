@@ -122,6 +122,10 @@ COORDINATOR_QUORUM: Final[float] = 0.67
 COORDINATOR_RETRIES: Final[int] = 4
 COORDINATOR_BACKOFF_SECONDS: Final[float] = 5.0
 COORDINATOR_TIMEOUT_SECONDS: Final[int] = 30
+LEASE_SECONDS: Final[int] = 3600
+LEASE_MAX_ATTEMPTS: Final[int] = 2
+WORKER_STRIKES: Final[int] = 3
+WORKER_COOLDOWN_SECONDS: Final[int] = 3600
 COORDINATOR_URL: Final[str] = os.environ.get(
     "MT_COORDINATOR_URL", "https://coordinator.microtensor.cloud"
 ).strip()

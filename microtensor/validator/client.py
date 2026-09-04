@@ -181,6 +181,19 @@ class CoordinatorClient:
         body["signature"] = report.signature
         return self._call("POST", "/v1/report", body) or {}
 
+    def lease(self) -> dict[str, Any] | None:
+        found = self._call("POST", "/v1/lease", {})
+        return None if found is None else dict(found)
+
+    def release(self, round_index: int, system_digest: str, cause: str, reason: str) -> dict[str, Any]:
+        body = {
+            "round": round_index,
+            "system_digest": system_digest,
+            "cause": cause,
+            "reason": reason[:300],
+        }
+        return self._call("POST", "/v1/release", body) or {}
+
     def reported(self, round_index: int, worker_hotkey: str) -> set[str]:
         found = self._call("GET", f"/v1/reports/{round_index}") or {}
         return {
