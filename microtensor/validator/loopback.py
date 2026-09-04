@@ -139,7 +139,12 @@ def build(
     engines.load_builtin()
     log.info("loopback engines: %s", [f.value for f in engines.available()])
 
-    _write_corpus(home / "corpus", [track], rotating=tasks_per_round, fixed=tasks_per_round)
+    _write_corpus(
+        home / "corpus",
+        [t.id for t in enabled_tracks()],
+        rotating=tasks_per_round,
+        fixed=tasks_per_round,
+    )
     built = [
         _make_miner(home / "miners", i, round_.index, track, hardware_class) for i in range(miners)
     ]
