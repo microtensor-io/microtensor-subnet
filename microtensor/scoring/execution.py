@@ -220,39 +220,111 @@ RESULT_ENV = "MT_RESULT_PATH"
 
 MODULE_GUARD = """\
 if __name__ == "__main__":
-    import json as _json
-    import sys as _sys
-    import unittest as _unittest
-
-    _result = _unittest.main(exit=False, verbosity=0).result
-    with open(_MT_RESULT_PATH, "w", encoding="utf-8") as _fh:
-        _json.dump(
-            {
-                "ran": _result.testsRun,
-                "failures": len(_result.failures),
-                "errors": len(_result.errors),
-                "skipped": len(_result.skipped),
-            },
-            _fh,
-        )
-    _sys.exit(0)
+    _mt_main()
 """
 
 MODULE_PREAMBLE = """\
+import difflib as _difflib
 import json as _json
+import logging as _logging
 import os as _os
+import pprint as _pprint
+import signal as _signal
 import socket as _socket
+import sys as _sys
+import threading as _threading
+import traceback as _traceback
+import unittest as _unittest
 
-_MT_RESULT_PATH = _os.environ["MT_RESULT_PATH"]
+
+def _mt_install():
+    path = _os.environ.pop("MT_RESULT_PATH")
+    state = {"writing": False}
+    blocked = {
+        "os.kill",
+        "os.fork",
+        "os.forkpty",
+        "os.exec",
+        "os.posix_spawn",
+        "ctypes.dlopen",
+        "ctypes.call_function",
+        "ctypes.cdata",
+        "sys.settrace",
+        "sys.setprofile",
+    }
+
+    def hook(event, args):
+        if event == "open":
+            try:
+                same = _os.fspath(args[0]) == path
+            except TypeError:
+                same = False
+            mode = str(args[1] or "r") if len(args) > 1 else "r"
+            if same and any(ch in mode for ch in "wax+") and not state["writing"]:
+                raise PermissionError("only the test suite writes the result file")
+        elif event in blocked:
+            raise PermissionError(event + " is not available in the evaluation jail")
+
+    _sys.addaudithook(hook)
+
+    def fingerprint():
+        marks = {}
+        for cls in (
+            _unittest.TestCase,
+            _unittest.TestResult,
+            _unittest.TestSuite,
+            _unittest.TestLoader,
+            _unittest.TextTestRunner,
+            _unittest.TextTestResult,
+            _unittest.TestProgram,
+        ):
+            for name, value in vars(cls).items():
+                marks[cls.__name__ + "." + name] = id(value)
+        marks["main"] = id(_unittest.main)
+        marks["defaultTestLoader"] = id(_unittest.defaultTestLoader)
+        return marks
+
+    expected = fingerprint()
+
+    def write(result):
+        state["writing"] = True
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                _json.dump(result, fh)
+        finally:
+            state["writing"] = False
+
+    def main():
+        if fingerprint() != expected:
+            write({"ran": 0, "failures": 0, "errors": 1, "fault": "unittest was altered"})
+            raise SystemExit(1)
+        result = _unittest.main(exit=False, verbosity=0).result
+        write(
+            {
+                "ran": result.testsRun,
+                "failures": len(result.failures),
+                "errors": len(result.errors),
+                "skipped": len(result.skipped),
+            }
+        )
+        raise SystemExit(0)
+
+    return write, main
+
+
+_mt_write, _mt_main = _mt_install()
 
 
 def _refused(*args, **kwargs):
     raise OSError("network access is disabled in the evaluation jail")
 
 
+def _mt_exit(*args, **kwargs):
+    raise SystemExit(1)
+
+
 def _mt_fault(reason):
-    with open(_MT_RESULT_PATH, "w", encoding="utf-8") as fh:
-        _json.dump({"ran": 0, "failures": 0, "errors": 1, "fault": reason}, fh)
+    _mt_write({"ran": 0, "failures": 0, "errors": 1, "fault": reason})
 
 
 _socket.socket = _refused
@@ -260,6 +332,12 @@ _socket.create_connection = _refused
 _socket.create_server = _refused
 _socket.socketpair = _refused
 _socket.getaddrinfo = _refused
+_os._exit = _mt_exit
+_os.abort = _mt_exit
+_signal.raise_signal = _mt_exit
+_signal.alarm = _mt_exit
+_signal.setitimer = _mt_exit
+_signal.pthread_kill = _mt_exit
 
 try:
     from solution import *  # noqa: E402,F403
@@ -271,7 +349,6 @@ except BaseException as _exc:
     raise SystemExit(1)
 """
 
-
 def module_sources(tests: Sequence[Any]) -> tuple[str, ...]:
     return tuple(str(c["module"]) for c in tests if isinstance(c, dict) and "module" in c)
 
@@ -279,7 +356,7 @@ def module_sources(tests: Sequence[Any]) -> tuple[str, ...]:
 def has_module_tests(gold: Any) -> bool:
     return (
         isinstance(gold, dict)
-        and isinstance(gold.get("tests"), (list, tuple))
+        and isinstance(gold.get("tests"), list | tuple)
         and bool(module_sources(gold["tests"]))
     )
 
@@ -337,7 +414,30 @@ FORBIDDEN_ATTRS = frozenset(
         ("signal", "setitimer"),
     }
 )
-FORBIDDEN_STRINGS = ("MT_RESULT_PATH", "/proc/", "result.json")
+FORBIDDEN_STRINGS = (
+    "MT_RESULT_PATH",
+    "/proc/",
+    "result.json",
+    "__closure__",
+    "cell_contents",
+    "_mt_",
+)
+FORBIDDEN_INTROSPECTION = frozenset(
+    {
+        "__closure__",
+        "__code__",
+        "__defaults__",
+        "__kwdefaults__",
+        "__globals__",
+        "__subclasses__",
+        "cell_contents",
+        "f_back",
+        "f_globals",
+        "f_locals",
+        "gi_frame",
+        "tb_frame",
+    }
+)
 SCREENED_ROOTS = frozenset({"os", "sys", "signal", "builtins"})
 
 
@@ -367,10 +467,15 @@ def screen_solution(code: str) -> str:
             for alias in node.names:
                 if (root, alias.name) in FORBIDDEN_ATTRS or alias.name in FORBIDDEN_NAMES:
                     return f"imports {root}.{alias.name}"
-        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            root = aliases.get(node.value.id, node.value.id)
-            if (root, node.attr) in FORBIDDEN_ATTRS:
-                return f"uses {root}.{node.attr}"
+        elif isinstance(node, ast.Attribute):
+            if node.attr in FORBIDDEN_INTROSPECTION:
+                return f"introspects through {node.attr}"
+            if isinstance(node.value, ast.Name):
+                root = aliases.get(node.value.id, node.value.id)
+                if (root, node.attr) in FORBIDDEN_ATTRS:
+                    return f"uses {root}.{node.attr}"
+        elif isinstance(node, ast.Name) and node.id.startswith("_mt_"):
+            return "touches the harness"
         elif isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name):
@@ -379,8 +484,13 @@ def screen_solution(code: str) -> str:
                 if func.id in ("getattr", "setattr", "delattr") and node.args:
                     first = node.args[0]
                     root = aliases.get(first.id, first.id) if isinstance(first, ast.Name) else ""
-                    if root in SCREENED_ROOTS:
+                    if root in SCREENED_ROOTS or root in aliases:
                         return f"reflects on {root}"
+                    attr = node.args[1] if len(node.args) > 1 else None
+                    if attr is not None and not (
+                        isinstance(attr, ast.Constant) and isinstance(attr.value, str)
+                    ):
+                        return "reflects with a computed attribute name"
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             for needle in FORBIDDEN_STRINGS:
                 if needle in node.value:
