@@ -339,7 +339,12 @@ def _mt_fault(reason):
     _mt_write({"ran": 0, "failures": 0, "errors": 1, "fault": reason})
 
 
-_socket.socket = _refused
+class _RefusedSocket(_socket.socket):
+    def __init__(self, *args, **kwargs):
+        raise OSError("network access is disabled in the evaluation jail")
+
+
+_socket.socket = _RefusedSocket
 _socket.create_connection = _refused
 _socket.create_server = _refused
 _socket.socketpair = _refused
