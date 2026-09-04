@@ -71,6 +71,13 @@ class CoordinatorStore:
             (round_index, seed_block, block_hash, close_block, config_hash, time.time()),
         )
 
+    def reset_plan(self, round_index: int) -> None:
+        with self.db.transaction():
+            self.db.execute("DELETE FROM assignments WHERE round_index = ?", (round_index,))
+            self.db.execute("DELETE FROM catalogue WHERE round_index = ?", (round_index,))
+            self.db.execute("DELETE FROM work WHERE round_index = ?", (round_index,))
+            self.db.execute("DELETE FROM leases WHERE round_index = ?", (round_index,))
+
     def record_window(self, round_index: int, start_block: int, end_block: int) -> None:
         if start_block <= 0 or end_block <= start_block:
             return

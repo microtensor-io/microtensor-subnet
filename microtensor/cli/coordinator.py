@@ -367,6 +367,7 @@ def _freeze(args: argparse.Namespace) -> int:
     frozen: dict[str, Entry] = {}
     with _store(args) as store:
         store.freeze_round(index, block_hash=seed)
+        store.reset_plan(index)
         if systems and workers:
             mapping = assign(systems, workers, seed, replication=args.replication)
             store.record_assignment(
@@ -514,6 +515,7 @@ def _open(args: argparse.Namespace) -> int:
                 config_hash=_config_hash_for(source, server),
             )
             store.record_window(round_.index, round_.start_block, round_.end_block)
+            store.reset_plan(round_.index)
             store.record_metagraph(round_.index, source.uids())
         print(f"round {round_.index} opened with nothing to measure; it settles on the hold")
         print("Commit the config hash on chain before workers verify against it:")
@@ -534,6 +536,7 @@ def _open(args: argparse.Namespace) -> int:
             config_hash=_config_hash_for(source, server),
         )
         store.record_window(round_.index, round_.start_block, round_.end_block)
+        store.reset_plan(round_.index)
         store.record_assignment(
             round_.index,
             mapping,
