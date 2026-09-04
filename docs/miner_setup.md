@@ -54,6 +54,16 @@ block from what comes back. An instruct-tuned model driven this way scores
 below its own capability: train on raw prompts, or bake the template into the
 artifact so the raw prompt is what the model expects.
 
+### The classify track is raw completion too
+
+Each prompt lists the permitted labels, gives the query, and ends with
+`Label:`. Answer with exactly one label from the list, or `oos` when the query
+matches none of them, and stop; the output budget is 16 tokens. The validator
+takes the first non-empty line of the completion, drops a leading `Label:`,
+lowercases it, turns spaces and hyphens into underscores, and compares it to
+the hidden label exactly. Quality is the share of tasks answered with the
+right label.
+
 ## 2 · Declare honestly, because the mechanism makes it your best move
 
 You declare an envelope. The validator measures one. Both are checked:
