@@ -5,6 +5,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 log = logging.getLogger("microtensor.miner.upload")
 
@@ -91,9 +92,10 @@ def _upload_object_store(locator: str, root: Path, files: Sequence[str]) -> str 
             client.upload_file(str(root / name), bucket, key)
     except Exception as exc:
         raise UploadError(f"upload to {bucket} failed: {exc}") from exc
+    return None
 
 
-def _upload_https(locator: str, root: Path, files: Sequence[str]) -> str | None:
+def _upload_https(locator: str, root: Path, files: Sequence[str]) -> NoReturn:
     raise UploadUnsupported(
         f"https://{locator} is a plain web host; publish the files with your own "
         "tooling, then run `mt miner publish` without --upload"

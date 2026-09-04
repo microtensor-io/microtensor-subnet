@@ -399,8 +399,9 @@ def count_tests(sources: Sequence[str]) -> int:
             if not isinstance(node, ast.ClassDef):
                 continue
             for item in node.body:
-                is_function = isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)
-                if is_function and item.name.startswith("test"):
+                if not isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                if item.name.startswith("test"):
                     total += 1
     return total
 
