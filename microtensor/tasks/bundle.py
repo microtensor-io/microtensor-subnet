@@ -48,7 +48,12 @@ def verify_bundle(directory: Path, track: str = "code") -> list[str]:
             )
             if declared != actual:
                 problems.append(f"{ref}: tests_digest does not match the tests file")
-        if len(entry.get("tests", [])) < MIN_HIDDEN_TESTS:
+        cases = entry.get("tests", [])
+        labelled = bool(cases) and all(
+            isinstance(c, dict) and "expected" in c and "args" not in c and "module" not in c
+            for c in cases
+        )
+        if not labelled and len(cases) < MIN_HIDDEN_TESTS:
             problems.append(f"{ref}: fewer than {MIN_HIDDEN_TESTS} hidden tests")
         prompt = str(row.get("prompt", ""))
         for case in entry.get("tests", []):

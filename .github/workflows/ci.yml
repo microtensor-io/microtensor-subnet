@@ -198,6 +198,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import random
           from pathlib import Path
 
           from microtensor.core.tracks import competitions
@@ -256,7 +257,35 @@ jobs:
                   })
               write(f"{track}.jsonl", tasks)
 
-          builders = {"code": code_bundle, "extract": extract_bundle}
+          def classify_bundle(track):
+              labels = ["book_flight", "balance", "alarm", "oos"]
+              vocabulary = [
+                  "please", "book", "cancel", "flight", "balance", "alarm", "tomorrow",
+                  "morning", "account", "transfer", "weather", "reminder", "ticket",
+                  "hotel", "invoice", "refund", "seat", "window", "aisle", "checking",
+                  "savings", "wake", "early", "late", "monday", "friday", "paris",
+                  "tokyo", "budget", "receipt", "loan", "rate", "card", "pin",
+              ]
+              tasks, tests = [], []
+              for i in range(70):
+                  partition = "rotating" if i < 45 else "fixed"
+                  ref = f"{track}-ci-{i:03d}"
+                  words = random.Random(i).sample(vocabulary, 7)
+                  tasks.append({
+                      "ref": ref,
+                      "prompt": (
+                          f"Labels: {', '.join(labels)}\nQuery: {' '.join(words)} {i}\nLabel:"
+                      ),
+                      "gold": None,
+                      "partition": partition,
+                      "max_output_tokens": 16,
+                      "inputs": {},
+                  })
+                  tests.append({"ref": ref, "tests": [{"expected": labels[i % len(labels)]}]})
+              write(f"{track}.jsonl", tasks)
+              write(f"{track}.tests.jsonl", tests)
+
+          builders = {"code": code_bundle, "extract": extract_bundle, "classify": classify_bundle}
           for track in sorted({t for t, _ in competitions()}):
               builders[track](track)
           PY
