@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 import math
 import os
 import re
@@ -214,14 +216,43 @@ def execute_pass_rate(
     return 0.0
 
 
-MODULE_GUARD = 'if __name__ == "__main__":\n    import unittest\n    unittest.main()\n'
+RESULT_ENV = "MT_RESULT_PATH"
+
+MODULE_GUARD = """\
+if __name__ == "__main__":
+    import json as _json
+    import sys as _sys
+    import unittest as _unittest
+
+    _result = _unittest.main(exit=False, verbosity=0).result
+    with open(_MT_RESULT_PATH, "w", encoding="utf-8") as _fh:
+        _json.dump(
+            {
+                "ran": _result.testsRun,
+                "failures": len(_result.failures),
+                "errors": len(_result.errors),
+                "skipped": len(_result.skipped),
+            },
+            _fh,
+        )
+    _sys.exit(0)
+"""
 
 MODULE_PREAMBLE = """\
+import json as _json
+import os as _os
 import socket as _socket
+
+_MT_RESULT_PATH = _os.environ["MT_RESULT_PATH"]
 
 
 def _refused(*args, **kwargs):
     raise OSError("network access is disabled in the evaluation jail")
+
+
+def _mt_fault(reason):
+    with open(_MT_RESULT_PATH, "w", encoding="utf-8") as fh:
+        _json.dump({"ran": 0, "failures": 0, "errors": 1, "fault": reason}, fh)
 
 
 _socket.socket = _refused
@@ -230,7 +261,14 @@ _socket.create_server = _refused
 _socket.socketpair = _refused
 _socket.getaddrinfo = _refused
 
-from solution import *  # noqa: E402,F403
+try:
+    from solution import *  # noqa: E402,F403
+except SystemExit:
+    _mt_fault("solution called sys.exit during import")
+    raise SystemExit(1)
+except BaseException as _exc:
+    _mt_fault("solution raised during import: " + repr(_exc))
+    raise SystemExit(1)
 """
 
 
@@ -267,6 +305,122 @@ def _module_env(root: Path | None) -> dict[str, str]:
     return {"NLTK_DATA": str(root / "nltk_data"), "MPLCONFIGDIR": str(root / "mplconfig")}
 
 
+FORBIDDEN_MODULES = frozenset(
+    {"__main__", "builtins", "ctypes", "gc", "importlib", "_thread", "faulthandler", "resource"}
+)
+FORBIDDEN_NAMES = frozenset(
+    {"exec", "eval", "__import__", "exit", "quit", "breakpoint", "__builtins__", "globals", "vars"}
+)
+FORBIDDEN_ATTRS = frozenset(
+    {
+        ("sys", "exit"),
+        ("sys", "_getframe"),
+        ("sys", "modules"),
+        ("sys", "settrace"),
+        ("sys", "setprofile"),
+        ("sys", "addaudithook"),
+        ("os", "_exit"),
+        ("os", "abort"),
+        ("os", "kill"),
+        ("os", "killpg"),
+        ("os", "environ"),
+        ("os", "getenv"),
+        ("os", "putenv"),
+        ("os", "environb"),
+        ("os", "execv"),
+        ("os", "execve"),
+        ("os", "execvp"),
+        ("os", "fork"),
+        ("signal", "signal"),
+        ("signal", "raise_signal"),
+        ("signal", "alarm"),
+        ("signal", "setitimer"),
+    }
+)
+FORBIDDEN_STRINGS = ("MT_RESULT_PATH", "/proc/", "result.json")
+SCREENED_ROOTS = frozenset({"os", "sys", "signal", "builtins"})
+
+
+def screen_solution(code: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return ""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                aliases[alias.asname or root] = root
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            aliases[node.module.split(".")[0]] = node.module.split(".")[0]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root in FORBIDDEN_MODULES:
+                    return f"imports {root}"
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in FORBIDDEN_MODULES:
+                return f"imports {root}"
+            for alias in node.names:
+                if (root, alias.name) in FORBIDDEN_ATTRS or alias.name in FORBIDDEN_NAMES:
+                    return f"imports {root}.{alias.name}"
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            root = aliases.get(node.value.id, node.value.id)
+            if (root, node.attr) in FORBIDDEN_ATTRS:
+                return f"uses {root}.{node.attr}"
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                if func.id in FORBIDDEN_NAMES:
+                    return f"calls {func.id}"
+                if func.id in ("getattr", "setattr", "delattr") and node.args:
+                    first = node.args[0]
+                    if isinstance(first, ast.Name) and aliases.get(first.id, first.id) in SCREENED_ROOTS:
+                        return f"reflects on {aliases.get(first.id, first.id)}"
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for needle in FORBIDDEN_STRINGS:
+                if needle in node.value:
+                    return f"names {needle}"
+    return ""
+
+
+def count_tests(sources: Sequence[str]) -> int:
+    total = 0
+    for source in sources:
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith(
+                    "test"
+                ):
+                    total += 1
+    return total
+
+
+def verdict(outcome: Any, expected: int) -> float:
+    if not isinstance(outcome, dict):
+        return 0.0
+    try:
+        ran = int(outcome.get("ran", 0) or 0)
+        failures = int(outcome.get("failures", 0) or 0)
+        errors = int(outcome.get("errors", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if ran <= 0:
+        return 0.0
+    if expected and ran < expected:
+        return 0.0
+    return 1.0 if failures + errors == 0 else 0.0
+
+
 def _run_module(
     solution: str,
     suite: str,
@@ -280,7 +434,8 @@ def _run_module(
     path = os.path.join(workdir, "suite.py")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(suite)
-    merged = {**os.environ, **env}
+    result_path = os.path.join(workdir, "result.json")
+    merged = {**os.environ, **env, RESULT_ENV: result_path}
     try:
         proc = subprocess.run(  # noqa: S603
             [interpreter, path],
@@ -292,8 +447,18 @@ def _run_module(
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return {"exit_code": None, "stderr": f"exceeded {timeout_seconds}s running the suite"}
-    return {"exit_code": proc.returncode, "stderr": proc.stderr[-2000:]}
+        return {
+            "exit_code": None,
+            "outcome": None,
+            "stderr": f"exceeded {timeout_seconds}s running the suite",
+        }
+    outcome: dict[str, Any] | None
+    try:
+        with open(result_path, encoding="utf-8") as fh:
+            outcome = json.load(fh)
+    except (OSError, ValueError):
+        outcome = None
+    return {"exit_code": proc.returncode, "outcome": outcome, "stderr": proc.stderr[-2000:]}
 
 
 def execute_module_rate(
@@ -327,7 +492,7 @@ def execute_module_rate(
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     if result.ok:
-        return 1.0 if result.value["exit_code"] == 0 else 0.0
+        return verdict(result.value.get("outcome"), count_tests(sources))
     if result.fault is Fault.INFRASTRUCTURE:
         raise ExecutionUnavailable(result.error)
     return 0.0

@@ -73,16 +73,9 @@ def execution_pass_rate(output: Any, gold: Any) -> float:
         return execution.execute_pass_rate(
             str(output), str(gold["entry_point"]), execution.parse_tests(gold["tests"])
         )
-    if isinstance(output, dict):
-        cases = output.get("cases")
-        if isinstance(cases, Sequence) and cases:
-            passed = sum(1 for c in cases if bool(c))
-            return passed / len(cases)
-        if "passed" in output:
-            return 1.0 if bool(output["passed"]) else 0.0
     if isinstance(gold, dict) and "expected" in gold:
         return 1.0 if _normalise_text(output) == _normalise_text(gold["expected"]) else 0.0
-    return 1.0 if bool(output) else 0.0
+    return 0.0
 
 
 def schema_conformance(output: Any, gold: Any) -> float:
