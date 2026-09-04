@@ -513,6 +513,7 @@ def _open(args: argparse.Namespace) -> int:
                 block_hash=seed,
                 config_hash=_config_hash_for(source, server),
             )
+            store.record_window(round_.index, round_.start_block, round_.end_block)
             store.record_metagraph(round_.index, source.uids())
         print(f"round {round_.index} opened with nothing to measure; it settles on the hold")
         print("Commit the config hash on chain before workers verify against it:")
@@ -532,6 +533,7 @@ def _open(args: argparse.Namespace) -> int:
             block_hash=seed,
             config_hash=_config_hash_for(source, server),
         )
+        store.record_window(round_.index, round_.start_block, round_.end_block)
         store.record_assignment(
             round_.index,
             mapping,
