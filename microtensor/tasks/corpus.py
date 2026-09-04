@@ -186,14 +186,12 @@ def load_tests(path: Path) -> dict[str, dict[str, Any]]:
             except (json.JSONDecodeError, KeyError, TypeError) as exc:
                 raise CorpusError(f"{path}:{number} is malformed: {exc}") from exc
             for case in tests:
-                if not isinstance(case, dict) or (
-                    "module" not in case and not ("args" in case and "expected" in case)
-                ):
+                if not isinstance(case, dict) or ("module" not in case and "expected" not in case):
                     raise CorpusError(
                         f"{path}:{number} has a test case that is neither "
-                        f"pair shaped nor module shaped"
+                        f"pair shaped, label shaped nor module shaped"
                     )
-            bundle[ref] = {"entry_point": str(row["entry_point"]), "tests": tests}
+            bundle[ref] = {"entry_point": str(row.get("entry_point", "")), "tests": tests}
     return bundle
 
 

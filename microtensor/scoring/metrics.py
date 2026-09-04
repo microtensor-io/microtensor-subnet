@@ -145,6 +145,40 @@ def entity_micro_f1(output: Any, gold: Any) -> float:
     return micro_f1([parse_entities(output)], [gold_entities(gold)])
 
 
+_LABEL_PREFIX = re.compile(r"^\s*(?:label|intent|answer)\s*[:=]\s*", re.IGNORECASE)
+_LABEL_TRIM = "\"'`*.,;:!?()[]{}<>"
+
+
+def _label(value: Any) -> str:
+    text = ""
+    for line in str(value if value is not None else "").splitlines():
+        candidate = _LABEL_PREFIX.sub("", line.strip()).strip().strip(_LABEL_TRIM).strip()
+        if candidate:
+            text = candidate
+            break
+    return re.sub(r"[\s\-]+", "_", _normalise_text(text))
+
+
+def _expected_label(gold: Any) -> str:
+    if isinstance(gold, dict):
+        if "expected" in gold:
+            return _label(gold["expected"])
+        cases = gold.get("tests")
+        if isinstance(cases, list | tuple):
+            for case in cases:
+                if isinstance(case, dict) and "expected" in case:
+                    return _label(case["expected"])
+        return ""
+    return _label(gold)
+
+
+def label_accuracy(output: Any, gold: Any) -> float:
+    expected = _expected_label(gold)
+    if not expected:
+        return 0.0
+    return 1.0 if _label(output) == expected else 0.0
+
+
 def map_at_iou(output: Any, gold: Any) -> float:
     """Per-image proxy: did the detector emit any well-formed box for this image.
 
@@ -160,6 +194,7 @@ def map_at_iou(output: Any, gold: Any) -> float:
 
 METRICS: Final[dict[str, Metric]] = {
     "execution_pass_rate": execution_pass_rate,
+    "label_accuracy": label_accuracy,
     "map_at_iou": map_at_iou,
     "entity_micro_f1": entity_micro_f1,
     "schema_conformance": schema_conformance,
