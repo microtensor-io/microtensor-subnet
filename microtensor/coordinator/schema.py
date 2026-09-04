@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 8
+SCHEMA_VERSION: Final[int] = 9
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -276,6 +276,44 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
                 unhealthy_until REAL    NOT NULL DEFAULT 0,
                 last_seen       REAL    NOT NULL DEFAULT 0,
                 note            TEXT    NOT NULL DEFAULT ''
+            )
+            """,
+        ),
+    ),
+    (
+        9,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS report_outbox (
+                round_index   INTEGER NOT NULL,
+                worker_hotkey TEXT    NOT NULL,
+                system_digest TEXT    NOT NULL,
+                body          TEXT    NOT NULL,
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                next_at       REAL    NOT NULL DEFAULT 0,
+                queued_at     REAL    NOT NULL,
+                PRIMARY KEY (round_index, worker_hotkey, system_digest)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS arena_closures (
+                round_index    INTEGER NOT NULL,
+                track          TEXT    NOT NULL,
+                hardware_class TEXT    NOT NULL,
+                closed_at      REAL    NOT NULL,
+                reason         TEXT    NOT NULL DEFAULT '',
+                PRIMARY KEY (round_index, track, hardware_class)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS directives (
+                id          TEXT PRIMARY KEY,
+                kind        TEXT    NOT NULL,
+                round_index INTEGER,
+                received_at REAL    NOT NULL,
+                finished_at REAL,
+                ok          INTEGER NOT NULL DEFAULT 0,
+                detail      TEXT    NOT NULL DEFAULT ''
             )
             """,
         ),
