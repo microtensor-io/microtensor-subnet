@@ -83,8 +83,9 @@ class CoordinatorStore:
             return
         self.db.execute(
             """
-            UPDATE rounds SET start_block = ?, end_block = ?, phase = 'submissions'
-            WHERE round_index = ? AND start_block = 0
+            UPDATE rounds SET start_block = ?, end_block = ?,
+                              phase = CASE WHEN phase = 'legacy' THEN 'submissions' ELSE phase END
+            WHERE round_index = ?
             """,
             (start_block, end_block, round_index),
         )
