@@ -13,6 +13,8 @@ from microtensor.core.constants import (
     CPU_SECONDS_PER_ARTIFACT,
     GENESIS_BLOCK,
     MECHANISM_VERSION,
+    MIN_ROUNDS_OBSERVED,
+    REFERENCE_COST_MS,
     ROLE_BASELINES,
     ROUND_BLOCKS,
     SUBMISSION_CLOSES_BEFORE_BLOCKS,
@@ -96,6 +98,8 @@ def served_config(
         "submission_closes_before_blocks": SUBMISSION_CLOSES_BEFORE_BLOCKS,
         "tasks_per_round": TASKS_PER_ROUND,
         "replication": COORDINATOR_REPLICATION,
+        "reference_cost_ms": int(REFERENCE_COST_MS),
+        "min_rounds_observed": int(MIN_ROUNDS_OBSERVED),
         "competitions": [list(c) for c in competitions()],
         "tracks": {
             t.id: {"metric": t.metric, "emission_share": t.emission_share} for t in enabled_tracks()

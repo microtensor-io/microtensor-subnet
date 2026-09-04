@@ -89,6 +89,13 @@ export MT_COORDINATOR_URL=https://coordinator.microtensor.cloud
 `MT_NETUID` defaults to 92. Flags override environment; `--coordinator` and
 `MT_COORDINATOR_URL` are the same setting.
 
+The cpu budget and task count of a coordinated round come from the anchored
+arena config, not from `--cpu-seconds` or `--tasks-per-round`. When an arena
+block is anchored the validator logs the value in force and that the flag is
+ignored. `--parallel N` evaluates up to N leased artifacts at once, each pinned
+to its own cores; it defaults to 1 and is experimental until a soak has shown
+the measured cost matches sequential evaluation.
+
 W&B credentials are required, from **any** W&B account; we issue nothing:
 
 ```bash
