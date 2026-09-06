@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -1116,6 +1116,47 @@ class CoordinatorStore:
             (round_index, track, hardware_class),
         )
         return row is not None
+
+    def record_submissions(
+        self,
+        round_index: int,
+        seen: Iterable[tuple[str, str, str, str, str, bool]],
+        block: int,
+    ) -> None:
+        with self.db.transaction():
+            for hotkey, track, hardware_class, digest, source, sealed in seen:
+                self.db.execute(
+                    "INSERT INTO submissions "
+                    "(round_index, hotkey, track, hardware_class, manifest_digest, "
+                    "source, sealed, seen_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT (round_index, hotkey) DO UPDATE SET "
+                    "track = excluded.track, hardware_class = excluded.hardware_class, "
+                    "manifest_digest = excluded.manifest_digest, source = excluded.source, "
+                    "sealed = excluded.sealed, seen_block = excluded.seen_block",
+                    (
+                        round_index, hotkey, track, hardware_class, digest, source,
+                        int(sealed), block,
+                    ),
+                )
+
+    def recorded_submissions(
+        self, round_index: int
+    ) -> dict[str, tuple[str, str, str, str, bool]]:
+        rows = self.db.query(
+            "SELECT hotkey, track, hardware_class, manifest_digest, source, sealed "
+            "FROM submissions WHERE round_index = ?",
+            (round_index,),
+        )
+        return {
+            str(r["hotkey"]): (
+                str(r["track"]),
+                str(r["hardware_class"]),
+                str(r["manifest_digest"]),
+                str(r["source"]),
+                bool(r["sealed"]),
+            )
+            for r in rows
+        }
 
     def record_directive(
         self, directive_id: str, kind: str, round_index: int | None, now: float
