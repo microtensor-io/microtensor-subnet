@@ -24,6 +24,7 @@ BAD_SIGNATURE = "signature does not verify against the worker hotkey"
 
 DIVERGED_QUALITY = "quality"
 NO_MAJORITY = "no-majority"
+NO_COST = "no measurable cost"
 
 
 class ReportRejected(RuntimeError):
@@ -120,6 +121,18 @@ def accept(
         raise ReportRejected(ENVIRONMENT_MISMATCH)
 
 
+def _measured(report: Report) -> bool:
+    return report.fault is None and report.cost.expected_ms > 0.0
+
+
+def _free(report: Report) -> bool:
+    return report.fault is None and report.cost.expected_ms <= 0.0
+
+
+def _quality_of(report: Report) -> float:
+    return quantise_quality(report.quality.combined) if _measured(report) else 0.0
+
+
 def _publishable(values: Sequence[float]) -> list[int]:
     live = [i for i, value in enumerate(values) if value > 0.0]
     if not live or len(live) == len(values):
@@ -140,7 +153,14 @@ def reconcile(reports: Sequence[Report], advisory: Sequence[str] = ()) -> Reconc
         if preferred:
             deciding = preferred
 
-    qualities = [quantise_quality(r.quality.combined) for r in deciding]
+    for report in deciding:
+        if _free(report) and report.quality.combined > 0.0:
+            log.warning(
+                "%s reported %s at zero cost; a free measurement is no measurement",
+                report.worker_hotkey,
+                digest,
+            )
+    qualities = [_quality_of(r) for r in deciding]
     keep = _publishable(qualities)
     kept = [deciding[i] for i in keep]
     dropped = [r for i, r in enumerate(deciding) if i not in set(keep)]
@@ -154,6 +174,11 @@ def reconcile(reports: Sequence[Report], advisory: Sequence[str] = ()) -> Reconc
 
     agreed_value = quantise_quality(fmean([qualities[i] for i in keep])) if keep else None
     reason = "" if keep else NO_MAJORITY
+    kept_free = any(_free(deciding[i]) for i in keep)
+    kept_measured = any(_measured(deciding[i]) for i in keep)
+    if keep and kept_free and not kept_measured:
+        agreed_value = None
+        reason = NO_COST
 
     values = [qualities[i] for i in keep]
     if len(values) > 1 and max(values) - min(values) > QUALITY_SPREAD_WARNING:
@@ -218,16 +243,15 @@ def intake(by_system: dict[str, list[Report]], advisory: Sequence[str] = ()) -> 
 
         if not agreed.scored:
             log.warning(
-                "%s is unscored this round: %d reports, no majority on quality",
+                "%s is unscored this round: %d reports, %s",
                 digest,
                 len(reports),
+                agreed.reason or NO_MAJORITY,
             )
             result.unscored.append(digest)
 
         for hotkey in agreed.diverged:
-            reported = next(
-                quantise_quality(r.quality.combined) for r in reports if r.worker_hotkey == hotkey
-            )
+            reported = next(_quality_of(r) for r in reports if r.worker_hotkey == hotkey)
             log.warning(
                 "%s diverged on %s: reported %s against %s",
                 hotkey,
