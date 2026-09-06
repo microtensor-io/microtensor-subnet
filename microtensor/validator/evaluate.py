@@ -164,6 +164,7 @@ def materialise(context: ValidatorContext, participant: Participant) -> Path:
             context.cache,
             workdir=context.config.work_dir,
             key=participant.key,
+            fallback_source=participant.commitment.source,
         )
     except Unfetchable as exc:
         raise Abstain(f"{participant.hotkey}: artifact unfetchable — {exc}") from exc

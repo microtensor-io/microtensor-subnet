@@ -144,6 +144,44 @@ def _fetch_one(
 MANIFEST_NAME = "manifest.json"
 
 
+def _fetch_with_fallback(
+    fetcher: Fetcher,
+    locator: str,
+    fallback_source: str,
+    declared_source: str,
+    relpath: str,
+    destination: Path,
+    *,
+    attempts: int,
+    timeout: int,
+    sleep: Callable[[float], None],
+) -> None:
+    try:
+        _fetch_one(
+            fetcher, locator, relpath, destination, attempts=attempts, timeout=timeout, sleep=sleep
+        )
+        return
+    except Unfetchable as exc:
+        if not fallback_source or fallback_source == declared_source:
+            raise
+        log.warning(
+            "%s is not at the source the manifest declares (%s); trying the committed source %s",
+            relpath,
+            exc,
+            fallback_source,
+        )
+    scheme, alt = parse_source(fallback_source)
+    _fetch_one(
+        fetcher_for(scheme),
+        alt,
+        relpath,
+        destination,
+        attempts=attempts,
+        timeout=timeout,
+        sleep=sleep,
+    )
+
+
 def fetch_manifest(
     commitment: Commitment,
     *,
@@ -191,6 +229,7 @@ def materialise(
     timeout: int = ARTIFACT_FETCH_TIMEOUT_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     key: str | None = None,
+    fallback_source: str = "",
 ) -> Path:
     cached = cache.get(manifest.artifact_digest)
     if cached is not None:
@@ -221,9 +260,11 @@ def materialise(
                 raise Unfetchable("the submission is sealed and no key was revealed")
             blob_name = str(manifest.sealed.get("blob", "artifact.enc"))
             blob_path = staging / blob_name
-            _fetch_one(
+            _fetch_with_fallback(
                 fetcher,
                 locator,
+                fallback_source,
+                manifest.source,
                 blob_name,
                 blob_path,
                 attempts=attempts,
@@ -241,9 +282,11 @@ def materialise(
             blob_path.unlink(missing_ok=True)
         else:
             for entry in manifest.files:
-                _fetch_one(
+                _fetch_with_fallback(
                     fetcher,
                     locator,
+                    fallback_source,
+                    manifest.source,
                     entry.path,
                     staging / entry.path,
                     attempts=attempts,
