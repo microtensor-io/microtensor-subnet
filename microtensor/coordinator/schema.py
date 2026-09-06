@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 9
+SCHEMA_VERSION: Final[int] = 10
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -314,6 +314,24 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
                 finished_at REAL,
                 ok          INTEGER NOT NULL DEFAULT 0,
                 detail      TEXT    NOT NULL DEFAULT ''
+            )
+            """,
+        ),
+    ),
+    (
+        10,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS submissions (
+                round_index     INTEGER NOT NULL,
+                hotkey          TEXT    NOT NULL,
+                track           TEXT    NOT NULL,
+                hardware_class  TEXT    NOT NULL,
+                manifest_digest TEXT    NOT NULL,
+                source          TEXT    NOT NULL DEFAULT '',
+                sealed          INTEGER NOT NULL DEFAULT 0,
+                seen_block      INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (round_index, hotkey)
             )
             """,
         ),

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from microtensor.chain.commitment import Commitment, decode_all
+from microtensor.chain.commitment import Commitment, Reveal, commitment_hash, decode_all
 from microtensor.chain.rounds import Round, accepts_commitment, round_for_block
 from microtensor.chain.wallet import verify_payload
 from microtensor.coordinator.assign import System, Worker
@@ -48,6 +48,7 @@ class ChainSource:
     work_dir: Path | None = None
     verify_signatures: bool = True
     fetch: Callable[..., ArtifactManifest] = fetch_manifest
+    recorded: Mapping[str, tuple[str, str, str, str, bool]] = field(default_factory=dict)
 
     def _workdir(self) -> Path:
         if self.work_dir is None:
@@ -97,6 +98,7 @@ class ChainSource:
         snapshot = self.client.snapshot(refresh=True)
         raw = self.client.commitments(list(snapshot.hotkeys))
         commitments = decode_all(raw)
+        commitments.update(recover_revealed(raw, commitments, round_.index, self.recorded))
         uid_by_hotkey = snapshot.uid_by_hotkey
 
         blocks: dict[str, int] = {}
@@ -168,6 +170,70 @@ class ChainSource:
 
     def uids(self) -> dict[str, int]:
         return dict(self.client.snapshot().uid_by_hotkey)
+
+
+def recover_revealed(
+    raw: Mapping[str, str],
+    commitments: Mapping[str, Commitment],
+    round_index: int,
+    recorded: Mapping[str, tuple[str, str, str, str, bool]],
+) -> dict[str, Commitment]:
+    out: dict[str, Commitment] = {}
+    for hotkey, payload in raw.items():
+        if hotkey in commitments:
+            continue
+        reveal = Reveal.decode(payload)
+        if reveal is None or reveal.round_index != round_index:
+            continue
+        found = recorded.get(hotkey)
+        if found is None:
+            log.warning(
+                "round %d: %s holds a reveal but no pointer was recorded for it; "
+                "the submission cannot be restored",
+                round_index,
+                hotkey,
+            )
+            continue
+        track, hardware_class, digest, source, sealed = found
+        if reveal.manifest_digest != digest:
+            log.warning(
+                "round %d: %s revealed %s but the recorded pointer is %s; not restored",
+                round_index,
+                hotkey,
+                reveal.manifest_digest[:16],
+                digest[:16],
+            )
+            continue
+        try:
+            candidate = Commitment(
+                round_index=round_index,
+                track=track,
+                hardware_class=hardware_class,
+                manifest_digest=digest,
+                source=source,
+                sealed=sealed,
+            )
+        except ValueError as exc:
+            log.warning(
+                "round %d: recorded pointer for %s is unusable: %s", round_index, hotkey, exc
+            )
+            continue
+        if reveal.commitment_hash and reveal.commitment_hash != commitment_hash(candidate):
+            log.warning(
+                "round %d: %s revealed against a commitment that differs from the record; "
+                "not restored",
+                round_index,
+                hotkey,
+            )
+            continue
+        out[hotkey] = candidate
+    if out:
+        log.info(
+            "round %d: %d pointer(s) restored from the record after being replaced by a reveal",
+            round_index,
+            len(out),
+        )
+    return out
 
 
 def observed(catalogue: dict[str, Entry], history: dict[str, tuple[int, int]]) -> dict[str, Entry]:

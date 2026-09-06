@@ -337,12 +337,15 @@ def _freeze(args: argparse.Namespace) -> int:
     wallet = open_wallet(chain, required=False)
     client = open_client(chain, wallet)
     server = _server(args)
-    source: RoundSource = ChainSource(client=client)
+    chain_source = ChainSource(client=client)
+    source: RoundSource = chain_source
     if server is not None:
-        source = ServerSource(chain=ChainSource(client=client), client=server)
+        source = ServerSource(chain=chain_source, client=server)
 
     with _store(args) as store:
         row = store.round(args.round) if args.round is not None else store.latest_round()
+        if row is not None:
+            chain_source.recorded = store.recorded_submissions(int(row["round_index"]))
     if row is None:
         return fail("no round is open; run mt coordinator open-submissions first")
 
@@ -1140,7 +1143,7 @@ def _run_directive(
         return False, f"{type(exc).__name__}: {exc}"
 
 
-def _watch_submissions(client: Any, server: ServerClient) -> None:
+def _watch_submissions(args: argparse.Namespace, client: Any, server: ServerClient) -> None:
     import threading
 
     from microtensor.chain.commitment import decode_all
@@ -1154,6 +1157,28 @@ def _watch_submissions(client: Any, server: ServerClient) -> None:
                 if index is not None and state == "open":
                     snapshot = client.snapshot(refresh=True)
                     raw = client.commitments(list(snapshot.hotkeys))
+                    found = {
+                        hotkey: c
+                        for hotkey, c in decode_all(raw).items()
+                        if c.round_index == int(index)
+                    }
+                    if found:
+                        with _store(args) as store:
+                            store.record_submissions(
+                                int(index),
+                                [
+                                    (
+                                        hotkey,
+                                        c.track,
+                                        c.hardware_class,
+                                        c.manifest_digest,
+                                        c.source,
+                                        c.sealed,
+                                    )
+                                    for hotkey, c in found.items()
+                                ],
+                                int(client.block()),
+                            )
                     seen = [
                         {
                             "hotkey": hotkey,
@@ -1161,8 +1186,7 @@ def _watch_submissions(client: Any, server: ServerClient) -> None:
                             "hardware_class": c.hardware_class,
                             "sealed": c.sealed,
                         }
-                        for hotkey, c in decode_all(raw).items()
-                        if c.round_index == int(index)
+                        for hotkey, c in found.items()
                     ]
                     if seen:
                         server.push_submissions(int(index), seen)
@@ -1220,7 +1244,7 @@ def _serve(args: argparse.Namespace) -> int:
         )
         _keep_registry_current(registry, client, service)
         if server is not None:
-            _watch_submissions(client, server)
+            _watch_submissions(args, client, server)
             _flush_outbox(service)
             _follow_directives(args, server, service)
         app = build_app(service)
