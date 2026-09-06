@@ -80,9 +80,10 @@ class CompetitionResult:
 def _expected_ms(cascade: CascadeResult | None, measured: MeasuredEnvelope | None) -> float:
     """What one query costs, measured rather than assumed.
 
-    A front-only system runs no cascade, so its cost is the latency the
-    profiler measured for the front itself. Leaving it at zero would be a
-    claim of free inference; falling back to the reference ceiling would put
+    A front-only system runs no cascade, so its cost is the total latency the
+    profiler measured for the front itself, the same clock a cascade's legs
+    use. Leaving it at zero would be a claim of free inference; falling back
+    to the reference ceiling would put
     every such system at the worst cost on the grid, where its exclusive
     hypervolume is zero and it could never earn. Both misreport a quantity the
     network did in fact measure.
@@ -90,7 +91,7 @@ def _expected_ms(cascade: CascadeResult | None, measured: MeasuredEnvelope | Non
     if cascade is not None:
         return cascade.expected_ms
     if measured is not None:
-        return float(measured.ttft_p95_ms)
+        return float(measured.total_p95_ms)
     return 0.0
 
 

@@ -84,6 +84,8 @@ def _cold_start(
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     if not response.ok:
         raise ProfileError(f"artifact produced no output on a cold cache: {response.error}")
+    if response.output_tokens <= 0:
+        raise ProfileError("artifact produced no output on a cold cache")
     return elapsed_ms, response
 
 
@@ -107,6 +109,7 @@ def profile(
         sampler.mark()
 
         ttfts: list[float] = []
+        totals: list[float] = []
         throughputs: list[float] = []
         failures = 0
         issued = 0
@@ -115,10 +118,11 @@ def profile(
         while issued < plan.max_requests and time.perf_counter() < deadline:
             issued += 1
             response = engine.generate(_request(plan, issued))
-            if not response.ok:
+            if not response.ok or response.output_tokens <= 0:
                 failures += 1
                 continue
             ttfts.append(response.ttft_ms)
+            totals.append(response.total_ms)
             if response.tokens_per_second > 0.0:
                 throughputs.append(response.tokens_per_second)
 
@@ -129,9 +133,10 @@ def profile(
             engine.unload()
 
     if not ttfts:
-        raise ProfileError("no request completed during the sustained window")
+        raise ProfileError("no request produced output during the sustained window")
 
     latency = summarise(ttfts)
+    total = summarise(totals)
     envelope = MeasuredEnvelope(
         size_bytes=size_bytes,
         peak_rss_bytes=sampler.peak_bytes,
@@ -142,6 +147,8 @@ def profile(
         cold_start_ms=round(cold_start_ms),
         device_profile=device.digest,
         conforming=conforms(device, hardware),
+        total_p50_ms=round(total.p50),
+        total_p95_ms=round(total.p95),
     )
 
     return ProfileReport(

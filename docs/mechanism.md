@@ -398,8 +398,13 @@ Cold start is measured from process launch to first emitted output on an
 unwarmed cache. Steady state is measured over a sustained request stream:
 
 ```
-ℓ_p95(a) = quantile_0.95 { ttft_i }
+ℓ_p95(a) = quantile_0.95 { ttft_i }      gated against the class ceiling
+c_front(a) = quantile_0.95 { total_i }    the cost of a front-only system
 ```
+
+A request that produces no output is a failure, not a sample. A profile in
+which no request produces output faults the artifact instead of measuring
+it, so a system cannot record a cost of zero by answering nothing.
 
 A single warm measurement is not admissible evidence, because it is precisely
 the measurement a miner would construct if permitted to construct one.
@@ -885,7 +890,8 @@ VMC {
   track, class,
   artifact  { weights_hash, manifest_hash, total_bytes, format, base_model, round },
   envelope  { size_bytes, peak_rss_bytes, input_at_peak,
-              ttft_p50_ms, ttft_p95_ms, tok_per_sec, cold_start_ms, device_profile },
+              ttft_p50_ms, ttft_p95_ms, total_p50_ms, total_p95_ms, tok_per_sec,
+              cold_start_ms, device_profile },
   accuracy  { score_fixed, score_rotating, score_combined,
               n_fixed, n_rotating, corpus_version, metric },
   runtime   { decode, temperature, seed, engine_version, quantization },
