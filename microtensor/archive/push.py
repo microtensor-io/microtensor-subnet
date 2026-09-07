@@ -223,9 +223,7 @@ def candidates(
     return kept, missing, round_index
 
 
-def card(
-    candidate: Candidate, track: str, hardware_class: str, round_index: int
-) -> str:
+def card(candidate: Candidate, track: str, hardware_class: str, round_index: int) -> str:
     cert = candidate.certificate
     tags = [
         "microtensor",

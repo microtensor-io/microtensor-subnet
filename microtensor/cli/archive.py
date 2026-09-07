@@ -98,9 +98,7 @@ def _sources(args: argparse.Namespace, round_index: int) -> dict[str, str]:
     return {hotkey: found[3] for hotkey, found in observed.items() if found[3]}
 
 
-def _reveal_keys(
-    args: argparse.Namespace, round_index: int, hotkeys: list[str]
-) -> dict[str, str]:
+def _reveal_keys(args: argparse.Namespace, round_index: int, hotkeys: list[str]) -> dict[str, str]:
     from microtensor.chain.commitment import Reveal
     from microtensor.chain.config import ChainConfig
     from microtensor.cli.common import open_client
