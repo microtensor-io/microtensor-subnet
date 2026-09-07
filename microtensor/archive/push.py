@@ -150,7 +150,7 @@ def candidates(
 ) -> tuple[list[Candidate], list[str], int]:
     if board is None:
         board = _get(f"{server_url}/v1/arenas/{track}/{hardware_class}/leaderboard")
-    round_index = int(board.get("round_index"))
+    round_index = int(board["round_index"])
     by_digest = snapshots(cache_dirs)
     fronts = components_by_system(coordinator_url, round_index)
     sources = dict(sources or {})
