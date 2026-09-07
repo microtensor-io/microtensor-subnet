@@ -294,6 +294,8 @@ def to_report(
             "peak_rss_bytes": float(measured.peak_rss_bytes),
             "ttft_p50_ms": float(measured.ttft_p50_ms),
             "ttft_p95_ms": float(measured.ttft_p95_ms),
+            "total_p50_ms": float(measured.total_p50_ms),
+            "total_p95_ms": float(measured.total_p95_ms),
             "tokens_per_second": float(measured.tokens_per_second),
         }
 

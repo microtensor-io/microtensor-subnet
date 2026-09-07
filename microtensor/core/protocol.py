@@ -62,6 +62,8 @@ class MeasuredEnvelope:
     cold_start_ms: int
     device_profile: str
     conforming: bool = True
+    total_p50_ms: int = 0
+    total_p95_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
