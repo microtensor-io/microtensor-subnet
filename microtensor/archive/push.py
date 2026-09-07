@@ -171,10 +171,11 @@ def candidates(
     kept: list[Candidate] = []
     missing: list[str] = []
     for system in board.get("systems", ()):
-        if system.get("state") not in ARCHIVED_STATES:
-            continue
         system_id = str(system["system_id"])
-        if only is not None and system_id not in only:
+        if only is not None:
+            if system_id not in only:
+                continue
+        elif system.get("state") not in ARCHIVED_STATES:
             continue
         hotkey = str(system["hotkey"])
         has_manifest = True
