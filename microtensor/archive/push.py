@@ -87,6 +87,16 @@ def snapshots(cache_dirs: list[Path]) -> dict[str, Path]:
     return found
 
 
+def rewarded_systems(coordinator_url: str, round_index: int) -> set[str]:
+    published = _get(f"{coordinator_url}/v1/settlement/{round_index}")
+    body = published.get("body", published)
+    return {
+        str(entry.get("system"))
+        for entry in body.get("frontier", ())
+        if float(entry.get("share") or 0.0) > 0.0
+    }
+
+
 def components_by_system(coordinator_url: str, round_index: int) -> dict[str, str]:
     published = _get(f"{coordinator_url}/v1/settlement/{round_index}")
     out: dict[str, str] = {}
@@ -147,6 +157,7 @@ def candidates(
     keys: Mapping[str, str] | None = None,
     board: Mapping[str, Any] | None = None,
     workdir: Path | None = None,
+    only: set[str] | None = None,
 ) -> tuple[list[Candidate], list[str], int]:
     if board is None:
         board = _get(f"{server_url}/v1/arenas/{track}/{hardware_class}/leaderboard")
@@ -163,6 +174,8 @@ def candidates(
         if system.get("state") not in ARCHIVED_STATES:
             continue
         system_id = str(system["system_id"])
+        if only is not None and system_id not in only:
+            continue
         hotkey = str(system["hotkey"])
         has_manifest = True
         source = ""
@@ -385,6 +398,7 @@ def run(
     sources: Mapping[str, str] | None = None,
     keys: Mapping[str, str] | None = None,
     board: Mapping[str, Any] | None = None,
+    frontier_only: bool = False,
 ) -> int:
     kept, missing, round_index = candidates(
         server_url,
@@ -396,6 +410,11 @@ def run(
         sources=sources,
         keys=keys,
         board=board,
+        only=(
+            rewarded_systems(coordinator_url, int((board or {}).get("round_index") or 0))
+            if frontier_only and board is not None
+            else None
+        ),
     )
     for system_id in missing:
         log.warning("no bytes for %s; it cannot be archived from here", system_id)

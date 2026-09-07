@@ -31,6 +31,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     round_.add_argument("--netuid", type=int, default=int(os.environ.get("MT_NETUID", "92")))
     round_.add_argument("--endpoint", default=os.environ.get("MT_ENDPOINT", ""))
     round_.add_argument("--no-chain", action="store_true")
+    round_.add_argument("--frontier-only", action="store_true")
     round_.set_defaults(handler=_round)
 
 
@@ -81,6 +82,7 @@ def _round(args: argparse.Namespace) -> int:
         sources=sources,
         keys=keys,
         board=board,
+        frontier_only=args.frontier_only,
     )
     print(f"archived {archived} artifacts")
     return 0
