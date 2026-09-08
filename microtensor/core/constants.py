@@ -34,7 +34,7 @@ RELEASE_VERSION: Final[str] = "0.3.2"
 # These were one constant. That made every release read as a rule change, so
 # auto-update held all of them forever waiting for an activation block that a
 # bug fix has no reason to declare.
-MECHANISM_VERSION: Final[str] = "0.3.0"
+MECHANISM_VERSION: Final[str] = "0.4.0"
 DEFAULT_NETUID: Final[int] = 92
 GENESIS_BLOCK: Final[int] = _blocks("MT_GENESIS_BLOCK", -17805488)
 

@@ -186,6 +186,8 @@ def build_certificate(
             "input_at_peak": measured.input_at_peak,
             "ttft_p50_ms": measured.ttft_p50_ms,
             "ttft_p95_ms": measured.ttft_p95_ms,
+            "total_p50_ms": measured.total_p50_ms,
+            "total_p95_ms": measured.total_p95_ms,
             "tok_per_sec": round(measured.tokens_per_second, 2),
             "cold_start_ms": measured.cold_start_ms,
             "device_profile": measured.device_profile,

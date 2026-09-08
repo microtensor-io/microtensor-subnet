@@ -316,10 +316,10 @@ class GgufEngine:
                 pieces = (c["choices"][0].get("text", "") for c in completion)
 
             for piece in pieces:
+                if not first_token_at:
+                    first_token_at = time.perf_counter()
                 if not piece:
                     continue
-                if count == 0:
-                    first_token_at = time.perf_counter()
                 produced.append(piece)
                 count += 1
 
@@ -362,8 +362,7 @@ class GgufEngine:
             )
             for chunk in stream:
                 piece = chunk["choices"][0].get("delta", {}).get("content", "")
-                if piece:
-                    yield piece
+                yield piece
             return
         except TypeError:
             pass
@@ -372,14 +371,12 @@ class GgufEngine:
         if rendered is not None:
             for chunk in self._model.create_completion(rendered, **sampler):
                 piece = chunk["choices"][0].get("text", "")
-                if piece:
-                    yield piece
+                yield piece
             return
 
         for chunk in self._model.create_chat_completion(messages=messages, **sampler):
             piece = chunk["choices"][0].get("delta", {}).get("content", "")
-            if piece:
-                yield piece
+            yield piece
 
     def _render_chat(self, messages: list[dict[str, str]]) -> str | None:
         """The model's own chat template, rendered with thinking off."""
