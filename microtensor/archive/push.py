@@ -208,7 +208,9 @@ def candidates(
                     snapshot = root / front
                     has_manifest = False
                     break
-        if snapshot is None and not key:
+            if snapshot is None and manifest is not None and sources.get(hotkey):
+                source = sources[hotkey]
+        if snapshot is None and not key and not source:
             missing.append(system_id)
             continue
 
@@ -315,8 +317,10 @@ def stage(
         shutil.rmtree(target)
     if candidate.snapshot is not None:
         shutil.copytree(candidate.snapshot, target, copy_function=_link_or_copy)
-    else:
+    elif candidate.key:
         _unseal_into(candidate, target)
+    else:
+        _fetch_files_into(candidate, target)
     if candidate.manifest_bytes is not None and not (target / "manifest.json").is_file():
         (target / "manifest.json").write_bytes(candidate.manifest_bytes)
 
@@ -328,6 +332,30 @@ def stage(
         card(candidate, track, hardware_class, round_index), encoding="utf-8"
     )
     return target
+
+
+def _fetch_files_into(candidate: Candidate, target: Path) -> None:
+    manifest = candidate.manifest
+    if manifest is None:
+        raise RuntimeError(f"{candidate.system_id} has no manifest to fetch files for")
+    target.mkdir(parents=True, exist_ok=True)
+    scheme, locator = parse_source(candidate.source)
+    fetcher = fetcher_for(scheme)
+    for entry in manifest.files:
+        _fetch_one(
+            fetcher,
+            locator,
+            entry.path,
+            target / entry.path,
+            attempts=3,
+            timeout=600,
+            sleep=time.sleep,
+        )
+    ok, reason = verify_tree(target, manifest)
+    if not ok:
+        raise RuntimeError(
+            f"{candidate.system_id}: fetched tree does not match its manifest: {reason}"
+        )
 
 
 def _unseal_into(candidate: Candidate, target: Path) -> None:
