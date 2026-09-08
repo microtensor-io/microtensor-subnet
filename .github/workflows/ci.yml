@@ -286,17 +286,35 @@ jobs:
               write(f"{track}.tests.jsonl", tests)
 
           def support_bundle(track):
+              verbs = ["book", "cancel", "reschedule", "transfer", "refund", "reserve", "extend", "check"]
+              nouns = [
+                  "flight", "hotel", "car", "invoice", "loan", "appointment", "ticket", "table",
+                  "subscription", "delivery", "meeting", "payment", "alarm", "reminder",
+              ]
+              places = [
+                  "Paris", "Tokyo", "Lima", "Oslo", "Cairo", "Perth", "Quito", "Doha",
+                  "Bern", "Riga", "Kyoto", "Havana", "Nairobi", "Seoul", "Accra",
+              ]
+              fillers = [
+                  "please", "tomorrow", "urgently", "for two", "next week", "by noon", "in the morning",
+                  "with breakfast", "window seat", "economy", "before friday", "after lunch",
+                  "under budget", "with insurance", "non refundable", "same day",
+              ]
               tasks, tests = [], []
               for i in range(70):
                   partition = "rotating" if i < 45 else "fixed"
                   ref = f"{track}-ci-{i:03d}"
-                  name = f"tool_{i % 9}"
+                  rng = random.Random(i)
+                  verb, noun, place = rng.choice(verbs), rng.choice(nouns), rng.choice(places)
+                  extras = " ".join(rng.sample(fillers, 4))
+                  name = f"{verb}_{noun}"
+                  other = f"{rng.choice(verbs)}_{rng.choice(nouns)}"
+                  amount = rng.randint(1, 900)
                   tasks.append({
                       "ref": ref,
                       "prompt": (
-                          f"Functions:\n- {name}(amount: int, city: str)\n"
-                          f"- other_{i % 5}(flag: bool)\n\n"
-                          f"Request {ref}: send {i * 7} to city {i}.\n\n"
+                          f"Functions:\n- {name}(amount: int, city: str)\n- {other}(flag: bool)\n\n"
+                          f"Request: {verb} a {noun} in {place} for {amount}, {extras}.\n\n"
                           "Reply with only JSON in this form and nothing else:\n"
                           '{"tool_calls": [{"name": "...", "arguments": {...}}]}'
                       ),
@@ -308,7 +326,7 @@ jobs:
                   tests.append({
                       "ref": ref,
                       "tests": [{"tool_calls": [
-                          {"name": name, "arguments": {"amount": i * 7, "city": f"city {i}"}}
+                          {"name": name, "arguments": {"amount": amount, "city": place}}
                       ]}],
                   })
               write(f"{track}.jsonl", tasks)
