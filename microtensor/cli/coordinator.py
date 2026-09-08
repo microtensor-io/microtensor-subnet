@@ -493,7 +493,7 @@ def _open(args: argparse.Namespace) -> int:
         return 0
     except ServerRefused as exc:
         return fail(str(exc))
-    systems, catalogue = source.systems(round_)
+    systems, _ = source.systems(round_)
     workers = source.workers()
     seed = source.seed(round_)
 
