@@ -395,14 +395,18 @@ def _await_reveals(
         return accepted, rejected
 
     deadline = round_.close_block + REVEAL_WINDOW_BLOCKS
-    while pending and context.client.block() < deadline:
-        log.info(
-            "round %d: waiting on %d reveal(s), window closes at block %d",
-            round_.index,
-            len(pending),
-            deadline,
-        )
-        _time.sleep(BLOCK_TIME_SECONDS * 2)
+    final = False
+    while pending and not final:
+        if context.client.block() >= deadline:
+            final = True
+        else:
+            log.info(
+                "round %d: waiting on %d reveal(s), window closes at block %d",
+                round_.index,
+                len(pending),
+                deadline,
+            )
+            _time.sleep(BLOCK_TIME_SECONDS * 2)
         raw = context.client.commitments([p.hotkey for p in pending])
         keys = _reveals_of(raw, round_.index)
         if not keys:

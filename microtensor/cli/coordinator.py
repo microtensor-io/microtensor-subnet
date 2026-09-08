@@ -376,10 +376,7 @@ def _freeze(args: argparse.Namespace) -> int:
             store.record_assignment(
                 index,
                 mapping,
-                {
-                    s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source)
-                    for s in systems
-                },
+                {s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source) for s in systems},
             )
             frozen = observed(catalogue, store.observations(index))
             store.record_catalogue(index, frozen)
@@ -423,10 +420,7 @@ def _assign(args: argparse.Namespace) -> int:
         store.record_assignment(
             args.round,
             mapping,
-            {
-                s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source)
-                for s in systems
-            },
+            {s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source) for s in systems},
         )
 
     thin = under_replicated(mapping, args.replication)
@@ -482,7 +476,6 @@ def _server(args: argparse.Namespace) -> ServerClient | None:
 
 def _open(args: argparse.Namespace) -> int:
     from microtensor.cli.common import chain_config, open_client, open_wallet
-    from microtensor.coordinator.chain import observed
 
     chain = chain_config(args)
     wallet = open_wallet(chain, required=False)
@@ -500,7 +493,7 @@ def _open(args: argparse.Namespace) -> int:
         return 0
     except ServerRefused as exc:
         return fail(str(exc))
-    systems, catalogue = source.systems(round_)
+    systems, _ = source.systems(round_)
     workers = source.workers()
     seed = source.seed(round_)
 
@@ -525,11 +518,6 @@ def _open(args: argparse.Namespace) -> int:
         print(f"  {_config_hash_for(source, server)}")
         print(f"  mt coordinator anchor --round {round_.index}")
         return 0
-    if not workers:
-        return fail("no worker holds a validator permit, so nothing can be assigned")
-
-    mapping = assign(systems, workers, seed, replication=args.replication)
-
     with _store(args) as store:
         store.open_round(
             round_.index,
@@ -540,38 +528,12 @@ def _open(args: argparse.Namespace) -> int:
         )
         store.record_window(round_.index, round_.start_block, round_.end_block)
         store.reset_plan(round_.index)
-        store.record_assignment(
-            round_.index,
-            mapping,
-            {
-                s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source)
-                for s in systems
-            },
-        )
-        store.record_catalogue(round_.index, observed(catalogue, store.observations(round_.index)))
         store.record_metagraph(round_.index, source.uids())
 
-    thin = under_replicated(mapping, args.replication)
     print(f"round {round_.index} opened, seed block {round_.seed_block}")
-    print(f"  systems     {len(systems)}")
+    print(f"  systems     {len(systems)} readable so far; the plan is built at the freeze")
     print(f"  workers     {len(workers)}")
-    print(f"  assignments {sum(len(v) for v in mapping.values())}")
-    if thin:
-        print(f"  under-replicated: {len(thin)}")
     print()
-    if server is not None:
-        try:
-            server.push_assignments(
-                round_.index,
-                mapping,
-                {
-                    s.digest: (s.track, s.hardware_class, s.miner_hotkey, s.source)
-                    for s in systems
-                },
-            )
-        except (ServerUnreachable, ServerRefused) as exc:
-            log.warning("the assignment map was not mirrored to the control plane: %s", exc)
-
     print("Commit the config hash on chain before workers measure against it:")
     print(f"  {_config_hash_for(source, server)}")
     print(f"  mt coordinator anchor --round {round_.index}")
