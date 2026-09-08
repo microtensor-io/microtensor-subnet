@@ -23,6 +23,7 @@ def _ms(name: str, default: float) -> float:
     except ValueError:
         return default
 
+
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
 RELEASE_VERSION: Final[str] = "0.3.2"
@@ -46,9 +47,7 @@ EPOCH_BLOCKS: Final[int] = 360
 WEIGHT_REFRESH_BLOCKS: Final[int] = 300
 TELEMETRY_HEARTBEAT_BLOCKS: Final[int] = 300
 TELEMETRY_RETAIN_DAYS: Final[int] = 30
-SUBMISSION_CLOSES_BEFORE_BLOCKS: Final[int] = _blocks(
-    "MT_SUBMISSION_CLOSES_BEFORE_BLOCKS", 7200
-)
+SUBMISSION_CLOSES_BEFORE_BLOCKS: Final[int] = _blocks("MT_SUBMISSION_CLOSES_BEFORE_BLOCKS", 7200)
 
 
 def _rounds(name: str) -> tuple[int, ...]:
@@ -65,15 +64,13 @@ def _rounds(name: str) -> tuple[int, ...]:
 
 ALSO_ACCEPT_ROUNDS: Final[tuple[int, ...]] = _rounds("MT_ALSO_ACCEPT_ROUNDS")
 
-REVEAL_WINDOW_BLOCKS: Final[int] = _blocks("MT_REVEAL_WINDOW_BLOCKS", 25)
+REVEAL_WINDOW_BLOCKS: Final[int] = _blocks("MT_REVEAL_WINDOW_BLOCKS", 300)
 SUBMISSION_WINDOW_BLOCKS: Final[int] = _blocks("MT_SUBMISSION_WINDOW_BLOCKS", 7200)
 EVALUATION_WINDOW_BLOCKS: Final[int] = _blocks("MT_EVALUATION_WINDOW_BLOCKS", 7200)
 REQUIRE_SEALED_SUBMISSIONS: Final[bool] = (
     os.environ.get("MT_REQUIRE_SEALED_SUBMISSIONS", "").strip() == "1"
 )
-DERIVATION_ENFORCING: Final[bool] = (
-    os.environ.get("MT_DERIVATION_ENFORCING", "").strip() == "1"
-)
+DERIVATION_ENFORCING: Final[bool] = os.environ.get("MT_DERIVATION_ENFORCING", "").strip() == "1"
 DEADLINE_MARGIN_BLOCKS: Final[int] = 40
 
 MIN_VALIDATOR_STAKE: Final[float] = 1000.0
