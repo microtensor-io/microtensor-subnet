@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable, Iterable, Sequence
@@ -118,18 +119,112 @@ def _extract_number(value: Any) -> float | None:
     return float(match.group()) if match else None
 
 
+_CALL_NOISE = re.compile(r"```(?:json)?|</?tool_call>|</?function_call>", re.IGNORECASE)
+
+
+def _canonical(value: Any) -> Any:
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, str):
+        return _normalise_text(value)
+    if isinstance(value, dict):
+        return {_normalise_text(k): _canonical(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_canonical(v) for v in value]
+    return _normalise_text(value)
+
+
+def _call_keys(calls: Any) -> set[str]:
+    keys: set[str] = set()
+    if isinstance(calls, dict):
+        calls = [calls]
+    if not isinstance(calls, list | tuple):
+        return keys
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        if isinstance(function, dict):
+            call = function
+        name = call.get("name", "")
+        arguments = call.get("arguments", call.get("parameters", {}))
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except ValueError:
+                arguments = {"_raw": arguments}
+        if not str(name).strip():
+            continue
+        packed = json.dumps(_canonical(arguments), sort_keys=True, separators=(",", ":"))
+        keys.add(f"{_normalise_text(name)}({packed})")
+    return keys
+
+
+def _parse_calls(output: Any) -> Any:
+    if isinstance(output, dict | list):
+        return output
+    text = _CALL_NOISE.sub(" ", str(output if output is not None else "")).strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    decoder = json.JSONDecoder()
+    starts = sorted(i for i in (text.find("{"), text.find("[")) if i >= 0)
+    for start in starts:
+        try:
+            value, _ = decoder.raw_decode(text[start:])
+        except ValueError:
+            continue
+        return value
+    return None
+
+
+def _gold_cases(gold: Any) -> list[dict[str, Any]]:
+    if isinstance(gold, str):
+        try:
+            gold = json.loads(gold)
+        except ValueError:
+            return []
+    if not isinstance(gold, dict):
+        return []
+    if "tool_calls" in gold or "rubric" in gold:
+        return [gold]
+    cases = gold.get("tests")
+    if isinstance(cases, list | tuple):
+        return [c for c in cases if isinstance(c, dict)]
+    return []
+
+
 def rubric_f1_tool_calls(output: Any, gold: Any) -> float:
-    gold_calls = _as_set((gold or {}).get("tool_calls") if isinstance(gold, dict) else None)
-    pred_calls = _as_set((output or {}).get("tool_calls") if isinstance(output, dict) else None)
+    cases = _gold_cases(gold)
+    gold_calls: set[str] = set()
+    gold_points: set[str] = set()
+    for case in cases:
+        gold_calls |= _call_keys(case.get("tool_calls"))
+        gold_points |= _as_set(case.get("rubric"))
+    if not gold_calls and not gold_points:
+        return 0.0
 
-    gold_points = _as_set((gold or {}).get("rubric") if isinstance(gold, dict) else gold)
-    pred_points = _as_set((output or {}).get("covers") if isinstance(output, dict) else output)
+    parsed = _parse_calls(output)
+    if isinstance(parsed, dict):
+        pred_calls = _call_keys(parsed.get("tool_calls", parsed if "name" in parsed else []))
+        pred_points = _as_set(parsed.get("covers"))
+    else:
+        pred_calls = _call_keys(parsed)
+        pred_points = set()
 
-    rubric = f1(pred_points, gold_points)
     if not gold_calls:
-        return rubric
+        return f1(pred_points, gold_points)
     calls = f1(pred_calls, gold_calls)
-    return 0.5 * rubric + 0.5 * calls
+    if not gold_points:
+        return calls
+    return 0.5 * f1(pred_points, gold_points) + 0.5 * calls
 
 
 def entity_micro_f1(output: Any, gold: Any) -> float:
