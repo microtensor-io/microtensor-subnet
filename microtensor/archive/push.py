@@ -239,7 +239,14 @@ def candidates(
     return kept, missing, round_index
 
 
-def card(candidate: Candidate, track: str, hardware_class: str, round_index: int) -> str:
+def card(
+    candidate: Candidate,
+    track: str,
+    hardware_class: str,
+    round_index: int,
+    licence: str = "",
+    base_model: str = "",
+) -> str:
     cert = candidate.certificate
     tags = [
         "microtensor",
@@ -254,6 +261,7 @@ def card(candidate: Candidate, track: str, hardware_class: str, round_index: int
         "---",
         "tags:",
         *[f"- {tag}" for tag in tags],
+        *_front_matter(licence, base_model),
         "---",
         "",
         f"# Microtensor archive · {track}/{hardware_class} · round {round_index}",
@@ -301,6 +309,7 @@ def card(candidate: Candidate, track: str, hardware_class: str, round_index: int
             "digest and measured, retained without the submitted manifest.",
             "",
         ]
+    lines += _licence_section(licence, base_model)
     return "\n".join(lines)
 
 
@@ -310,6 +319,8 @@ def stage(
     hardware_class: str,
     round_index: int,
     staging_root: Path,
+    licence: str = "",
+    base_model: str = "",
 ) -> Path:
     name = repo_name(track, hardware_class, round_index, candidate.hotkey)
     target = staging_root / name
@@ -329,7 +340,8 @@ def stage(
             json.dumps(candidate.certificate, indent=2, sort_keys=True), encoding="utf-8"
         )
     (target / "README.md").write_text(
-        card(candidate, track, hardware_class, round_index), encoding="utf-8"
+        card(candidate, track, hardware_class, round_index, licence=licence, base_model=base_model),
+        encoding="utf-8",
     )
     return target
 
@@ -448,10 +460,24 @@ def run(
     for system_id in missing:
         log.warning("no bytes for %s; it cannot be archived from here", system_id)
 
+    fallback = round_licence(server_url, track, hardware_class, round_index, token)
+    known: dict[str, str] = {}
     archived = 0
     for candidate in kept:
+        base = base_model_of(candidate)
+        licence = licence_of(base, token, known) if base else ""
+        if not licence:
+            licence, base = fallback
         try:
-            target = stage(candidate, track, hardware_class, round_index, staging_root)
+            target = stage(
+                candidate,
+                track,
+                hardware_class,
+                round_index,
+                staging_root,
+                licence=licence,
+                base_model=base,
+            )
         except (RuntimeError, Unfetchable) as exc:
             log.warning("%s was not archived: %s", candidate.system_id, exc)
             continue
@@ -467,3 +493,173 @@ def run(
         )
         archived += 1
     return archived
+
+
+def base_model_of(candidate: Candidate) -> str:
+    manifest = candidate.manifest
+    if manifest is None:
+        return ""
+    return str(getattr(manifest.load, "base_model", "") or "")
+
+
+def repo_of(base_model: str) -> str:
+    return base_model.split("@", 1)[0].strip()
+
+
+def licence_of(base_model: str, token: str = "", known: dict[str, str] | None = None) -> str:
+    repo = repo_of(base_model)
+    if not repo:
+        return ""
+    if known is not None and repo in known:
+        return known[repo]
+    from huggingface_hub import HfApi
+
+    try:
+        data = getattr(HfApi(token=token or None).model_info(repo), "card_data", None)
+        found = data.get("license") if isinstance(data, dict) else getattr(data, "license", None)
+        licence = str(found or "")
+    except Exception as exc:
+        log.warning("licence of %s could not be read from the hub: %s", repo, exc)
+        licence = ""
+    if known is not None:
+        known[repo] = licence
+    return licence
+
+
+def round_licence(
+    server_url: str, track: str, hardware_class: str, round_index: int, token: str = ""
+) -> tuple[str, str]:
+    try:
+        view = _get(f"{server_url}/v1/arenas/{track}/{hardware_class}/rounds/{round_index}")
+    except Exception as exc:
+        log.warning("round %d could not be read from the server: %s", round_index, exc)
+        return "", ""
+    allowed = [str(b) for b in (view.get("allowed_base_models") or []) if b]
+    known: dict[str, str] = {}
+    licences = {licence_of(b, token, known) for b in allowed} - {""}
+    if not allowed or len(licences) != 1:
+        return "", ""
+    return licences.pop(), ", ".join(repo_of(b) for b in allowed)
+
+
+def _front_matter(licence: str, base_model: str) -> list[str]:
+    lines: list[str] = []
+    if licence:
+        lines.append(f"license: {licence}")
+    if base_model and "," not in base_model:
+        lines.append(f"base_model: {repo_of(base_model)}")
+    return lines
+
+
+def _licence_section(licence: str, base_model: str) -> list[str]:
+    if not licence:
+        return []
+    if base_model and "," not in base_model:
+        origin = f"inherited from the base model `{base_model}` this system was built on"
+    elif base_model:
+        origin = f"the licence every base model allowed in this arena round carries ({base_model})"
+    else:
+        origin = "the licence of the base model this system was built on"
+    return [
+        "## Licence",
+        "",
+        f"Released under `{licence}`, {origin}.",
+        "Submitting granted the network the right to retain, archive and",
+        "redistribute this artifact, with emissions as the consideration.",
+        "Anyone may serve it, including commercially, on the terms of that licence.",
+        "",
+    ]
+
+
+def _without_section(body: list[str], title: str) -> list[str]:
+    kept: list[str] = []
+    skipping = False
+    for line in body:
+        if line.strip() == title:
+            skipping = True
+            continue
+        if skipping and line.startswith("## "):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return kept
+
+
+def relicensed(readme: str, licence: str, base_model: str) -> str:
+    lines = readme.split("\n")
+    if not lines or lines[0].strip() != "---" or "---" not in lines[1:]:
+        return readme
+    end = lines.index("---", 1)
+    head = [
+        line
+        for line in lines[1:end]
+        if not line.startswith("license:") and not line.startswith("base_model:")
+    ]
+    body = _without_section(lines[end + 1 :], "## Licence")
+    out = ["---", *head, *_front_matter(licence, base_model), "---", *body, ""]
+    out += _licence_section(licence, base_model)
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def refresh_cards(
+    *,
+    server_url: str,
+    track: str,
+    hardware_class: str,
+    round_index: int,
+    org: str,
+    token: str,
+    dry_run: bool = False,
+) -> int:
+    from huggingface_hub import HfApi, hf_hub_download
+
+    api = HfApi(token=token or None)
+    prefix = repo_name(track, hardware_class, round_index, "")
+    fallback = round_licence(server_url, track, hardware_class, round_index, token)
+    known: dict[str, str] = {}
+    updated = 0
+    for model in api.list_models(author=org, search=prefix):
+        repo_id = str(model.id)
+        if not repo_id.split("/", 1)[-1].startswith(prefix):
+            continue
+        base = ""
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(
+                hf_hub_download(repo_id, "README.md", cache_dir=tmp, token=token or None)
+            ).read_text(encoding="utf-8")
+            try:
+                raw = json.loads(
+                    Path(
+                        hf_hub_download(
+                            repo_id, "manifest.json", cache_dir=tmp, token=token or None
+                        )
+                    ).read_text(encoding="utf-8")
+                )
+                base = str((raw.get("load") or {}).get("base_model") or "")
+            except Exception as exc:
+                log.warning("%s: manifest not readable: %s", repo_id, exc)
+        licence = licence_of(base, token, known) if base else ""
+        if not licence:
+            licence, base = fallback
+        if not licence:
+            log.warning("%s: no licence could be determined; card left alone", repo_id)
+            continue
+        card_text = relicensed(readme, licence, base)
+        if card_text == readme:
+            log.info("%s already states %s", repo_id, licence)
+            continue
+        if dry_run:
+            log.info("%s would state %s (dry run)", repo_id, licence)
+            updated += 1
+            continue
+        api.upload_file(
+            path_or_fileobj=card_text.encode("utf-8"),
+            path_in_repo="README.md",
+            repo_id=repo_id,
+            commit_message=f"licence: {licence} from the base model",
+        )
+        log.info("%s now states %s", repo_id, licence)
+        updated += 1
+    return updated

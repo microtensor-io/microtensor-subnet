@@ -32,7 +32,17 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     round_.add_argument("--endpoint", default=os.environ.get("MT_ENDPOINT", ""))
     round_.add_argument("--no-chain", action="store_true")
     round_.add_argument("--frontier-only", action="store_true")
+    round_.add_argument("--round", type=int, default=None)
     round_.set_defaults(handler=_round)
+
+    cards = inner.add_parser("cards", help="state the base model licence on archived cards")
+    cards.add_argument("--track", default="code")
+    cards.add_argument("--hardware-class", default="mt-3g")
+    cards.add_argument("--round", type=int, required=True)
+    cards.add_argument("--server", default="https://api.microtensor.cloud")
+    cards.add_argument("--org", default="microtensor-archive")
+    cards.add_argument("--dry-run", action="store_true")
+    cards.set_defaults(handler=_cards)
 
 
 def _round(args: argparse.Namespace) -> int:
@@ -54,7 +64,10 @@ def _round(args: argparse.Namespace) -> int:
     from microtensor.archive.push import _get
 
     server_url = args.server.rstrip("/")
-    board = _get(f"{server_url}/v1/arenas/{args.track}/{args.hardware_class}/leaderboard")
+    url = f"{server_url}/v1/arenas/{args.track}/{args.hardware_class}/leaderboard"
+    if args.round is not None:
+        url += f"?round={args.round}"
+    board = _get(url)
     round_index = int(board.get("round_index"))
     hotkeys = sorted(
         {str(s.get("hotkey", "")) for s in board.get("systems", ()) if s.get("hotkey")}
@@ -121,3 +134,23 @@ def _reveal_keys(args: argparse.Namespace, round_index: int, hotkeys: list[str])
         if reveal is not None and reveal.round_index == round_index:
             keys[hotkey] = reveal.key
     return keys
+
+
+def _cards(args: argparse.Namespace) -> int:
+    from microtensor.archive.push import refresh_cards
+
+    token = os.environ.get("MT_HF_ARCHIVE_TOKEN", "").strip()
+    if not token and not args.dry_run:
+        print("MT_HF_ARCHIVE_TOKEN is unset; set it or pass --dry-run")
+        return 1
+    updated = refresh_cards(
+        server_url=args.server.rstrip("/"),
+        track=args.track,
+        hardware_class=args.hardware_class,
+        round_index=args.round,
+        org=args.org,
+        token=token,
+        dry_run=args.dry_run,
+    )
+    print(f"updated {updated} cards")
+    return 0

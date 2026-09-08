@@ -317,8 +317,13 @@ If it prints `INADMISSIBLE`, fix the model. Do not declare around it.
 
 Submitting grants the network the right to retain, archive and redistribute
 any artifact it certifies, together with its manifest and measured record.
-Certificates resolve against the network's archived copy, so deleting your own
-hosting after settlement does not break them.
+Emissions are the consideration for that grant. Archived artifacts are released
+to anyone, for any use including commercial use, under the licence of the base
+model they were built on, and each archive card states that licence: a system
+built on an Apache 2.0 base is Apache 2.0, and one built on a non-commercial
+base carries that restriction. Certificates resolve against the network's
+archived copy, so deleting your own hosting after settlement does not break
+them.
 
 Everything above is one-time. Mining is five commands total:
 
