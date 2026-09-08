@@ -285,7 +285,41 @@ jobs:
               write(f"{track}.jsonl", tasks)
               write(f"{track}.tests.jsonl", tests)
 
-          builders = {"code": code_bundle, "extract": extract_bundle, "classify": classify_bundle}
+          def support_bundle(track):
+              tasks, tests = [], []
+              for i in range(70):
+                  partition = "rotating" if i < 45 else "fixed"
+                  ref = f"{track}-ci-{i:03d}"
+                  name = f"tool_{i % 9}"
+                  tasks.append({
+                      "ref": ref,
+                      "prompt": (
+                          f"Functions:\n- {name}(amount: int, city: str)\n"
+                          f"- other_{i % 5}(flag: bool)\n\n"
+                          f"Request {ref}: send {i * 7} to city {i}.\n\n"
+                          "Reply with only JSON in this form and nothing else:\n"
+                          '{"tool_calls": [{"name": "...", "arguments": {...}}]}'
+                      ),
+                      "gold": None,
+                      "partition": partition,
+                      "max_output_tokens": 128,
+                      "inputs": {},
+                  })
+                  tests.append({
+                      "ref": ref,
+                      "tests": [{"tool_calls": [
+                          {"name": name, "arguments": {"amount": i * 7, "city": f"city {i}"}}
+                      ]}],
+                  })
+              write(f"{track}.jsonl", tasks)
+              write(f"{track}.tests.jsonl", tests)
+
+          builders = {
+              "code": code_bundle,
+              "extract": extract_bundle,
+              "classify": classify_bundle,
+              "support": support_bundle,
+          }
           for track in sorted({t for t, _ in competitions()}):
               builders[track](track)
           PY
