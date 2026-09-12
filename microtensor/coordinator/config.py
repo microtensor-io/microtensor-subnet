@@ -75,6 +75,7 @@ def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
 def served_config(
     corpus_version: str = CORPUS_VERSION,
     arenas: Mapping[str, Mapping[str, Any]] | None = None,
+    submission_fee: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Everything a worker needs to agree on before it measures anything.
 
@@ -87,8 +88,12 @@ def served_config(
     "track/class" — today the base-model allowlist. It rides in the anchored
     config so a worker measures against a list the chain was told about,
     rather than one served over HTTP after the fact.
+
+    `submission_fee` is the commitment rule the control plane charges. It is
+    anchored for the same reason: a miner reads the price a round ran under
+    from the chain, not from whoever answers the API that day.
     """
-    return {
+    document: dict[str, Any] = {
         "version": CONFIG_VERSION,
         "mechanism_version": MECHANISM_VERSION,
         "corpus_version": corpus_version,
@@ -113,11 +118,12 @@ def served_config(
             }
             for c in CLASSES.values()
         },
-        "arenas": {
-            key: _arena_block(value) for key, value in sorted((arenas or {}).items())
-        },
+        "arenas": {key: _arena_block(value) for key, value in sorted((arenas or {}).items())},
         "role_baselines": dict(sorted(_role_baselines(arenas).items())),
     }
+    if submission_fee:
+        document["submission_fee"] = dict(submission_fee)
+    return document
 
 
 def canonical(config: dict[str, Any]) -> bytes:

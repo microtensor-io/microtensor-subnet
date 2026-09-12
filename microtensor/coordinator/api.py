@@ -54,6 +54,7 @@ def _outbox_key(row: Mapping[str, Any]) -> tuple[int, str, str]:
 def _unordered(items: Any) -> list[str]:
     return sorted(json.dumps(item, sort_keys=True) for item in items)
 
+
 SIGNATURE_HEADER = "x-mt-signature"
 HOTKEY_HEADER = "x-mt-hotkey"
 TIMESTAMP_HEADER = "x-mt-timestamp"
@@ -158,6 +159,8 @@ class Coordinator:
     # taken at startup served an empty allowlist forever.
     arena_source: Callable[[], dict[str, dict[str, Any]]] | None = None
     corpora_source: Callable[[], dict[str, Any]] | None = None
+    submission_fee: dict[str, Any] | None = None
+    fee_source: Callable[[], dict[str, Any] | None] | None = None
     refresh_seconds: float = 300.0
     _refreshed_at: float = 0.0
 
@@ -176,12 +179,23 @@ class Coordinator:
     def _maybe_refresh(self) -> None:
         import time as _time
 
-        if self.arena_source is None:
+        if self.arena_source is None and self.fee_source is None:
             return
         now = _time.monotonic()
         if self._refreshed_at and now - self._refreshed_at < self.refresh_seconds:
             return
         self._refreshed_at = now
+        if self.fee_source is not None:
+            try:
+                fee = self.fee_source()
+            except Exception as exc:
+                log.warning("the submission fee could not be refreshed: %s", exc)
+            else:
+                if fee != self.submission_fee:
+                    self.submission_fee = fee
+                    log.info("submission fee refreshed: %s", fee or "none")
+        if self.arena_source is None:
+            return
         try:
             found = self.arena_source() or {}
         except Exception as exc:
@@ -201,7 +215,7 @@ class Coordinator:
         row = self.store.latest_round()
         if row is None:
             return {}
-        config = served_config(self.corpus_version or "", self.arenas)
+        config = served_config(self.corpus_version or "", self.arenas, self.submission_fee)
         index = int(row["round_index"])
         return {
             "corpus_digest": self.corpus_digest(),
@@ -844,9 +858,7 @@ class Coordinator:
 
 def build_app(coordinator: Coordinator) -> Any:
     if FastAPI is None:
-        raise RuntimeError(
-            'the coordinator API needs the web stack: pip install ".[coordinator]"'
-        )
+        raise RuntimeError('the coordinator API needs the web stack: pip install ".[coordinator]"')
 
     app = FastAPI(title="Microtensor coordinator", version="1")
 

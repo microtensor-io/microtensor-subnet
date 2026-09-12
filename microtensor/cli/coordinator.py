@@ -647,8 +647,22 @@ def _weights(args: argparse.Namespace) -> int:
         time.sleep(args.interval)
 
 
+def _fee(server: ServerClient | None) -> dict[str, Any] | None:
+    """The submission fee rule, or nothing when the control plane charges none or
+    cannot be reached. Unreachable reads as no fee only for the hash printed here;
+    the open itself refuses a mismatch, so a wrong guess is caught rather than
+    anchored."""
+    if server is None:
+        return None
+    try:
+        return server.submission_fee()
+    except (ServerUnreachable, ServerRefused) as exc:
+        log.warning("the submission fee was not read from the control plane: %s", exc)
+        return None
+
+
 def _config_hash_for(source: RoundSource, server: ServerClient | None = None) -> str:
-    return config_hash(served_config(CORPUS_VERSION, _arenas(server)))
+    return config_hash(served_config(CORPUS_VERSION, _arenas(server), _fee(server)))
 
 
 def _missing_reports(store: CoordinatorStore, round_index: int) -> list[tuple[str, str]]:
@@ -1202,6 +1216,8 @@ def _serve(args: argparse.Namespace) -> int:
             mirror_assignment=server.push_assignments if server is not None else None,
             arenas=_arenas(server),
             arena_source=(lambda: _arenas(server)) if server is not None else None,
+            submission_fee=_fee(server),
+            fee_source=(lambda: _fee(server)) if server is not None else None,
             corpora_source=(lambda: _corpora(args, server)) if server is not None else None,
         )
         _keep_registry_current(registry, client, service)
