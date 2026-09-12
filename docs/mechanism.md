@@ -274,7 +274,11 @@ Every submission carries a fee, paid in TAO from any coldkey to the fee address
 the round config names, before the round closes. The fee binds to one
 `(hotkey, manifest digest)`: the pointer one hotkey commits for one round. A
 new round means a new manifest, so a new fee; a hotkey that commits two
-artifacts pays twice. No hotkey is exempt and nothing is refunded.
+artifacts pays twice. No hotkey is exempt and nothing is refunded. A payment
+counts only inside the round's window: after the previous round closed and no
+later than this round's close, so a transfer made for an earlier round cannot be
+presented again, and a transfer that paid a rig's commitment in the compute pool
+cannot double as an arena fee.
 
 The rule lives in the anchored round config as `submission_fee`, so the amount
 a round ran under is pinned beside every other rule it ran under. The

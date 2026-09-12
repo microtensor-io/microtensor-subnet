@@ -379,7 +379,9 @@ mt miner fee status     # whether the packaged artifact is paid for
 the transfer is in a block, and then reports it. If the report fails after the
 transfer went through, nothing is lost: run
 `mt miner fee report --extrinsic <hash> --block <block>` and the same transfer
-is verified and bound. A transfer pays for exactly one artifact.
+is verified and bound. A transfer pays for exactly one artifact, and only if it
+landed after the previous round closed and before this one closes: an older
+payment, or one that paid a rig commitment in the compute pool, is refused.
 
 The coordinator catalogues only paid commitments. `mt miner publish`,
 `mt miner ship` and `mt miner run` check the fee before they commit and refuse
