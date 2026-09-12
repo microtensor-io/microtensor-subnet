@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 
+from microtensor.chain.client import ChainError
 from microtensor.chain.rounds import (
     release_cutoff_block,
     release_index,
@@ -31,6 +32,7 @@ from microtensor.core.constants import (
 )
 from microtensor.core.protocol import ArtifactFormat, DeclaredEnvelope, LoadManifest
 from microtensor.core.system import SystemManifest
+from microtensor.miner import fee as fee_client
 from microtensor.miner import provenance
 from microtensor.miner.config import MinerConfig, MinerConfigError
 from microtensor.miner.package import (
@@ -96,6 +98,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     push = inner.add_parser("publish", help="commit the pointer on chain for one round")
     _add_settings_arguments(push)
     push.add_argument("--upload", action="store_true", help="upload before committing")
+    _add_fee_arguments(push)
     push.add_argument(
         "--recommit",
         action="store_true",
@@ -115,6 +118,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="encrypt the artifact; publish only ciphertext, reveal the key at close",
     )
+    _add_fee_arguments(ship)
+    ship.add_argument(
+        "--pay-fee",
+        action="store_true",
+        help="transfer the submission fee from your coldkey before committing",
+    )
     ship.set_defaults(handler=_ship)
 
     unveil = inner.add_parser("reveal", help="post the key for a sealed submission")
@@ -125,7 +134,30 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     serve = inner.add_parser("run", help="re-commit automatically every round")
     _add_settings_arguments(serve)
     serve.add_argument("--max-rounds", type=int)
+    _add_fee_arguments(serve)
     serve.set_defaults(handler=_run)
+
+    fee = inner.add_parser("fee", help="the per submission fee: quote it, pay it, report it")
+    fee_inner = fee.add_subparsers(dest="fee_command", required=True)
+    for name, helptext, handler in (
+        ("quote", "print what a submission costs and where it is paid", _fee_quote),
+        ("status", "whether the packaged artifact's fee is paid", _fee_status),
+        ("pay", "transfer the fee from your coldkey and report it", _fee_pay),
+        ("report", "report a transfer you already made", _fee_report),
+    ):
+        sub = fee_inner.add_parser(name, help=helptext)
+        _add_settings_arguments(sub)
+        sub.add_argument("--server", default=PUBLIC_SERVER_URL, help="public API to talk to")
+        sub.set_defaults(handler=handler)
+    fee_inner.choices["pay"].add_argument(
+        "--yes", action="store_true", help="send without asking first"
+    )
+    fee_inner.choices["report"].add_argument(
+        "--extrinsic", required=True, help="hash of the transfer extrinsic"
+    )
+    fee_inner.choices["report"].add_argument(
+        "--block", type=int, required=True, help="block the transfer landed in"
+    )
 
     serve = inner.add_parser(
         "serve", help="train and submit unattended, reporting progress each epoch"
@@ -504,6 +536,130 @@ def _upload(args: argparse.Namespace) -> int:
         return fail(str(exc))
 
 
+def _add_fee_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--server", default=PUBLIC_SERVER_URL, help="public API to talk to")
+    parser.add_argument(
+        "--skip-fee-check",
+        action="store_true",
+        help="commit even when the submission fee is unpaid",
+    )
+
+
+def _fee_gate(args: argparse.Namespace, hotkey: str, manifest_digest: str) -> str:
+    if getattr(args, "skip_fee_check", False):
+        return ""
+    return fee_client.gate(str(getattr(args, "server", PUBLIC_SERVER_URL)), hotkey, manifest_digest)
+
+
+def _print_fee_status(manifest, status: fee_client.FeeStatus) -> None:  # type: ignore[no-untyped-def]
+    print(f"artifact    {fee_client.short(manifest.digest())}  (round {manifest.round_index})")
+    state = "paid" if status.paid else status.state
+    print(f"fee         {state}{': ' + status.reason if status.reason else ''}")
+    if status.payment_reference:
+        print(f"transfer    {status.payment_reference} in block {status.payment_block}")
+    if not status.required:
+        print("required    no; nothing to pay")
+
+
+def _pay_fee(  # type: ignore[no-untyped-def]
+    args: argparse.Namespace, config: MinerConfig, wallet, manifest
+) -> fee_client.FeeStatus:
+    """Transfer the fee and report it, printing the hash before the report so a
+    failed report never loses the payment."""
+    server = str(getattr(args, "server", PUBLIC_SERVER_URL))
+    policy = fee_client.fetch_policy(server)
+    hotkey = hotkey_address(wallet)
+    if not policy.enabled:
+        return fee_client.FeeStatus(state="not charged", paid=True, required=False)
+    current = fee_client.fetch_status(server, hotkey, manifest.digest())
+    if current.paid:
+        return current
+
+    print(f"artifact    {fee_client.short(manifest.digest())}  (round {manifest.round_index})")
+    print(f"fee         {policy.fee_tao:g} TAO per submission, not refundable")
+    print(f"pay to      {policy.pay_to}")
+    if not getattr(args, "yes", False):
+        answer = input("send this transfer from your coldkey? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            raise fee_client.FeeError("not sent")
+
+    client = open_client(config.chain, wallet)
+    receipt = client.transfer(policy.pay_to, policy.fee_tao)
+    print(f"sent        {receipt.extrinsic_hash} in block {receipt.block}")
+    try:
+        return fee_client.report(
+            server,
+            wallet,
+            manifest_digest=manifest.digest(),
+            round_index=manifest.round_index,
+            extrinsic_hash=receipt.extrinsic_hash,
+            block=receipt.block,
+        )
+    except fee_client.FeeError as exc:
+        raise fee_client.FeeError(
+            f"the transfer went through but could not be reported ({exc}); run "
+            f"`mt miner fee report --extrinsic {receipt.extrinsic_hash} --block {receipt.block}`"
+        ) from exc
+
+
+def _fee_context(args: argparse.Namespace):  # type: ignore[no-untyped-def]
+    config = _config(args)
+    wallet = open_wallet(config.chain)
+    manifest = load_packaged(config)
+    return config, wallet, manifest
+
+
+def _fee_quote(args: argparse.Namespace) -> int:
+    try:
+        policy = fee_client.fetch_policy(args.server)
+    except fee_client.FeeError as exc:
+        return fail(str(exc))
+    if not policy.enabled:
+        print("no submission fee is charged right now")
+        return 0
+    print(f"fee         {policy.fee_tao:g} TAO per submission, not refundable")
+    print(f"pay to      {policy.pay_to}")
+    print("pay with    mt miner fee pay   (after mt miner package)")
+    return 0
+
+
+def _fee_status(args: argparse.Namespace) -> int:
+    try:
+        _, wallet, manifest = _fee_context(args)
+        status = fee_client.fetch_status(args.server, hotkey_address(wallet), manifest.digest())
+    except (MinerConfigError, PackageError, fee_client.FeeError) as exc:
+        return fail(str(exc))
+    _print_fee_status(manifest, status)
+    return 0 if status.paid or not status.required else 1
+
+
+def _fee_pay(args: argparse.Namespace) -> int:
+    try:
+        config, wallet, manifest = _fee_context(args)
+        status = _pay_fee(args, config, wallet, manifest)
+    except (MinerConfigError, PackageError, fee_client.FeeError, ChainError) as exc:
+        return fail(str(exc))
+    _print_fee_status(manifest, status)
+    return 0 if status.paid else 1
+
+
+def _fee_report(args: argparse.Namespace) -> int:
+    try:
+        _, wallet, manifest = _fee_context(args)
+        status = fee_client.report(
+            args.server,
+            wallet,
+            manifest_digest=manifest.digest(),
+            round_index=manifest.round_index,
+            extrinsic_hash=args.extrinsic,
+            block=args.block,
+        )
+    except (MinerConfigError, PackageError, fee_client.FeeError) as exc:
+        return fail(str(exc))
+    _print_fee_status(manifest, status)
+    return 0 if status.paid else 1
+
+
 def _publish(args: argparse.Namespace) -> int:
     try:
         config = _config(args)
@@ -530,8 +686,12 @@ def _publish(args: argparse.Namespace) -> int:
         if args.upload:
             config = config.with_overrides(source=_do_upload(config))
 
-        _require_provenance(config, hotkey, load_packaged(config).artifact_digest, client.block())
-        published = publish(config, client, round_.index)
+        manifest = load_packaged(config)
+        _require_provenance(config, hotkey, manifest.artifact_digest, client.block())
+        blocked = _fee_gate(args, hotkey, manifest.digest())
+        if blocked:
+            return fail(blocked)
+        published = publish(config, client, round_.index, manifest)
     except (
         MinerConfigError,
         PackageError,
@@ -599,6 +759,13 @@ def _ship(args: argparse.Namespace) -> int:
         _require_provenance(
             config, hotkey_address(wallet), manifest.artifact_digest, client.block()
         )
+        if getattr(args, "pay_fee", False):
+            paid = _pay_fee(args, config, wallet, manifest)
+            if paid.required and not paid.paid:
+                return fail(f"the submission fee is {paid.state}: {paid.reason}")
+        blocked = _fee_gate(args, hotkey_address(wallet), manifest.digest())
+        if blocked:
+            return fail(blocked)
         published = publish(config, client, round_.index, manifest)
     except (
         MinerConfigError,
@@ -606,6 +773,8 @@ def _ship(args: argparse.Namespace) -> int:
         PublishError,
         UploadError,
         ProvenanceMissing,
+        fee_client.FeeError,
+        ChainError,
     ) as exc:
         return fail(str(exc))
 
@@ -622,7 +791,12 @@ def _run(args: argparse.Namespace) -> int:
     except MinerConfigError as exc:
         return fail(str(exc))
 
-    loop = PublishLoop(config, client)
+    hotkey = hotkey_address(wallet)
+
+    def check(manifest, round_index: int) -> str:  # type: ignore[no-untyped-def]
+        return _fee_gate(args, hotkey, manifest.digest())
+
+    loop = PublishLoop(config, client, fee_check=check)
     try:
         loop.run(max_rounds=args.max_rounds)
     finally:

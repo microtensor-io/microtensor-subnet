@@ -335,7 +335,7 @@ mt miner init --artifact ./my-model --track code --hardware-class mt-3g \
 
 mt miner package        # prints the artifact digest to log to your training run
 mt miner provenance     # confirm the run resolves and binds to that digest
-mt miner ship
+mt miner ship --pay-fee # upload, pay the submission fee, commit the pointer
 
 pm2 start "mt miner run" --name microtensor-miner --kill-timeout 3000
 ```
@@ -346,7 +346,8 @@ saved value for that invocation only.
 
 `mt miner ship` runs the whole pipeline: self-check if you haven't, package
 (digest every file, sign the manifest with your hotkey), upload to your source,
-and commit the pointer on chain. Uploading is real for `hf`, `s3` and `r2`; for
+pay the submission fee when you pass `--pay-fee`, and commit the pointer on
+chain. Uploading is real for `hf`, `s3` and `r2`; for
 a plain `https` host publish the files with your own tooling and use
 `mt miner publish` without `--upload`.
 
@@ -360,6 +361,31 @@ mt1|41|code|mt-3g|3f9a…c21b|hf:youracct/mt-code-3b@a1b2c3d
 competition without touching anything. It serves no traffic and holds no
 inference. It is a scheduler, and it can go down between rounds without costing
 you a thing.
+
+### The submission fee
+
+Every submission costs a fee, paid in TAO to the address the round config
+names and never refunded. It binds to the manifest you commit for one round:
+a new round is a new package, so a new fee, and two artifacts from one hotkey
+are two fees. Nobody is exempt.
+
+```bash
+mt miner fee quote      # the amount and the address, read from the public API
+mt miner fee pay        # transfer it from your coldkey and report the transfer
+mt miner fee status     # whether the packaged artifact is paid for
+```
+
+`mt miner fee pay` asks before it sends, prints the extrinsic hash the moment
+the transfer is in a block, and then reports it. If the report fails after the
+transfer went through, nothing is lost: run
+`mt miner fee report --extrinsic <hash> --block <block>` and the same transfer
+is verified and bound. A transfer pays for exactly one artifact.
+
+The coordinator catalogues only paid commitments. `mt miner publish`,
+`mt miner ship` and `mt miner run` check the fee before they commit and refuse
+an unpaid artifact with the reason printed, because an unpaid pointer only
+wastes your commit slot; pass `--skip-fee-check` if you know better.
+`mt miner run` never pays for you: package, pay, then leave it running.
 
 ### Sealed submissions
 

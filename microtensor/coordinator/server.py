@@ -34,6 +34,7 @@ def _window(current: Mapping[str, Any]) -> tuple[int, int, int] | None:
         return None
     return start, length, close_margin
 
+
 CREDENTIAL_HEADER = "x-mt-credential"
 BAD_SCHEME = "the server URL must be http or https"
 FELL_BACK = (
@@ -163,6 +164,11 @@ class ServerClient:
             "hotkey": str(found.get("reserved_hotkey", "")),
             "share": float(found.get("reserved_share", 0.0)),
         }
+
+    def paid_submissions(self) -> dict[str, Any] | None:
+        """The fee ledger: every (hotkey, manifest digest) whose submission fee is paid."""
+        found = self._call("GET", "/v1/control/fees")
+        return dict(found) if found is not None else None
 
     def push_settlement(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/v1/ingest/settlement", payload) or {}
@@ -342,6 +348,7 @@ class ServerSource:
     client: ServerClient | None = None
     config_hash: str = ""
     degraded: bool = False
+    fee_policy: dict[str, Any] | None = None
 
     def open_round(self) -> Round:
         if self.client is None:
@@ -364,6 +371,7 @@ class ServerSource:
             self.degraded = False
 
         self.config_hash = str(current.get("config_hash", ""))
+        self.fee_policy = _fee_policy(current.get("config"))
         stated = current.get("index", current.get("round"))
         if stated is None:
             log.warning("the control plane names no round index; deriving it from chain")
@@ -373,8 +381,7 @@ class ServerSource:
         state = str(current.get("state", "")).lower()
         if state and state not in RUNNING_STATES:
             raise RoundNotOpen(
-                f"the control plane holds round {published} as {state}; "
-                "no round is taking work"
+                f"the control plane holds round {published} as {state}; no round is taking work"
             )
 
         window = _window(current)
@@ -405,7 +412,50 @@ class ServerSource:
         return self.chain.seed(round_)
 
     def systems(self, round_: Round) -> tuple[Sequence[System], dict[str, Entry]]:
-        return self.chain.systems(round_)
+        """Committed on chain, and paid for when the round charges a fee.
+
+        The fee rule comes from the anchored round config, and the ledger from
+        the control plane. A round that charges a fee but cannot reach the
+        ledger refuses to catalogue rather than guessing: an unpaid pointer
+        admitted by mistake would take weight from every miner who paid.
+        """
+        found, catalogue = self.chain.systems(round_)
+        if self.client is None or not self.fee_policy:
+            return found, catalogue
+
+        ledger = self.client.paid_submissions()
+        if ledger is None:
+            raise ServerRefused(
+                "the round charges a submission fee but the control plane serves no fee ledger"
+            )
+        paid = {
+            (str(row.get("hotkey", "")), str(row.get("manifest_digest", "")))
+            for row in ledger.get("paid", ())
+        }
+
+        kept: list[System] = []
+        for system in found:
+            if (system.miner_hotkey, system.digest) in paid:
+                kept.append(system)
+                continue
+            log.warning(
+                "round %d: %s excluded at discovery: submission fee unpaid for %s",
+                round_.index,
+                system.miner_hotkey,
+                system.digest,
+            )
+        remaining = {
+            digest: entry
+            for digest, entry in catalogue.items()
+            if (entry.miner_hotkey, digest) in paid
+        }
+        log.info(
+            "round %d: %d of %d committed systems paid the submission fee",
+            round_.index,
+            len(kept),
+            len(found),
+        )
+        return kept, remaining
 
     def coldkeys(self) -> dict[str, str]:
         return self.chain.coldkeys()
@@ -448,6 +498,17 @@ class ServerSource:
                 len(permitted),
             )
         return kept
+
+
+def _fee_policy(config: Any) -> dict[str, Any] | None:
+    found = config.get("submission_fee") if isinstance(config, dict) else None
+    if not isinstance(found, dict):
+        return None
+    try:
+        charged = float(found.get("tao") or 0.0) > 0
+    except (TypeError, ValueError):
+        return None
+    return dict(found) if charged else None
 
 
 def publish_round(

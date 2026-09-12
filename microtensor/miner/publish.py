@@ -48,9 +48,7 @@ def current_round(config: MinerConfig, client: ChainClient) -> Round:
     served = _served_round(config)
     if served is not None:
         return served
-    return round_for_block(
-        client.block(), length=config.round_blocks, genesis=config.genesis_block
-    )
+    return round_for_block(client.block(), length=config.round_blocks, genesis=config.genesis_block)
 
 
 def _served_round(config: MinerConfig) -> Round | None:
@@ -83,9 +81,7 @@ def _served_round(config: MinerConfig) -> Round | None:
     )
 
 
-def commitment_for(
-    config: MinerConfig, manifest: ArtifactManifest, round_index: int
-) -> Commitment:
+def commitment_for(config: MinerConfig, manifest: ArtifactManifest, round_index: int) -> Commitment:
     return build_commitment(
         round_index,
         config.track,
@@ -142,9 +138,7 @@ def reveal(
         raise PublishError("this submission is not sealed; there is nothing to reveal")
     key = load_key(manifest.digest(), round_index)
     if key is None:
-        raise PublishError(
-            f"no key held for round {round_index}; was this artifact packaged here?"
-        )
+        raise PublishError(f"no key held for round {round_index}; was this artifact packaged here?")
     payload = Reveal(
         round_index=round_index,
         manifest_digest=manifest.digest().split(":", 1)[-1][:32],
@@ -165,10 +159,12 @@ class PublishLoop:
         *,
         poll_seconds: int = POLL_INTERVAL_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
+        fee_check: Callable[[ArtifactManifest, int], str] | None = None,
     ) -> None:
         self.config = config
         self.client = client
         self.poll_seconds = poll_seconds
+        self.fee_check = fee_check
         self._sleep = sleep
         self._running = False
         self.published: list[Published] = []
@@ -205,6 +201,13 @@ class PublishLoop:
             )
             self._sleep(self.poll_seconds)
             return None
+
+        if self.fee_check is not None:
+            reason = self.fee_check(manifest, round_.index)
+            if reason:
+                log.warning("round %d: not publishing: %s", round_.index, reason)
+                self._sleep(self.poll_seconds)
+                return None
 
         published = publish(self.config, self.client, round_.index, manifest)
         self.published.append(published)
