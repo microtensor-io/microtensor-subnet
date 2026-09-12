@@ -93,8 +93,56 @@ def extraction_f1(output: Any, gold: Any) -> float:
     return f1(_as_set(output), _as_set(gold))
 
 
+_SPAN_KEYS = ("unsupported", "unsupported_spans", "spans")
+_EMPTY_ANSWERS = frozenset({"", "none", "[]", "{}", "null"})
+
+
+def _gold_spans(gold: Any) -> set[str]:
+    """The unsupported spans a task hides, wherever the corpus put them.
+
+    Attached tests arrive as {"tests": [{"unsupported": [...]}]}; a task that
+    carries its own gold gives {"unsupported": [...]} or a bare list. Every
+    shape reduces to one set, so a corpus edit cannot silently zero a track.
+    """
+    if isinstance(gold, str):
+        try:
+            gold = json.loads(gold)
+        except ValueError:
+            return _as_set(gold)
+    if isinstance(gold, dict):
+        for key in _SPAN_KEYS:
+            if key in gold:
+                return _as_set(gold[key])
+        cases = gold.get("tests")
+        if isinstance(cases, list | tuple):
+            found: set[str] = set()
+            for case in cases:
+                found |= _gold_spans(case)
+            return found
+        return set()
+    return _as_set(gold)
+
+
+def _output_spans(output: Any) -> set[str]:
+    """What the model flagged: JSON in the declared shape, a bare list, or one
+    span per line for a model that ignored the shape. Prose that says nothing
+    is unsupported counts as an empty set."""
+    parsed = _parse_calls(output)
+    if isinstance(parsed, dict):
+        for key in _SPAN_KEYS:
+            if key in parsed:
+                return _as_set(parsed[key])
+        return set()
+    if isinstance(parsed, list | tuple):
+        return _as_set(parsed)
+    text = _CALL_NOISE.sub(" ", str(output if output is not None else "")).strip()
+    if _normalise_text(text) in _EMPTY_ANSWERS:
+        return set()
+    return {_normalise_text(line) for line in text.splitlines() if line.strip()}
+
+
 def span_accuracy(output: Any, gold: Any) -> float:
-    return fbeta(_as_set(output), _as_set(gold), beta=2.0)
+    return fbeta(_output_spans(output), _gold_spans(gold), beta=2.0)
 
 
 def exact_match_numeric(output: Any, gold: Any, tolerance: float = 1e-6) -> float:
