@@ -263,9 +263,34 @@ larger.
 | Manifest | 64 KiB | submission API |
 | Submissions per hotkey | 1 per 6 hours | submission API |
 | Slots per `(track, class)` | 40 | submission API |
+| Commitment fee | per submission, named in the round config | fee ledger, coordinator |
 
 A slot frees when its hotkey deregisters, or is evicted after **six consecutive
 rounds** below the track threshold. Parking a dead artifact does not hold a slot.
+
+### The commitment fee
+
+Every submission carries a fee, paid in TAO from any coldkey to the fee address
+the round config names, before the round closes. The fee binds to one
+`(hotkey, manifest digest)`: the pointer one hotkey commits for one round. A
+new round means a new manifest, so a new fee; a hotkey that commits two
+artifacts pays twice. No hotkey is exempt and nothing is refunded. A payment
+counts only inside the round's window: after the previous round closed and no
+later than this round's close, so a transfer made for an earlier round cannot be
+presented again, and a transfer that paid a rig's commitment in the compute pool
+cannot double as an arena fee.
+
+The rule lives in the anchored round config as `submission_fee`, so the amount
+a round ran under is pinned beside every other rule it ran under. The
+coordinator catalogues only commitments whose fee the ledger records as paid: an
+unpaid pointer is skipped at discovery with the reason `submission fee unpaid`,
+is never leased, and takes no weight. The miner CLI pays and reports in one
+step (`mt miner fee pay`) and refuses to commit an unpaid artifact unless told
+to.
+
+The fee exists to make a submission cost something. Every pointer costs the
+validators a fetch and a measurement, and a slot table that fills with free
+entries measures nothing.
 
 ---
 
@@ -934,6 +959,7 @@ produced the measurement.
 **Tunable with notice.** Never invalidates a submitted artifact:
 
 - Round length, slot caps, eviction window
+- The submission fee: amount and destination, per round config
 - `γ`, `K`, `ε`, `δ`, EMA `α`, decay/recovery rates
 - Concentration cap fraction
 - Per-track evaluation ordering

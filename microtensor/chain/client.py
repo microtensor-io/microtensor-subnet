@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from microtensor.chain.config import ChainConfig
@@ -21,6 +22,16 @@ T = TypeVar("T")
 
 class ChainError(RuntimeError):
     pass
+
+
+RAO_PER_TAO = 1_000_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class TransferReceipt:
+    extrinsic_hash: str
+    block: int
+    block_hash: str
 
 
 # Named once, because three call sites hit it and a bare AttributeError from
@@ -275,6 +286,42 @@ class SubtensorClient:
                 "commit",
                 lambda: writer(self.wallet, self._config.netuid, payload),
             )
+        )
+
+    def transfer(self, dest: str, amount_tao: float) -> TransferReceipt:
+        """Move TAO from this wallet's coldkey and say exactly where it landed.
+
+        Sent once and never retried: a transfer that timed out may still be in
+        a block, and sending it again would pay twice. The receipt carries the
+        extrinsic hash and block the fee ledger verifies against.
+        """
+        substrate = getattr(self.subtensor, "substrate", None)
+        if substrate is None:
+            raise ChainError("this bittensor build exposes no substrate interface for transfers")
+        coldkey = getattr(self.wallet, "coldkey", None)
+        if coldkey is None:
+            raise ChainError("the wallet exposes no coldkey to transfer from")
+        if amount_tao <= 0:
+            raise ChainError("the transfer amount must be positive")
+        value = round(amount_tao * RAO_PER_TAO)
+        try:
+            call = substrate.compose_call(
+                call_module="Balances",
+                call_function="transfer_keep_alive",
+                call_params={"dest": dest, "value": value},
+            )
+            extrinsic = substrate.create_signed_extrinsic(call=call, keypair=coldkey)
+            receipt = substrate.submit_extrinsic(extrinsic, wait_for_inclusion=True)
+        except Exception as exc:
+            raise ChainError(f"transfer failed: {exc}") from exc
+        if not receipt.is_success:
+            raise ChainError(f"transfer failed on chain: {receipt.error_message}")
+        block_hash = str(receipt.block_hash)
+        block = receipt.block_number
+        if block is None:
+            block = substrate.get_block_number(block_hash)
+        return TransferReceipt(
+            extrinsic_hash=str(receipt.extrinsic_hash), block=int(block), block_hash=block_hash
         )
 
     def commit_reveal_enabled(self) -> bool:
