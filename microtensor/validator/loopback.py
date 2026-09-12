@@ -129,9 +129,11 @@ def build(
     round_index: int = 3,
     miners: int = 3,
     tasks_per_round: int = 12,
-    hardware_class: str = "mt-3g",
+    hardware_class: str = "",
 ) -> Loopback:
-    track = enabled_tracks()[0].id
+    live = enabled_tracks()[0]
+    track = live.id
+    hardware_class = hardware_class or live.live_classes[0]
     round_ = round_at(round_index)
 
     os.environ["MT_ENGINES"] = REFERENCE_ENGINE
@@ -200,7 +202,9 @@ def _manifest_digest(artifact: Path) -> str:
 
 def advance(loop: Loopback) -> Loopback:
     following = loop.round.next
-    track = enabled_tracks()[0].id
+    live = enabled_tracks()[0]
+    track = live.id
+    cls = live.live_classes[0]
 
     for miner in loop.miners:
         manifest = build_manifest(
@@ -208,7 +212,7 @@ def advance(loop: Loopback) -> Loopback:
             hotkey=miner.hotkey,
             round_index=following.index,
             track=track,
-            hardware_class="mt-3g",
+            hardware_class=cls,
             source=miner.source,
             load=LOAD,
             declared=DECLARED,
@@ -216,9 +220,7 @@ def advance(loop: Loopback) -> Loopback:
         (miner.artifact / "manifest.json").write_bytes(manifest.to_json())
         loop.client.set_commitment(
             miner.hotkey,
-            build_commitment(
-                following.index, track, "mt-3g", manifest.digest(), miner.source
-            ).encode(),
+            build_commitment(following.index, track, cls, manifest.digest(), miner.source).encode(),
         )
 
     loop.client.advance(following.close_block - loop.client.block())
