@@ -165,6 +165,23 @@ class ServerClient:
             "share": float(found.get("reserved_share", 0.0)),
         }
 
+    def submission_fee(self) -> dict[str, Any] | None:
+        """The fee rule the anchored config carries, read from the public surface.
+
+        None when nothing is charged. The block mirrors the one the control
+        plane writes into a round's config, so the two hashes agree.
+        """
+        found = self._call("GET", "/v1/arena/fee", public=True) or {}
+        if not found.get("enabled"):
+            return None
+        return {
+            "per": "submission",
+            "tao": float(found.get("fee_tao") or 0.0),
+            "pay_to": str(found.get("pay_to") or ""),
+            "contract_version": int(found.get("contract_version") or 1),
+            "refundable": False,
+        }
+
     def paid_submissions(self) -> dict[str, Any] | None:
         """The fee ledger: every (hotkey, manifest digest) whose submission fee is paid."""
         found = self._call("GET", "/v1/control/fees")
