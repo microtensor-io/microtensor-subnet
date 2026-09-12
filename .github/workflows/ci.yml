@@ -349,6 +349,12 @@ jobs:
                   "and is the largest in the region", "and was visited by a king", "and cost nothing to run",
                   "and is made of marble", "and will double in size next year",
               ]
+              vocabulary = [
+                  "granite", "copper", "willow", "harvest", "lantern", "meadow", "compass", "ledger",
+                  "anchor", "beacon", "cellar", "drought", "ember", "fjord", "gable", "hearth",
+                  "ivory", "jetty", "kiln", "lattice", "mortar", "nectar", "orchid", "pewter",
+                  "quarry", "rafter", "saddle", "tallow", "umber", "velvet", "wharf", "yarrow",
+              ]
               tasks, tests = [], []
               for i in range(70):
                   partition = "rotating" if i < 45 else "fixed"
@@ -356,9 +362,14 @@ jobs:
                   rng = random.Random(i)
                   subject = rng.choice(subjects)
                   true = rng.sample(facts, 3)
-                  source = f"{subject} {true[0]}. It {true[1]}. It also {true[2]}."
+                  detail = " ".join(rng.sample(vocabulary, 6))
+                  year, count = rng.randint(1800, 2020), rng.randint(2, 900)
+                  source = (
+                      f"{subject} {true[0]}. It {true[1]} and {true[2]}. "
+                      f"Records from {year} mention {count} visitors and note: {detail}."
+                  )
                   invented = rng.choice(inventions) if i % 3 else ""
-                  statement = f"{subject} {true[0]} {invented}".strip() + "."
+                  statement = f"{subject} {true[0]} {invented}".strip() + f" Records from {year} mention {count} visitors."
                   tasks.append({
                       "ref": ref,
                       "prompt": (
