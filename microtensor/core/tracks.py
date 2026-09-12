@@ -110,12 +110,14 @@ TRACKS: Final[dict[str, Track]] = {
             classes=("mt-3g",),
         ),
         Track(
-            id="document",
+            id="guard",
             modality=Modality.TEXT,
-            metric="extraction_f1",
+            metric="span_accuracy",
+            metric_display="unsupported span F2",
             decoding=Decoding.GREEDY,
             emission_share=0.0,
             work_unit="generated_tokens",
+            classes=("mt-4g",),
             chat=True,
         ),
         Track(

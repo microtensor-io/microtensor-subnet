@@ -69,7 +69,7 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 | Track | Enabled | Metric | Emission share |
 |---|---|---|---|
 | `code` | ✅ | execution pass rate against hidden tests | 1.00 |
-| `document` | ⏸ | extraction F1 · span accuracy | none |
+| `guard` | ⏸ | unsupported span F2 · hallucination detection | none |
 | `analytics` | ⏸ | exact-match · numeric tolerance | none |
 | `support` | ⏸ | rubric F1 · tool-call correctness | none |
 | `detect` | ⏸ | mAP @ fixed IoU | none |
