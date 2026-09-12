@@ -69,9 +69,9 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 | Track | Enabled | Metric | Emission share |
 |---|---|---|---|
 | `code` | ⏸ | execution pass rate against hidden tests | none |
-| `guard` | ✅ | unsupported span F2 · hallucination detection | 0.50 |
+| `guard` | ✅ | unsupported span F2 · hallucination detection | 1.00 |
 | `analytics` | ⏸ | exact-match · numeric tolerance | none |
-| `support` | ✅ | rubric F1 · tool-call correctness | 0.50 |
+| `support` | ⏸ | rubric F1 · tool-call correctness | none |
 | `detect` | ⏸ | mAP @ fixed IoU | none |
 | `vqa` | ⏸ | answer accuracy · grounding IoU | none |
 | `speech` | ⏸ | word / character error rate | none |

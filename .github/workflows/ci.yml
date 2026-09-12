@@ -65,10 +65,9 @@ jobs:
           python - <<'PY'
           from microtensor.core.constants import CLASS_WEIGHTS
           from microtensor.core.tracks import competitions
-          expected = [("guard", "mt-4g"), ("support", "mt-3g")]
+          expected = [("guard", "mt-4g")]
           assert competitions() == expected, competitions()
-          for track, cls in expected:
-              assert CLASS_WEIGHTS[cls] == 1.0, (track, cls, CLASS_WEIGHTS)
+          assert sum(CLASS_WEIGHTS.values()) == 1.0, CLASS_WEIGHTS
           print(competitions())
           PY
       - name: A round must settle end to end with no chain
