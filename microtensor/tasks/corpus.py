@@ -187,11 +187,11 @@ def load_tests(path: Path) -> dict[str, dict[str, Any]]:
                 raise CorpusError(f"{path}:{number} is malformed: {exc}") from exc
             for case in tests:
                 if not isinstance(case, dict) or not (
-                    {"module", "expected", "tool_calls"} & set(case)
+                    {"module", "expected", "tool_calls", "unsupported"} & set(case)
                 ):
                     raise CorpusError(
-                        f"{path}:{number} has a test case that is neither "
-                        f"pair shaped, label shaped, call shaped nor module shaped"
+                        f"{path}:{number} has a test case that is neither pair shaped, "
+                        f"label shaped, call shaped, span shaped nor module shaped"
                     )
             bundle[ref] = {"entry_point": str(row.get("entry_point", "")), "tests": tests}
     return bundle
