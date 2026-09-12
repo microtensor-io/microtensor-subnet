@@ -65,7 +65,7 @@ jobs:
           python - <<'PY'
           from microtensor.core.constants import CLASS_WEIGHTS
           from microtensor.core.tracks import competitions
-          expected = [("support", "mt-3g")]
+          expected = [("guard", "mt-4g"), ("support", "mt-3g")]
           assert competitions() == expected, competitions()
           assert sum(CLASS_WEIGHTS.values()) == 1.0, CLASS_WEIGHTS
           print(competitions())
@@ -332,11 +332,58 @@ jobs:
               write(f"{track}.jsonl", tasks)
               write(f"{track}.tests.jsonl", tests)
 
+          def guard_bundle(track):
+              subjects = [
+                  "The bridge", "The museum", "The river", "The company", "The village", "The festival",
+                  "The reactor", "The orchard", "The library", "The harbour", "The observatory", "The clinic",
+              ]
+              facts = [
+                  "opened in 1962", "spans 400 metres", "employs 300 people", "was rebuilt after a flood",
+                  "closes on Mondays", "sits above the old town", "was designed by a local architect",
+                  "hosts a market each spring", "runs on hydro power", "was founded by two sisters",
+                  "holds 12,000 volumes", "exports most of its harvest", "was painted red in 1990",
+                  "serves three districts", "was moved twice", "keeps a bell from 1701",
+              ]
+              inventions = [
+                  "and won a national prize", "and has never closed", "and was built in one summer",
+                  "and is the largest in the region", "and was visited by a king", "and cost nothing to run",
+                  "and is made of marble", "and will double in size next year",
+              ]
+              tasks, tests = [], []
+              for i in range(70):
+                  partition = "rotating" if i < 45 else "fixed"
+                  ref = f"{track}-ci-{i:03d}"
+                  rng = random.Random(i)
+                  subject = rng.choice(subjects)
+                  true = rng.sample(facts, 3)
+                  source = f"{subject} {true[0]}. It {true[1]}. It also {true[2]}."
+                  invented = rng.choice(inventions) if i % 3 else ""
+                  statement = f"{subject} {true[0]} {invented}".strip() + "."
+                  tasks.append({
+                      "ref": ref,
+                      "prompt": (
+                          "Below is a source passage and a statement generated from it.\n"
+                          "Return every part of the statement that the source does not support.\n\n"
+                          f"Source:\n{source}\n\nStatement:\n{statement}\n\n"
+                          "Reply with only JSON in this form and nothing else:\n"
+                          '{"unsupported": ["..."]}\n'
+                          'Return {"unsupported": []} when the source supports every part of the statement.'
+                      ),
+                      "gold": None,
+                      "partition": partition,
+                      "max_output_tokens": 96,
+                      "inputs": {},
+                  })
+                  tests.append({"ref": ref, "tests": [{"unsupported": [invented] if invented else []}]})
+              write(f"{track}.jsonl", tasks)
+              write(f"{track}.tests.jsonl", tests)
+
           builders = {
               "code": code_bundle,
               "extract": extract_bundle,
               "classify": classify_bundle,
               "support": support_bundle,
+              "guard": guard_bundle,
           }
           for track in sorted({t for t, _ in competitions()}):
               builders[track](track)

@@ -88,7 +88,7 @@ GENERATION_SECONDS_PER_TASK: Final[int] = 30
 CPU_SECONDS_PER_ARTIFACT: Final[int] = 12_000
 CORPUS_VERSION: Final[str] = "2026.1"
 
-CLASS_WEIGHTS: Final[dict[str, float]] = {"mt-3g": 1.0}
+CLASS_WEIGHTS: Final[dict[str, float]] = {"mt-3g": 0.5, "mt-4g": 0.5}
 
 HOST_PROFILE: Final[str] = "mt-16g"
 
