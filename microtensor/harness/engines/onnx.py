@@ -149,6 +149,23 @@ class OnnxEngine:
             past[entry.name] = numpy.zeros(shape, dtype=numpy.float32)
         return past
 
+    def _declared_tokens(self) -> int:
+        """The context the manifest declares, which the graph is held to.
+
+        Unlike llama.cpp, onnxruntime accepts any sequence a graph will take,
+        so nothing stopped an artifact from answering prompts far longer than
+        the input it declared. The declaration sizes the profiling probe and
+        therefore the measured cost, so an artifact that ignored it bought a
+        low cost it never paid for.
+        """
+        if self._manifest is None:
+            return 0
+        for key in ("tokens", "context", "sequence_length", "max_tokens"):
+            value = self._manifest.max_input.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+        return 0
+
     def generate(self, request: Request) -> Response:
         if self._session is None or self._tokenizer is None:
             return Response.failed(request.task_ref, "engine was asked to generate before load")
@@ -164,6 +181,12 @@ class OnnxEngine:
 
         try:
             tokens = list(self._tokenizer.encode(request.prompt).ids)
+            declared = self._declared_tokens()
+            if declared and len(tokens) > declared:
+                return Response.failed(
+                    request.task_ref,
+                    f"requested tokens ({len(tokens)}) exceed the declared context of {declared}",
+                )
             produced: list[int] = []
             past = self._empty_past(1) if self._past_inputs else {}
             cursor = tokens
