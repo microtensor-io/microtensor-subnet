@@ -445,14 +445,23 @@ class ServerSource:
         """
         found, catalogue = self.chain.systems(round_)
         found, catalogue = self._drop_blocked(round_, found, catalogue)
-        if self.client is None or not self.fee_policy:
+        if self.client is None:
             return found, catalogue
 
         ledger = self.client.paid_submissions()
         if ledger is None:
-            raise ServerRefused(
-                "the round charges a submission fee but the control plane serves no fee ledger"
-            )
+            if self.fee_policy:
+                raise ServerRefused(
+                    "the round charges a submission fee but the control plane serves no fee ledger"
+                )
+            return found, catalogue
+
+        # The freeze builds its round from the store rather than through
+        # open_round, so fee_policy is unset on that path. Reading the charge
+        # from the ledger itself keeps the gate independent of call order:
+        # round 1241 catalogued two unpaid systems because it was not.
+        if not self.fee_policy and not _charges(ledger.get("policy")):
+            return found, catalogue
         paid = {
             (str(row.get("hotkey", "")), str(row.get("manifest_digest", "")))
             for row in ledger.get("paid", ())
@@ -566,6 +575,16 @@ class ServerSource:
                 len(permitted),
             )
         return kept
+
+
+def _charges(policy: Any) -> bool:
+    """Whether the control plane says a fee is being charged."""
+    if not isinstance(policy, dict) or not policy.get("enabled", False):
+        return False
+    try:
+        return float(policy.get("fee_tao") or 0.0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _fee_policy(config: Any) -> dict[str, Any] | None:
