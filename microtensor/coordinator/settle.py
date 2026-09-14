@@ -401,9 +401,20 @@ def build(
     previous: Mapping[str, float] | None = None,
     reserved: Mapping[str, Any] | None = None,
     dropped: Mapping[str, int] | None = None,
+    blocked: Sequence[str] = (),
 ) -> Settlement:
     """The canonical settlement for one round."""
     entries = to_entries(reconciled, catalogue)
+    barred = set(blocked)
+    if barred:
+        banned = [e for e in entries if e.miner_hotkey in barred]
+        for e in banned:
+            log.warning(
+                "round %d: %s earns nothing; the hotkey is blocked",
+                round_index,
+                e.miner_hotkey,
+            )
+        entries = [e for e in entries if e.miner_hotkey not in barred]
     held = [
         e
         for e in entries
