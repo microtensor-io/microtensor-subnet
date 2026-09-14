@@ -187,6 +187,13 @@ class ServerClient:
         found = self._call("GET", "/v1/control/fees")
         return dict(found) if found is not None else None
 
+    def blocklist(self) -> list[str] | None:
+        """Hotkeys the control plane has barred from every arena."""
+        found = self._call("GET", "/v1/control/blocklist")
+        if found is None:
+            return None
+        return [str(h) for h in found.get("blocked", ())]
+
     def push_settlement(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/v1/ingest/settlement", payload) or {}
 
@@ -437,6 +444,7 @@ class ServerSource:
         admitted by mistake would take weight from every miner who paid.
         """
         found, catalogue = self.chain.systems(round_)
+        found, catalogue = self._drop_blocked(round_, found, catalogue)
         if self.client is None or not self.fee_policy:
             return found, catalogue
 
@@ -472,6 +480,49 @@ class ServerSource:
             len(kept),
             len(found),
         )
+        return kept, remaining
+
+    def _drop_blocked(
+        self, round_: Round, found: Sequence[System], catalogue: dict[str, Entry]
+    ) -> tuple[list[System], dict[str, Entry]]:
+        """Remove every system whose miner the control plane has barred.
+
+        Fail closed for the same reason the fee gate does: a server that cannot
+        answer leaves a ban unenforced, and a banned system admitted by mistake
+        takes weight from every miner who ran a real model.
+        """
+        if self.client is None:
+            return list(found), catalogue
+
+        blocked = self.client.blocklist()
+        if blocked is None:
+            raise ServerRefused("the control plane serves no blocklist; refusing to catalogue")
+        barred = set(blocked)
+        if not barred:
+            return list(found), catalogue
+
+        kept = []
+        for system in found:
+            if system.miner_hotkey in barred:
+                log.warning(
+                    "round %d: %s excluded at discovery: hotkey is blocked",
+                    round_.index,
+                    system.miner_hotkey,
+                )
+                continue
+            kept.append(system)
+        remaining = {
+            digest: entry
+            for digest, entry in catalogue.items()
+            if entry.miner_hotkey not in barred
+        }
+        if len(kept) != len(found):
+            log.info(
+                "round %d: %d of %d committed systems are from blocked hotkeys",
+                round_.index,
+                len(found) - len(kept),
+                len(found),
+            )
         return kept, remaining
 
     def coldkeys(self) -> dict[str, str]:
