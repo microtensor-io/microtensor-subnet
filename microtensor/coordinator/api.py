@@ -150,7 +150,7 @@ class Coordinator:
     coldkeys: dict[str, str] = None  # type: ignore[assignment]
     uid_by_hotkey: dict[str, int] = None  # type: ignore[assignment]
     reserve: Callable[[], dict[str, Any]] | None = None
-    blocked: Callable[[], list[str]] | None = None
+    blocked: Callable[[], list[str] | None] | None = None
     signer: Callable[[dict[str, Any]], str] | None = None
     mirror_report: Callable[[int, list[dict[str, Any]]], Any] | None = None
     mirror_assignment: AssignmentMirror | None = None
