@@ -706,6 +706,7 @@ def _settle(args: argparse.Namespace) -> int:
             catalogue=store.catalogue(args.round),
             uid_by_hotkey=store.uids(),
             reserve=server.reserved if server is not None else None,
+            blocked=server.blocklist if server is not None else None,
             signer=_signer(args),
             mirror_report=server.push_reports if server is not None else None,
         )
@@ -1211,6 +1212,7 @@ def _serve(args: argparse.Namespace) -> int:
             corpora=_corpora(args, server),
             uid_by_hotkey=_live_uids(store, client),
             reserve=server.reserved if server is not None else None,
+            blocked=server.blocklist if server is not None else None,
             signer=_signer(args),
             mirror_report=server.push_reports if server is not None else None,
             mirror_assignment=server.push_assignments if server is not None else None,

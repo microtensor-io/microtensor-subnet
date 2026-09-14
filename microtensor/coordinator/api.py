@@ -150,6 +150,7 @@ class Coordinator:
     coldkeys: dict[str, str] = None  # type: ignore[assignment]
     uid_by_hotkey: dict[str, int] = None  # type: ignore[assignment]
     reserve: Callable[[], dict[str, Any]] | None = None
+    blocked: Callable[[], list[str] | None] | None = None
     signer: Callable[[dict[str, Any]], str] | None = None
     mirror_report: Callable[[int, list[dict[str, Any]]], Any] | None = None
     mirror_assignment: AssignmentMirror | None = None
@@ -556,6 +557,7 @@ class Coordinator:
             coldkeys=self.coldkeys,
             reserved=self._reserved(),
             dropped=self._dropped(round_index, int(row.get("seed_block", 0) or 0)),
+            blocked=self._blocked(),
         )
         return settlement, result
 
@@ -810,6 +812,21 @@ class Coordinator:
         self.store.sign(round_index, signature)
         log.info("round %d settlement signed in place", round_index)
         return self.store.settlement(round_index) or published
+
+    def _blocked(self) -> list[str]:
+        """Hotkeys the control plane has barred, which earn nothing.
+
+        An unreachable control plane returns nothing rather than raising: the
+        discovery gate already refused to catalogue a blocked hotkey, so this
+        is the second of two fences, not the only one.
+        """
+        if self.blocked is None:
+            return []
+        try:
+            return list(self.blocked() or [])
+        except Exception as exc:
+            log.warning("the blocklist could not be read at settlement: %s", exc)
+            return []
 
     def _reserved(self) -> dict[str, Any]:
         """Resolve the control plane's hold against this metagraph.
