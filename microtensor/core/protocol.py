@@ -36,6 +36,7 @@ class GateFailure(str, Enum):
     RSS_OVER_DECLARED = "measured memory exceeds its own declaration"
     LATENCY_OVER_DECLARED = "measured latency exceeds its own declaration"
     SIZE_OVER_DECLARED = "measured size exceeds its own declaration"
+    SIZE_UNDER_BASE = "too small to hold the base model it declares"
     BUDGET_CEILING = "exhausted its cpu budget before finishing the round"
 
 
@@ -171,8 +172,12 @@ def evaluate_gate(
     measured: MeasuredEnvelope,
     declared: DeclaredEnvelope,
     hardware: HardwareClass,
+    base_floor_bytes: int = 0,
 ) -> GateResult:
     failures: list[GateFailure] = []
+
+    if base_floor_bytes > 0 and measured.size_bytes < base_floor_bytes:
+        failures.append(GateFailure.SIZE_UNDER_BASE)
 
     if measured.size_bytes > hardware.max_size_bytes:
         failures.append(GateFailure.SIZE_CEILING)
