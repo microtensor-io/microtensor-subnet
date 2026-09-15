@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from microtensor.core.basemodels import size_floor_bytes
 from microtensor.core.protocol import (
     Evaluation,
     Fault,
@@ -469,7 +470,12 @@ def evaluate_participant(
         log.info("%s scored zero: %s", participant.hotkey, failure)
         return _evaluation(participant, tasks)
 
-    gate = evaluate_gate(measured, participant.manifest.declared, hardware)
+    gate = evaluate_gate(
+        measured,
+        participant.manifest.declared,
+        hardware,
+        size_floor_bytes(participant.manifest.load.base_model),
+    )
     if not gate.admitted:
         log.info("%s inadmissible: %s", participant.hotkey, gate.reason)
         return _evaluation(participant, tasks, gate=gate, measured=measured)

@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from microtensor.core.basemodels import size_floor_bytes
 from microtensor.core.constants import (
     CPU_SECONDS_PER_ARTIFACT,
     GENERATION_SECONDS_PER_TASK,
@@ -185,7 +186,7 @@ def selfcheck(
     return SelfCheck(
         measured=measured,
         proposed=proposed,
-        gate=evaluate_gate(measured, proposed, hardware),
+        gate=evaluate_gate(measured, proposed, hardware, size_floor_bytes(load.base_model)),
         hardware_class=hardware_class,
         measured_generation_seconds=generation_seconds,
     )
