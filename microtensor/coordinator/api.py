@@ -558,8 +558,21 @@ class Coordinator:
             reserved=self._reserved(),
             dropped=self._dropped(round_index, int(row.get("seed_block", 0) or 0)),
             blocked=self._blocked(),
+            floors=self._floors(),
         )
         return settlement, result
+
+    def _floors(self) -> dict[str, float]:
+        found: dict[str, float] = {}
+        for arena, config in (self.arenas or {}).items():
+            value = dict(config or {}).get("quality_floor")
+            if value is None:
+                continue
+            try:
+                found[str(arena)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return found
 
     def adopt(self, payload: Mapping[str, Any]) -> tuple[bool, str]:
         raw_index = payload.get("round", payload.get("round_index"))

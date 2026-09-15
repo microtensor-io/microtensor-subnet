@@ -77,11 +77,15 @@ def eligible(
     entrants: Sequence[Entrant],
     threshold: float = TRACK_THRESHOLD,
     min_rounds: int = MIN_ROUNDS_OBSERVED,
+    floor: float = 0.0,
 ) -> list[Entrant]:
     return [
         e
         for e in entrants
-        if e.quality >= threshold and e.quality > 0.0 and e.rounds_observed >= min_rounds
+        if e.quality >= threshold
+        and e.quality > floor
+        and e.quality > 0.0
+        and e.rounds_observed >= min_rounds
     ]
 
 
@@ -241,9 +245,10 @@ def allocate(
     min_rounds: int = MIN_ROUNDS_OBSERVED,
     incumbent_decay: float = INCUMBENT_DECAY,
     shares: Sequence[float] = POSITION_SHARES,
+    floor: float = 0.0,
 ) -> dict[str, float]:
     """Emission shares by rank on the cost-quality frontier, paid down a ladder."""
-    survivors = eligible(entrants, threshold, min_rounds)
+    survivors = eligible(entrants, threshold, min_rounds, floor)
     if not survivors:
         return {}
 

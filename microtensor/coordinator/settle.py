@@ -152,7 +152,9 @@ def to_entries(
     return entries
 
 
-def allocate(entries: Sequence[Entry]) -> dict[tuple[str, str], dict[str, float]]:
+def allocate(
+    entries: Sequence[Entry], floors: Mapping[str, float] | None = None
+) -> dict[tuple[str, str], dict[str, float]]:
     """Emission share per competition, by exclusive hypervolume.
 
     The same frontier module every worker runs. The coordinator computes no
@@ -176,11 +178,17 @@ def allocate(entries: Sequence[Entry]) -> dict[tuple[str, str], dict[str, float]
             for e in entries
             if (e.track, e.hardware_class) == competition
         ]
-        shares = frontier.allocate(entrants)
+        floor = float((floors or {}).get(f"{track}/{hardware_class}", 0.0))
+        shares = frontier.allocate(entrants, floor=floor)
         if shares:
             per_competition[competition] = shares
         else:
-            log.info("%s/%s: nobody cleared the track threshold", track, hardware_class)
+            log.info(
+                "%s/%s: nobody cleared the track threshold or the %.4f quality floor",
+                track,
+                hardware_class,
+                floor,
+            )
 
     return per_competition
 
@@ -402,6 +410,7 @@ def build(
     reserved: Mapping[str, Any] | None = None,
     dropped: Mapping[str, int] | None = None,
     blocked: Sequence[str] = (),
+    floors: Mapping[str, float] | None = None,
 ) -> Settlement:
     """The canonical settlement for one round."""
     entries = to_entries(reconciled, catalogue)
@@ -430,7 +439,9 @@ def build(
             e.replication,
         )
     withheld = {e.system_digest for e in held}
-    per_competition = allocate([e for e in entries if e.system_digest not in withheld])
+    per_competition = allocate(
+        [e for e in entries if e.system_digest not in withheld], floors
+    )
     combined = combine_competitions(per_competition)
 
     capped = combined
