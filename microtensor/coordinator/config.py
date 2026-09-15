@@ -66,6 +66,9 @@ def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
             if k in ("max_size_bytes", "max_rss_bytes", "max_p95_ms") and int(v) > 0
         },
     }
+    floor = value.get("quality_floor")
+    if floor is not None:
+        block["quality_floor"] = round(float(floor), 6)
     environment = value.get("environment_digest")
     if environment:
         block["environment_digest"] = str(environment)

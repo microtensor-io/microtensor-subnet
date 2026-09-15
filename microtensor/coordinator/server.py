@@ -272,6 +272,9 @@ class ServerClient:
                 value = arena.get(field_name)
                 if isinstance(value, int) and value > 0:
                     block[field_name] = value
+            floor = arena.get("quality_floor")
+            if isinstance(floor, (int, float)) and 0.0 <= float(floor) < 1.0:
+                block["quality_floor"] = float(floor)
             ceilings = arena.get("ceilings")
             if isinstance(ceilings, dict):
                 block["ceilings"] = {
