@@ -6,6 +6,8 @@ import sys
 import time
 from typing import Any
 
+RESULT_CAP_BYTES = 1_000_000
+
 ALLOWED_ACTIONS = frozenset(
     {
         getattr(sqlite3, "SQLITE_SELECT", 21),
@@ -47,7 +49,10 @@ def _run(connection: sqlite3.Connection, sql: str, row_cap: int, deadline: float
         connection.set_progress_handler(None, 0)
     if len(rows) > row_cap:
         return {"error": f"more than {row_cap} rows"}
-    return {"rows": [[_cell(v) for v in row] for row in rows]}
+    payload = [[_cell(v) for v in row] for row in rows]
+    if len(json.dumps(payload)) > RESULT_CAP_BYTES:
+        return {"error": f"result larger than {RESULT_CAP_BYTES} bytes"}
+    return {"rows": payload}
 
 
 def main() -> int:
