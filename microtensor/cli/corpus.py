@@ -14,12 +14,13 @@ from microtensor.core.tracks import enabled_tracks, get_track
 from microtensor.tasks import bundle, contamination
 from microtensor.tasks.corpus import (
     ADMISSION_MINIMUMS,
-    FIXED,
-    ROTATING,
     Corpus,
     CorpusError,
+    FIXED,
+    ROTATING,
     load_all,
     load_corpus,
+    unresolved_databases,
 )
 from microtensor.tasks.selection import partition_sizes
 
@@ -138,7 +139,8 @@ def _check(args: argparse.Namespace) -> int:
         dangling = unresolved_databases(corpora[name])
         if dangling:
             problems.append(
-                f"{name}: {len(dangling)} task(s) reference a database databases.json does not carry"
+                f"{name}: {len(dangling)} task(s) reference a database that databases.json "
+                "does not carry"
             )
             for ref in dangling[:5]:
                 print(f"  PROBLEM {ref}: db_ref not in databases.json")
