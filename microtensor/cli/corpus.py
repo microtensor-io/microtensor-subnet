@@ -14,10 +14,10 @@ from microtensor.core.tracks import enabled_tracks, get_track
 from microtensor.tasks import bundle, contamination
 from microtensor.tasks.corpus import (
     ADMISSION_MINIMUMS,
-    Corpus,
-    CorpusError,
     FIXED,
     ROTATING,
+    Corpus,
+    CorpusError,
     load_all,
     load_corpus,
     unresolved_databases,
