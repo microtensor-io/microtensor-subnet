@@ -45,6 +45,13 @@ CERT_BANDS: Final[dict[str, dict[str, float]]] = {
         "p95_hi": 389.684,
         "rss_max": 534_946_000,
     },
+    "mt-4g": {
+        "p50_lo": 174.873,
+        "p50_hi": 270.532,
+        "p95_lo": 175.505,
+        "p95_hi": 286.494,
+        "rss_max": 379_230_000,
+    },
 }
 
 DEFAULT_POLICY: Final[dict[str, Any]] = {
