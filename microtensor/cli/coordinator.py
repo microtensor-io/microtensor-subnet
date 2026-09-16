@@ -26,7 +26,12 @@ from microtensor.coordinator.server import (
     ServerUnreachable,
     publish_round,
 )
-from microtensor.coordinator.settle import Entry, Settlement, standing_weights
+from microtensor.coordinator.settle import (
+    Entry,
+    Settlement,
+    normalise_penalties,
+    standing_weights,
+)
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.coordinator.tokens import KeyRing
 from microtensor.core.constants import (
@@ -595,7 +600,8 @@ def _anchor(args: argparse.Namespace) -> int:
 def _weight_vector(
     store: CoordinatorStore, held: dict[str, Any], uid_by_hotkey: dict[str, int]
 ) -> WeightVector:
-    return quantise_weights(standing_weights(store, held or {}, uid_by_hotkey))
+    declared = normalise_penalties((held or {}).get("penalties") or (), uid_by_hotkey)
+    return quantise_weights(standing_weights(store, held or {}, uid_by_hotkey, declared))
 
 
 def _weights(args: argparse.Namespace) -> int:
