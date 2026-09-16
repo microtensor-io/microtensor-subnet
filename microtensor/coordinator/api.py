@@ -559,6 +559,7 @@ class Coordinator:
             dropped=self._dropped(round_index, int(row.get("seed_block", 0) or 0)),
             blocked=self._blocked(),
             floors=self._floors(),
+            reference_costs=self._reference_costs(),
         )
         return settlement, result
 
@@ -572,6 +573,18 @@ class Coordinator:
                 found[str(arena)] = float(value)
             except (TypeError, ValueError):
                 continue
+        return found
+
+    def _reference_costs(self) -> dict[str, float]:
+        found: dict[str, float] = {}
+        for arena, config in (self.arenas or {}).items():
+            value = dict(config or {}).get("reference_cost_ms")
+            try:
+                cost = float(value) if value is not None else 0.0
+            except (TypeError, ValueError):
+                continue
+            if cost > 0.0:
+                found[str(arena)] = cost
         return found
 
     def adopt(self, payload: Mapping[str, Any]) -> tuple[bool, str]:

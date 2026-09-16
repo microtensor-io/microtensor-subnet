@@ -69,6 +69,12 @@ def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
     floor = value.get("quality_floor")
     if floor is not None:
         block["quality_floor"] = round(float(floor), 6)
+    corpus = value.get("corpus_version")
+    if corpus:
+        block["corpus_version"] = str(corpus)
+    reference = value.get("reference_cost_ms")
+    if reference is not None and int(reference) > 0:
+        block["reference_cost_ms"] = int(reference)
     environment = value.get("environment_digest")
     if environment:
         block["environment_digest"] = str(environment)

@@ -268,7 +268,7 @@ class ServerClient:
             environment = arena.get("environment_digest")
             if environment:
                 block["environment_digest"] = str(environment)
-            for field_name in ("cpu_seconds_per_artifact", "tasks_per_round"):
+            for field_name in ("cpu_seconds_per_artifact", "tasks_per_round", "reference_cost_ms"):
                 value = arena.get(field_name)
                 if isinstance(value, int) and value > 0:
                     block[field_name] = value
@@ -524,9 +524,7 @@ class ServerSource:
                 continue
             kept.append(system)
         remaining = {
-            digest: entry
-            for digest, entry in catalogue.items()
-            if entry.miner_hotkey not in barred
+            digest: entry for digest, entry in catalogue.items() if entry.miner_hotkey not in barred
         }
         if len(kept) != len(found):
             log.info(

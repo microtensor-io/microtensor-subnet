@@ -110,6 +110,7 @@ class RoundBudget:
     max_size_bytes: int = 0
     max_rss_bytes: int = 0
     max_p95_ms: int = 0
+    reference_cost_ms: int = 0
 
 
 def budgets_from(config: Mapping[str, Any]) -> dict[tuple[str, str], RoundBudget]:
@@ -137,6 +138,7 @@ def budgets_from(config: Mapping[str, Any]) -> dict[tuple[str, str], RoundBudget
             max_size_bytes=int(ceilings.get("max_size_bytes") or 0),
             max_rss_bytes=int(ceilings.get("max_rss_bytes") or 0),
             max_p95_ms=int(ceilings.get("max_p95_ms") or 0),
+            reference_cost_ms=int(block.get("reference_cost_ms") or 0),
         )
     return out
 

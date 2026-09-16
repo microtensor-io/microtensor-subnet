@@ -18,7 +18,7 @@ WORKLOAD_VERSION: Final[str] = "1"
 DEFAULT_REPETITIONS: Final[int] = 15
 HASH_ROUNDS: Final[int] = 60_000
 
-LAUNCH_CLASSES: Final[tuple[str, ...]] = ("mt-3g",)
+LAUNCH_CLASSES: Final[tuple[str, ...]] = ("mt-3g", "mt-4g", "mt-16g")
 
 BUFFER_BYTES: Final[dict[str, int]] = {
     "mt-16g": 384 * 1024**2,
@@ -237,8 +237,7 @@ def band_verdict(certification: Certification) -> tuple[bool | None, str]:
     band = CERT_BANDS.get(certification.class_id)
     if band is None:
         return None, (
-            "no published tolerance band for this class yet; measurements recorded "
-            "for calibration"
+            "no published tolerance band for this class yet; measurements recorded for calibration"
         )
     ok = (
         band["p50_lo"] <= certification.latency.p50 <= band["p50_hi"]
