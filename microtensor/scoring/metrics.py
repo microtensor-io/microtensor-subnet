@@ -89,8 +89,54 @@ def schema_conformance(output: Any, gold: Any) -> float:
     return len(required & present) / len(required)
 
 
+_FIELD_KEYS = ("fields", "expected", "gold")
+
+
+def _gold_fields(gold: Any) -> set[str]:
+    if isinstance(gold, str):
+        try:
+            gold = json.loads(gold)
+        except ValueError:
+            return _as_set(gold)
+    if isinstance(gold, dict):
+        for key in _FIELD_KEYS:
+            if key in gold:
+                return _gold_fields(gold[key])
+        cases = gold.get("tests")
+        if isinstance(cases, list | tuple):
+            found: set[str] = set()
+            for case in cases:
+                found |= _gold_fields(case)
+            return found
+    return _as_set(gold)
+
+
+def _output_fields(output: Any) -> set[str]:
+    parsed = _parse_calls(output)
+    if isinstance(parsed, dict):
+        for key in _FIELD_KEYS:
+            if isinstance(parsed.get(key), dict):
+                return _as_set(parsed[key])
+        return _as_set(parsed)
+    if isinstance(parsed, list | tuple):
+        return _as_set(parsed)
+    text = _CALL_NOISE.sub(" ", str(output if output is not None else ""))
+    pairs: set[str] = set()
+    for line in text.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() and value.strip():
+            pairs.add(f"{_normalise_text(key)}={_normalise_text(value)}")
+    return pairs
+
+
 def extraction_f1(output: Any, gold: Any) -> float:
-    return f1(_as_set(output), _as_set(gold))
+    return f1(_output_fields(output), _gold_fields(gold))
+
+
+def execution_match(output: Any, gold: Any) -> float:
+    from microtensor.scoring import sql
+
+    return sql.execution_match(output, gold)
 
 
 _SPAN_KEYS = ("unsupported", "unsupported_spans", "spans")
@@ -342,6 +388,7 @@ METRICS: Final[dict[str, Metric]] = {
     "entity_micro_f1": entity_micro_f1,
     "schema_conformance": schema_conformance,
     "extraction_f1": extraction_f1,
+    "execution_match": execution_match,
     "span_accuracy": span_accuracy,
     "exact_match_numeric": exact_match_numeric,
     "rubric_f1_tool_calls": rubric_f1_tool_calls,

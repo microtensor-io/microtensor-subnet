@@ -69,7 +69,9 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 | Track | Enabled | Metric | Emission share |
 |---|---|---|---|
 | `code` | ⏸ | execution pass rate against hidden tests | none |
-| `guard` | ✅ | unsupported span F2 · hallucination detection | 1.00 |
+| `invoice` | ✅ | extraction F1 · invoice fields as `name=value` pairs | 0.50 |
+| `text2sql` | ✅ | execution match · the query is run against the task's SQLite database | 0.50 |
+| `guard` | ⏸ | unsupported span F2 · hallucination detection | none |
 | `analytics` | ⏸ | exact-match · numeric tolerance | none |
 | `support` | ⏸ | rubric F1 · tool-call correctness | none |
 | `detect` | ⏸ | mAP @ fixed IoU | none |

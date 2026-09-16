@@ -62,6 +62,7 @@ SUPPORTED_ARCHITECTURES: Final[frozenset[str]] = frozenset(
         "qwen2",
         "qwen3",
         "qwen3moe",
+        "qwen35",
         "llama",
         "gemma2",
         "gemma3",

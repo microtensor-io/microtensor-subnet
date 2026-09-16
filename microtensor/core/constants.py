@@ -26,7 +26,7 @@ def _ms(name: str, default: float) -> float:
 
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
-RELEASE_VERSION: Final[str] = "0.3.2"
+RELEASE_VERSION: Final[str] = "0.4.0"
 
 # What the rules are. Moves only when admission or scoring changes, because
 # validators on different values here measure the same round differently, and
@@ -35,7 +35,7 @@ RELEASE_VERSION: Final[str] = "0.3.2"
 # These were one constant. That made every release read as a rule change, so
 # auto-update held all of them forever waiting for an activation block that a
 # bug fix has no reason to declare.
-MECHANISM_VERSION: Final[str] = "0.4.0"
+MECHANISM_VERSION: Final[str] = "0.5.0"
 DEFAULT_NETUID: Final[int] = 92
 GENESIS_BLOCK: Final[int] = _blocks("MT_GENESIS_BLOCK", -17805488)
 

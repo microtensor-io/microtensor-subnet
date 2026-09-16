@@ -35,6 +35,8 @@ BASE_MODELS: Final[dict[str, BaseModel]] = {
     "microsoft/Phi-4-mini-instruct": BaseModel(
         "microsoft/Phi-4-mini-instruct", 3_836_021_760, HF_SAFETENSORS
     ),
+    "Qwen/Qwen3.5-4B": BaseModel("Qwen/Qwen3.5-4B", 4_659_865_088, HF_SAFETENSORS),
+    "Qwen/Qwen3.5-9B": BaseModel("Qwen/Qwen3.5-9B", 9_653_104_368, HF_SAFETENSORS),
 }
 
 MIN_BITS_PER_WEIGHT: Final[float] = 1.5
