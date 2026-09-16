@@ -767,6 +767,7 @@ class Coordinator:
                 }
                 for task in held.tasks
             ],
+            "databases": dict(held.databases),
         }
 
     def _dropped(self, round_index: int, block: int) -> dict[str, int]:

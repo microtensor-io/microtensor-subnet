@@ -135,6 +135,14 @@ def _check(args: argparse.Namespace) -> int:
         )
 
     for name in sorted(corpora):
+        dangling = unresolved_databases(corpora[name])
+        if dangling:
+            problems.append(
+                f"{name}: {len(dangling)} task(s) reference a database databases.json does not carry"
+            )
+            for ref in dangling[:5]:
+                print(f"  PROBLEM {ref}: db_ref not in databases.json")
+    for name in sorted(corpora):
         if (args.directory / f"{name}.tests.jsonl").is_file():
             bundle_problems = bundle.verify_bundle(args.directory, name)
             problems.extend(bundle_problems)
@@ -191,6 +199,7 @@ def _check_bundle(args: argparse.Namespace) -> int:
             "manifest": payload.get("manifest", {}),
             "tasks": payload.get("tasks", []),
             "tests": payload.get("tests", []),
+            "databases": payload.get("databases", {}),
         }
     ).encode()
 

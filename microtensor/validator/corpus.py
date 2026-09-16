@@ -40,7 +40,10 @@ def parse(payload: dict[str, Any]) -> Corpus:
         for row in payload.get("tasks", ())
     )
     corpus = Corpus(
-        track=str(payload["track"]), version=str(payload.get("version", "")), tasks=tasks
+        track=str(payload["track"]),
+        version=str(payload.get("version", "")),
+        tasks=tasks,
+        databases={str(k): str(v) for k, v in dict(payload.get("databases") or {}).items()},
     )
 
     declared = str(payload.get("digest", ""))
