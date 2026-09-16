@@ -122,7 +122,9 @@ def run_queries(database: bytes, queries: list[str]) -> list[dict[str, Any]]:
         except subprocess.TimeoutExpired:
             return [{"error": "timeout"} for _ in queries]
         if proc.returncode != 0:
-            return [{"error": f"child exited {proc.returncode}: {proc.stderr[-200:]}"} for _ in queries]
+            return [
+                {"error": f"child exited {proc.returncode}: {proc.stderr[-200:]}"} for _ in queries
+            ]
         try:
             answer = json.loads(proc.stdout)
         except ValueError:

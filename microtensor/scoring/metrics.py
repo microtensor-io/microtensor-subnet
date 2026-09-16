@@ -92,6 +92,16 @@ def schema_conformance(output: Any, gold: Any) -> float:
 _FIELD_KEYS = ("fields", "expected", "gold")
 
 
+def _field_key(value: Any) -> str:
+    return re.sub(r"[\s\-]+", "_", _normalise_text(value))
+
+
+def _pairs(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        return {f"{_field_key(k)}={_normalise_text(v)}" for k, v in value.items()}
+    return _as_set(value)
+
+
 def _gold_fields(gold: Any) -> set[str]:
     if isinstance(gold, str):
         try:
@@ -108,7 +118,7 @@ def _gold_fields(gold: Any) -> set[str]:
             for case in cases:
                 found |= _gold_fields(case)
             return found
-    return _as_set(gold)
+    return _pairs(gold)
 
 
 def _output_fields(output: Any) -> set[str]:
@@ -116,8 +126,8 @@ def _output_fields(output: Any) -> set[str]:
     if isinstance(parsed, dict):
         for key in _FIELD_KEYS:
             if isinstance(parsed.get(key), dict):
-                return _as_set(parsed[key])
-        return _as_set(parsed)
+                return _pairs(parsed[key])
+        return _pairs(parsed)
     if isinstance(parsed, list | tuple):
         return _as_set(parsed)
     text = _CALL_NOISE.sub(" ", str(output if output is not None else ""))
@@ -125,7 +135,7 @@ def _output_fields(output: Any) -> set[str]:
     for line in text.splitlines():
         key, separator, value = line.partition(":")
         if separator and key.strip() and value.strip():
-            pairs.add(f"{_normalise_text(key)}={_normalise_text(value)}")
+            pairs.add(f"{_field_key(key)}={_normalise_text(value)}")
     return pairs
 
 

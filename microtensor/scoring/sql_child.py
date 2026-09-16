@@ -8,10 +8,10 @@ from typing import Any
 
 ALLOWED_ACTIONS = frozenset(
     {
-        sqlite3.SQLITE_SELECT,
-        sqlite3.SQLITE_READ,
-        sqlite3.SQLITE_FUNCTION,
-        sqlite3.SQLITE_RECURSIVE,
+        getattr(sqlite3, "SQLITE_SELECT", 21),
+        getattr(sqlite3, "SQLITE_READ", 20),
+        getattr(sqlite3, "SQLITE_FUNCTION", 31),
+        getattr(sqlite3, "SQLITE_RECURSIVE", 33),
     }
 )
 
@@ -61,7 +61,9 @@ def main() -> int:
     try:
         connection.execute("PRAGMA query_only = 1")
         connection.set_authorizer(
-            lambda action, *_: sqlite3.SQLITE_OK if action in ALLOWED_ACTIONS else sqlite3.SQLITE_DENY
+            lambda action, *_: (
+                sqlite3.SQLITE_OK if action in ALLOWED_ACTIONS else sqlite3.SQLITE_DENY
+            )
         )
         for sql in request.get("queries", []):
             results.append(_run(connection, str(sql), row_cap, time.monotonic() + budget))
