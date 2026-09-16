@@ -350,13 +350,19 @@ costs its author the round and costs the validator one `continue`.
 ### The corpus is partitioned, and the two halves do different jobs
 
 ```
-T_e = T_rot(e) ∪ T_fix          T_rot ∩ T_fix = ∅
-|T_rot| = ⌈0.7 N⌉   drawn with seed_e
+T_e = T_rot(e) ∪ T_fix ∪ T_nov(e)     pairwise disjoint
+|T_rot| = ⌈0.6 N⌉   drawn with seed_e
 |T_fix| = ⌊0.3 N⌋   constant across rounds
+|T_nov| = the rest  authored for the network, never published
 ```
 
 **The rotating partition defeats overfitting.** A miner cannot tune against
 tasks it cannot predict.
+
+**The withheld partition measures generalisation.** Its tasks are authored for
+the network and never reach the public corpus endpoint, so a system that answers
+the public partitions from a stored copy has nothing to retrieve here. It pays
+its share of the score, and evaluation transcripts are never published for it.
 
 **The fixed partition preserves comparability**, and it is not redundant.
 Without a constant slice, a leaderboard movement is ambiguous between "the models
@@ -367,6 +373,34 @@ series published externally as evidence the network works.
 Both are drawn from distributions absent from public corpora. The fixed
 partition rotates only on detected contamination, and any rotation establishes a
 replacement baseline in parallel so the historical series stays interpretable.
+
+### Contamination audit and removal
+
+Quality alone cannot tell recall from inference, so every settled round is
+subject to an audit. Each admitted system is re-executed under the validator
+harness against two disjoint stimulus sets, scored with the arena metric: a
+contaminated set, drawn from the round's scored partitions whose source material
+is publicly distributed, and a control set with no public provenance, authored
+for the audit, never published, never reused, and balanced so that a fixed
+response scores a known chance value.
+
+A system performing the task scores comparably on both. A system retrieving
+stored answers cannot generalise to items absent from its store, and its score
+falls to chance exactly where the stored copy gives no coverage. **A system is
+removed when its contaminated score is at or above 0.85 and its control score
+sits at the chance baseline.** A low control score alone removes nobody: a weak
+model also scores near chance on unseen items and is retained when its
+contaminated score is low as well. Removal requires the gap, not the floor.
+
+A system that returns one output regardless of input is removed on the same
+audit, corroborated by its response entropy, a latency below the cost of one
+forward pass at the declared scale, and an artifact smaller than its declared
+base can be at the narrowest quantisation in use.
+
+A removal bars the hotkey from every arena until the operator lifts it, never
+reopens the settlement it was found in, and leaves the system on the leaderboard
+with the reason and the audit result attached, so any third party can reproduce
+the determination from the published artifact.
 
 ### Prompt wording is load bearing
 
