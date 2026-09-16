@@ -8,7 +8,11 @@ from hashlib import sha256
 from typing import Any
 
 from microtensor.coordinator.collect import Reconciled
-from microtensor.core.constants import ANOMALY_MIN_REPLICATION, ANOMALY_QUALITY
+from microtensor.core.constants import (
+    ANOMALY_MIN_REPLICATION,
+    ANOMALY_QUALITY,
+    REFERENCE_COST_MS,
+)
 from microtensor.scoring import frontier
 from microtensor.scoring.weights import (
     apply_concentration_cap,
@@ -153,7 +157,9 @@ def to_entries(
 
 
 def allocate(
-    entries: Sequence[Entry], floors: Mapping[str, float] | None = None
+    entries: Sequence[Entry],
+    floors: Mapping[str, float] | None = None,
+    reference_costs: Mapping[str, float] | None = None,
 ) -> dict[tuple[str, str], dict[str, float]]:
     """Emission share per competition, by exclusive hypervolume.
 
@@ -178,8 +184,10 @@ def allocate(
             for e in entries
             if (e.track, e.hardware_class) == competition
         ]
-        floor = float((floors or {}).get(f"{track}/{hardware_class}", 0.0))
-        shares = frontier.allocate(entrants, floor=floor)
+        key = f"{track}/{hardware_class}"
+        floor = float((floors or {}).get(key, 0.0))
+        ceiling = float((reference_costs or {}).get(key) or REFERENCE_COST_MS)
+        shares = frontier.allocate(entrants, cost_ceiling=ceiling, floor=floor)
         if shares:
             per_competition[competition] = shares
         else:
@@ -411,6 +419,7 @@ def build(
     dropped: Mapping[str, int] | None = None,
     blocked: Sequence[str] = (),
     floors: Mapping[str, float] | None = None,
+    reference_costs: Mapping[str, float] | None = None,
 ) -> Settlement:
     """The canonical settlement for one round."""
     entries = to_entries(reconciled, catalogue)
@@ -440,7 +449,7 @@ def build(
         )
     withheld = {e.system_digest for e in held}
     per_competition = allocate(
-        [e for e in entries if e.system_digest not in withheld], floors
+        [e for e in entries if e.system_digest not in withheld], floors, reference_costs
     )
     combined = combine_competitions(per_competition)
 

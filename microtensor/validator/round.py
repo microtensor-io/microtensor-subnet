@@ -90,6 +90,7 @@ def price_components(
     track: str,
     hardware_class: str,
     participants: Sequence[Participant],
+    cost_ceiling: float = REFERENCE_COST_MS,
 ) -> None:
     """Divide each frontier system's value between the components that made it.
 
@@ -115,7 +116,7 @@ def price_components(
     if not entrants:
         return
 
-    members = frontier.frontier(frontier.to_points(frontier.eligible(entrants), REFERENCE_COST_MS))
+    members = frontier.frontier(frontier.to_points(frontier.eligible(entrants), cost_ceiling))
     if not members:
         return
 
@@ -128,7 +129,7 @@ def price_components(
             members,
             BaselineStore(root=context.config.corpus_dir),
             rerun=_no_executor,
-            cost_ceiling=REFERENCE_COST_MS,
+            cost_ceiling=cost_ceiling,
         )
         context.state.record_contributions(round_index, track, hardware_class, priced)
     except Exception as exc:
@@ -376,7 +377,18 @@ def _measure_batch(
             _give_back(context, plan, holding, "worker", str(exc))
         return str(exc)
 
-    price_components(context, round_.index, track, hardware_class, participants)
+    price_components(
+        context,
+        round_.index,
+        track,
+        hardware_class,
+        participants,
+        cost_ceiling=(
+            float(arena.reference_cost_ms)
+            if arena is not None and arena.reference_cost_ms > 0
+            else REFERENCE_COST_MS
+        ),
+    )
     _screen_derivation(context, round_.index, participants)
 
     reports: list[Report] = []
