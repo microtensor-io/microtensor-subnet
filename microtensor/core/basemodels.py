@@ -37,6 +37,12 @@ BASE_MODELS: Final[dict[str, BaseModel]] = {
     ),
     "Qwen/Qwen3.5-4B": BaseModel("Qwen/Qwen3.5-4B", 4_659_865_088, HF_SAFETENSORS),
     "Qwen/Qwen3.5-9B": BaseModel("Qwen/Qwen3.5-9B", 9_653_104_368, HF_SAFETENSORS),
+    "meta-llama/Llama-3.1-8B-Instruct": BaseModel(
+        "meta-llama/Llama-3.1-8B-Instruct", 8_030_261_248, HF_SAFETENSORS
+    ),
+    "Qwen/Qwen2.5-Coder-7B-Instruct": BaseModel(
+        "Qwen/Qwen2.5-Coder-7B-Instruct", 7_615_616_512, HF_SAFETENSORS
+    ),
 }
 
 MIN_BITS_PER_WEIGHT: Final[float] = 1.5

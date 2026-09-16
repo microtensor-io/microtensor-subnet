@@ -163,6 +163,7 @@ class ServerClient:
         return {
             "hotkey": str(found.get("reserved_hotkey", "")),
             "share": float(found.get("reserved_share", 0.0)),
+            "penalties": [dict(p) for p in (found.get("penalties") or []) if isinstance(p, dict)],
         }
 
     def submission_fee(self) -> dict[str, Any] | None:

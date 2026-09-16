@@ -144,9 +144,7 @@ class CoordinatorClient:
                         f"{url} returned {exc.code} after {self.retries} attempts"
                     ) from exc
                 detail = _detail(exc)
-                raise CoordinatorRefused(
-                    f"{url} returned {exc.code}: {detail or exc}"
-                ) from exc
+                raise CoordinatorRefused(f"{url} returned {exc.code}: {detail or exc}") from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last = exc
                 if attempt + 1 < self.retries:
@@ -218,6 +216,10 @@ class CoordinatorClient:
         if found.get("paused"):
             return {}
         return {int(uid): float(value) for uid, value in (found.get("weights") or {}).items()}
+
+    def standing(self) -> dict[str, Any]:
+        found: dict[str, Any] = self._call("GET", "/v1/weights") or {}
+        return found
 
     def settlement(self, round_index: int) -> dict[str, Any] | None:
         found: dict[str, Any] | None = self._call("GET", f"/v1/settlement/{round_index}")
