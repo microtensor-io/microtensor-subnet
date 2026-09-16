@@ -265,7 +265,7 @@ CLASSES: Final[dict[str, HardwareClass]] = {
         ),
         HardwareClass(
             id="mt-4g",
-            max_size_bytes=(5 * _GB) // 2,
+            max_size_bytes=3 * _GB,
             max_rss_bytes=4 * _GB,
             max_p95_ms=250_000,
             reference="x86-64 workstation, cpu only",
