@@ -115,9 +115,8 @@ TRACKS: Final[dict[str, Track]] = {
             metric="span_accuracy",
             metric_display="unsupported span F2",
             decoding=Decoding.GREEDY,
-            emission_share=1.0,
+            emission_share=0.0,
             work_unit="generated_tokens",
-            enabled=True,
             classes=("mt-4g",),
             chat=True,
         ),
@@ -150,6 +149,30 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="generated_tokens",
             classes=("mt-3g",),
+            chat=True,
+        ),
+        Track(
+            id="invoice",
+            modality=Modality.TEXT,
+            metric="extraction_f1",
+            metric_display="extraction F1",
+            decoding=Decoding.GREEDY,
+            emission_share=1 / 2,
+            work_unit="generated_tokens",
+            enabled=True,
+            classes=("mt-4g",),
+            chat=True,
+        ),
+        Track(
+            id="text2sql",
+            modality=Modality.TEXT,
+            metric="execution_match",
+            metric_display="execution match",
+            decoding=Decoding.GREEDY,
+            emission_share=1 / 2,
+            work_unit="generated_tokens",
+            enabled=True,
+            classes=("mt-16g",),
             chat=True,
         ),
         Track(
@@ -216,6 +239,16 @@ TRACKS: Final[dict[str, Track]] = {
 # thread count, they should come down by roughly the core count — measured
 # again, not estimated.
 MEASURED_ON: Final[str] = "single-threaded cpu inference, Qwen3-0.6B Q8_0, 512 input tokens"
+MEASURED_16G: Final[str] = (
+    "single-threaded cpu inference on worker1 (Xeon Platinum 8175M), Qwen2.5-Coder-7B "
+    "Q4_K_M, 700 input tokens, 2026-09-16: ttft p95 102,088 ms, total p95 147,532 ms; "
+    "a 7B declaring 2048 tokens probes near 290 s"
+)
+MEASURED_4G: Final[str] = (
+    "single-threaded cpu inference on worker1 (Xeon Platinum 8175M), Phi-4-mini Q4_K_M, "
+    "500 input tokens, 2026-09-16: ttft p95 50,915 ms, total p95 87,105 ms; a 4B declaring "
+    "2048 tokens probes near 200 to 250 s"
+)
 
 
 CLASSES: Final[dict[str, HardwareClass]] = {
@@ -225,17 +258,18 @@ CLASSES: Final[dict[str, HardwareClass]] = {
             id="mt-16g",
             max_size_bytes=8 * _GB,
             max_rss_bytes=16 * _GB,
-            max_p95_ms=30_000,
+            max_p95_ms=400_000,
             reference="x86-64 server, cpu only",
-            derivation=MEASURED_ON,
+            derivation=MEASURED_16G,
+            device_profile="dev:20ff37be9bc03389",
         ),
         HardwareClass(
             id="mt-4g",
             max_size_bytes=(5 * _GB) // 2,
             max_rss_bytes=4 * _GB,
-            max_p95_ms=15_000,
+            max_p95_ms=250_000,
             reference="x86-64 workstation, cpu only",
-            derivation=MEASURED_ON,
+            derivation=MEASURED_4G,
         ),
         HardwareClass(
             id="mt-3g",

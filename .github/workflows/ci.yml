@@ -60,12 +60,12 @@ jobs:
       - run: pip install ".[validator,dev]"
       - name: Emission shares must sum to one
         run: python -c "from microtensor.core.tracks import validate_registry; validate_registry()"
-      - name: The launch scope must be the one live competition
+      - name: The live competitions must be the two arenas of the round
         run: |
           python - <<'PY'
           from microtensor.core.constants import CLASS_WEIGHTS
           from microtensor.core.tracks import competitions
-          expected = [("guard", "mt-4g")]
+          expected = [("invoice", "mt-4g"), ("text2sql", "mt-16g")]
           assert competitions() == expected, competitions()
           assert sum(CLASS_WEIGHTS.values()) == 1.0, CLASS_WEIGHTS
           print(competitions())
@@ -517,6 +517,7 @@ jobs:
               "qwen2": ("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "q8_0"),
               "llama": ("unsloth/Llama-3.2-1B-Instruct-GGUF", "q4_k_m"),
               "gemma3": ("unsloth/gemma-3-270m-it-GGUF", "q8_0"),
+              "qwen35": ("unsloth/Qwen3.5-0.8B-GGUF", "q8_0"),
           }
           UNTESTED = {"qwen3moe", "gemma2", "phi3"}
 

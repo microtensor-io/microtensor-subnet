@@ -41,8 +41,8 @@ on disk, and 180 ms p95 first output; it says nothing about what hardware you
 train on. The competition pays its top 8 on a geometric curve, and rank 8 still
 earns about a third of rank 1, so the tail is worth competing for.
 
-`mt-4g`, `mt-16g` and `mt-1g` are registered and open by governance once real
-submissions exist, in the same shape as the disabled track stubs.
+`mt-4g` and `mt-16g` are live, for the `invoice` and `text2sql` tracks. `mt-1g` is
+registered and opens by governance once real submissions exist.
 
 ---
 
@@ -63,6 +63,34 @@ takes the first non-empty line of the completion, drops a leading `Label:`,
 lowercases it, turns spaces and hyphens into underscores, and compares it to
 the hidden label exactly. Quality is the share of tasks answered with the
 right label.
+
+### The invoice track is a chat task that answers in JSON
+
+The validator sends each invoice as a chat message through your model's own
+chat template with thinking disabled. Answer with one JSON object whose keys
+are the field names the prompt asks for and whose values are the extracted
+strings, then stop. The validator parses the first JSON object in the reply (a
+fenced block is fine), lowercases and whitespace normalises every `name=value`
+pair with spaces and hyphens in names folded to underscores, and scores F1
+against the hidden fields. A wrong value costs precision and recall both; a
+field you leave out costs recall only, so answer what you can read and omit
+what you cannot.
+
+Declare 2048 input tokens or fewer on `mt-4g`: a 4B at Q4 with a 4096 token
+context peaks above the 4 GiB memory ceiling. Of the Qwen3.5-4B quantisations,
+Q4_K_S, Q4_0 and IQ4_XS fit the 2.5 GB size ceiling; Q4_K_M does not.
+
+### The text2sql track is a chat task that answers in SQL
+
+The prompt carries the SQLite schema and the question. Answer with one SELECT
+(a leading `WITH` is fine) and nothing else; a fenced block, a `SQL:` label and a
+trailing semicolon are stripped. The validator runs your query and the reference
+query against the task's database in a separate process with a 20 s timeout,
+read only, a 5,000 row cap and every statement other than SELECT refused, then
+compares the two result sets as unordered multisets of rows. The same rows in
+any order, with numbers compared after rounding to six decimal places, scores 1;
+anything else, including an error or a timeout, scores 0. Column order matters,
+row order does not.
 
 ## 2 · Declare honestly, because the mechanism makes it your best move
 

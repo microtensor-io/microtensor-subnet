@@ -69,7 +69,9 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 | Track | Enabled | Metric | Emission share |
 |---|---|---|---|
 | `code` | ⏸ | execution pass rate against hidden tests | none |
-| `guard` | ✅ | unsupported span F2 · hallucination detection | 1.00 |
+| `invoice` | ✅ | extraction F1 · invoice fields as `name=value` pairs | 0.50 |
+| `text2sql` | ✅ | execution match · the query is run against the task's SQLite database | 0.50 |
+| `guard` | ⏸ | unsupported span F2 · hallucination detection | none |
 | `analytics` | ⏸ | exact-match · numeric tolerance | none |
 | `support` | ⏸ | rubric F1 · tool-call correctness | none |
 | `detect` | ⏸ | mAP @ fixed IoU | none |
@@ -81,12 +83,12 @@ binds to exactly one `(track, class)` pair, and competes only within it.
 Disabled tracks are registered but carry zero emission share and are not drawn.
 Enabling one is a mechanism version bump, not a code change.
 
-The launch scope is deliberately narrow: `code` is the only enabled track and
-`mt-3g` its only enabled class, so `CLASS_WEIGHTS` gives that one competition
-the whole emission share. One competition means every entrant is measured
-against every other entrant under one ceiling, which is the sharpest signal the
-mechanism can produce and the fairest starting point for a network with no
-history yet. A track may gate the classes it competes in; a code model under the
+Two competitions run at present, `invoice` on `mt-4g` and `text2sql` on
+`mt-16g`, each with half the emission share. A track with one live class gives
+that class its whole share, so `CLASS_WEIGHTS` does not enter. Every entrant in
+a competition is measured against every other entrant under that arena's own
+ceiling and its own frontier reference cost, both anchored per arena in the
+round config. A track may gate the classes it competes in; a code model under the
 600 MB `mt-1g` ceiling would sit below the track threshold forever, and a dead
 competition still costs every validator fetch and profile time.
 
@@ -105,10 +107,10 @@ disabled until its reference-extractor exemption is written down.
 
 | Class | Max size `Sₖ` | Max sustained RSS `Rₖ` | Max p95 `Lₖ` | Reference device |
 |---|---|---|---|---|
-| `mt-16g` | 8 GB | 16 GB | 400 ms | x86-64 server, no accelerator |
-| `mt-4g` | 2.5 GB | 4 GB | 120 ms | consumer / embedded GPU |
-| `mt-3g` | 1.5 GB | 3 GB | 180 ms | developer workstation |
-| `mt-1g` | 600 MB | 1 GB | 300 ms | mobile SoC / NPU |
+| `mt-16g` | 8 GB | 16 GB | 400,000 ms | x86-64 server, cpu only, one thread; certified device `dev:20ff37be9bc03389` |
+| `mt-4g` | 2.5 GB | 4 GB | 250,000 ms | x86-64 workstation, cpu only, one thread |
+| `mt-3g` | 1.5 GB | 3 GB | 15,000 ms | developer workstation, cpu only |
+| `mt-1g` | 600 MB | 1 GB | 8,000 ms | small host, cpu only |
 
 A class names a memory envelope, not a device. The reference column is the kind
 of machine that envelope is meant to fit on, but nothing about it is enforced:
@@ -542,7 +544,7 @@ my hardware, and how good is it.**
 | Family | Requirement |
 |---|---|
 | discriminative (`detect`, `speech`, `vqa`, `video`) | single forward pass with argmax/threshold, deterministic by construction once runtime, precision and preprocessing are pinned |
-| autoregressive (`code`, `document`, `analytics`, `support`) | greedy decoding, temperature 0, pinned engine version |
+| autoregressive (`code`, `invoice`, `text2sql`, `guard`, `analytics`, `support`) | greedy decoding, temperature 0, pinned engine version |
 | iterative generative (`image-synth`) | fixed seed, fixed scheduler, fixed step count, published per round |
 
 Under these conditions inference is a deterministic function, so for validators

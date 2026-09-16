@@ -62,6 +62,7 @@ SUPPORTED_ARCHITECTURES: Final[frozenset[str]] = frozenset(
         "qwen2",
         "qwen3",
         "qwen3moe",
+        "qwen35",
         "llama",
         "gemma2",
         "gemma3",
@@ -380,9 +381,7 @@ class GgufEngine:
 
     def _render_chat(self, messages: list[dict[str, str]]) -> str | None:
         """The model's own chat template, rendered with thinking off."""
-        template = (getattr(self._model, "metadata", None) or {}).get(
-            "tokenizer.chat_template"
-        )
+        template = (getattr(self._model, "metadata", None) or {}).get("tokenizer.chat_template")
         if not template:
             return None
         try:
