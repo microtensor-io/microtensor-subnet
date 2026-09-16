@@ -6,6 +6,7 @@ import json
 import os
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 from microtensor.cli.common import fail
 from microtensor.core.constants import CONTROL_URL, CORPUS_VERSION, TASKS_PER_ROUND
@@ -94,8 +95,7 @@ def _check(args: argparse.Namespace) -> int:
     advisories: list[str] = []
 
     print(
-        f"{'track':<14}{'total':>8}{'rotating':>10}{'fixed':>8}{'novel':>7}  "
-        f"{'digest':<18}status"
+        f"{'track':<14}{'total':>8}{'rotating':>10}{'fixed':>8}{'novel':>7}  {'digest':<18}status"
     )
     for name in sorted(corpora):
         corpus = corpora[name]
@@ -237,6 +237,18 @@ def _check_bundle(args: argparse.Namespace) -> int:
     return 1
 
 
+BLOB_KEYS = ("db", "database")
+
+
+def _without_blobs(tests: Any) -> Any:
+    if not isinstance(tests, list):
+        return tests
+    return [
+        {k: v for k, v in case.items() if k not in BLOB_KEYS} if isinstance(case, dict) else case
+        for case in tests
+    ]
+
+
 def _samples(corpus: Corpus, partition: str | None = None) -> list[contamination.Sample]:
     samples: list[contamination.Sample] = []
     for task in corpus:
@@ -250,7 +262,9 @@ def _samples(corpus: Corpus, partition: str | None = None) -> list[contamination
                 prompt=task.prompt,
                 solution=str(gold.get("solution", "")),
                 instance=(
-                    json.dumps([str(gold.get("entry_point", "")), tests], sort_keys=True)
+                    json.dumps(
+                        [str(gold.get("entry_point", "")), _without_blobs(tests)], sort_keys=True
+                    )
                     if tests
                     else ""
                 ),

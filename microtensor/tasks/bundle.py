@@ -51,7 +51,7 @@ def verify_bundle(directory: Path, track: str = "code") -> list[str]:
         cases = entry.get("tests", [])
         labelled = bool(cases) and all(
             isinstance(c, dict)
-            and ("expected" in c or "tool_calls" in c or "unsupported" in c)
+            and any(k in c for k in ("expected", "tool_calls", "unsupported", "fields", "sql"))
             and "args" not in c
             and "module" not in c
             for c in cases

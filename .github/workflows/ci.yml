@@ -389,12 +389,134 @@ jobs:
               write(f"{track}.jsonl", tasks)
               write(f"{track}.tests.jsonl", tests)
 
+          def invoice_bundle(track):
+              currencies = ["USD", "EUR", "GBP", "KES", "UGX", "JPY"]
+              sellers = ["Acme Supplies", "Blue Harbour Ltd", "Kampala Print Co", "Northwind Traders", "Orbit Freight"]
+              tasks, tests = [], []
+              for i in range(70):
+                  partition = "rotating" if i < 45 else "fixed"
+                  ref = f"{track}-ci-{i:03d}"
+                  rng = random.Random(i)
+                  number = f"INV-{2026}-{i:04d}"
+                  total = f"{rng.randint(100, 9000)}.{rng.randint(0, 99):02d}"
+                  currency = rng.choice(currencies)
+                  seller = rng.choice(sellers)
+                  tasks.append({
+                      "ref": ref,
+                      "prompt": (
+                          "Extract the fields invoice_number, total and currency from this invoice.\n\n"
+                          f"{seller}\nInvoice no. {number}\nAmount due: {total} {currency}\n"
+                          f"Due within {rng.randint(7, 60)} days.\n\n"
+                          "Reply with only a JSON object whose keys are the field names."
+                      ),
+                      "gold": None,
+                      "partition": partition,
+                      "max_output_tokens": 96,
+                      "inputs": {},
+                  })
+                  tests.append({
+                      "ref": ref,
+                      "tests": [{"fields": {"invoice_number": number, "total": total, "currency": currency}}],
+                  })
+              write(f"{track}.jsonl", tasks)
+              write(f"{track}.tests.jsonl", tests)
+
+          def text2sql_bundle(track):
+              import base64
+              import gzip
+              import os
+              import sqlite3
+              import tempfile
+
+              cities = [
+                  "Kampala", "Nairobi", "Kigali", "Lagos", "Accra", "Dakar",
+                  "Lusaka", "Harare", "Maputo", "Luanda", "Tunis", "Rabat",
+              ]
+              schema = (
+                  "CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, city TEXT, age INTEGER);"
+                  "CREATE TABLE orders (id INTEGER PRIMARY KEY, person_id INTEGER, total REAL);"
+              )
+
+              def database(seed):
+                  fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+                  os.close(fd)
+                  connection = sqlite3.connect(db_path)
+                  connection.executescript(schema)
+                  rng = random.Random(seed)
+                  for pid in range(1, rng.randint(8, 14)):
+                      connection.execute(
+                          "INSERT INTO people VALUES (?, ?, ?, ?)",
+                          (pid, f"person{seed}_{pid}", rng.choice(cities), rng.randint(18, 80)),
+                      )
+                      for _ in range(rng.randint(0, 2)):
+                          connection.execute(
+                              "INSERT INTO orders (person_id, total) VALUES (?, ?)",
+                              (pid, round(rng.uniform(5, 500), 2)),
+                          )
+                  connection.commit()
+                  connection.close()
+                  blob = base64.b64encode(gzip.compress(Path(db_path).read_bytes())).decode()
+                  os.unlink(db_path)
+                  return blob
+
+              tasks, tests = [], []
+              for i in range(70):
+                  partition = "rotating" if i < 45 else "fixed"
+                  ref = f"{track}-ci-{i:03d}"
+                  city = cities[i % len(cities)]
+                  age = 18 + i
+                  threshold = 10 + 3 * i
+                  if partition == "rotating" and i % 3 == 0:
+                      question = f"How many people in {city} are younger than {age}?"
+                      reference = f"SELECT count(*) FROM people WHERE city = '{city}' AND age < {age}"
+                  elif partition == "rotating" and i % 3 == 1:
+                      question = f"List the names of people older than {age}, alphabetically."
+                      reference = f"SELECT name FROM people WHERE age > {age} ORDER BY name"
+                  elif partition == "rotating":
+                      question = (
+                          f"What is the total value of orders above {threshold} placed by people in {city}?"
+                      )
+                      reference = (
+                          "SELECT SUM(orders.total) FROM orders JOIN people ON people.id = orders.person_id "
+                          f"WHERE people.city = '{city}' AND orders.total > {threshold}"
+                      )
+                  elif i % 3 == 0:
+                      question = f"Which cities have more than {i % 4} residents, with their resident counts?"
+                      reference = f"SELECT city, count(id) AS residents FROM people GROUP BY city HAVING count(id) > {i % 4}"
+                  elif i % 3 == 1:
+                      question = f"Who are the {2 + i % 3} oldest people, with their ages, oldest first?"
+                      reference = f"SELECT name, age FROM people ORDER BY age DESC, name LIMIT {2 + i % 3}"
+                  else:
+                      question = f"For each person with at least {1 + i % 2} orders, what is their average order value?"
+                      reference = (
+                          "SELECT people.name, AVG(orders.total) AS average FROM people "
+                          "JOIN orders ON orders.person_id = people.id GROUP BY people.id "
+                          f"HAVING count(orders.id) >= {1 + i % 2}"
+                      )
+                  tasks.append({
+                      "ref": ref,
+                      "prompt": (
+                          "You are given a SQLite schema. Write one SQL query that answers the question. "
+                          "Reply with the SQL only.\n\n"
+                          f"Schema:\n{schema}\n\nQuestion {i}: {question}"
+                      ),
+                      "gold": None,
+                      "partition": partition,
+                      "max_output_tokens": 128,
+                      "inputs": {},
+                  })
+                  tests.append({"ref": ref, "tests": [{"db": database(i), "sql": reference}]})
+              write(f"{track}.jsonl", tasks)
+              write(f"{track}.tests.jsonl", tests)
+
           builders = {
               "code": code_bundle,
               "extract": extract_bundle,
               "classify": classify_bundle,
               "support": support_bundle,
               "guard": guard_bundle,
+              "invoice": invoice_bundle,
+              "text2sql": text2sql_bundle,
           }
           for track in sorted({t for t, _ in competitions()}):
               builders[track](track)
