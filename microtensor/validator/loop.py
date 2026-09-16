@@ -3,11 +3,18 @@ from __future__ import annotations
 import logging
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import FrameType
+from typing import Any
 
 from microtensor.chain.rounds import Round, round_for_block
 from microtensor.chain.weights import quantise_weights
+from microtensor.coordinator.settle import (
+    apply_penalties,
+    apply_reserved,
+    normalise_penalties,
+    normalise_reserved,
+)
 from microtensor.core.constants import (
     BLOCK_TIME_SECONDS,
     POLL_INTERVAL_SECONDS,
@@ -136,9 +143,14 @@ class RoundLoop:
         if block - self._last_weight_block < WEIGHT_REFRESH_BLOCKS:
             return
 
+        published = self._coordinator_document()
         standing = self.context.state.last_weights()
+        if standing and published:
+            overlay = self._verified_overlay(standing, published)
+            if overlay is not None:
+                standing = overlay
         if not standing:
-            standing = self._coordinator_weights()
+            standing = self._coordinator_weights(published)
         if not standing:
             return
 
@@ -165,15 +177,22 @@ class RoundLoop:
         except Exception as exc:
             log.warning("weight refresh failed mid round: %s", exc)
 
-    def _coordinator_weights(self) -> dict[str, float]:
+    def _coordinator_document(self) -> dict[str, Any]:
         client = getattr(self.context, "coordinator", None)
         if client is None:
             return {}
         try:
-            found = client.weights()
+            found = client.standing()
         except Exception as exc:
             log.warning("the coordinator's vector could not be read: %s", exc)
             return {}
+        return dict(found or {})
+
+    def _coordinator_weights(self, published: Mapping[str, Any] | None = None) -> dict[str, float]:
+        document = dict(published) if published is not None else self._coordinator_document()
+        if not document or document.get("paused"):
+            return {}
+        found = {int(uid): float(value) for uid, value in (document.get("weights") or {}).items()}
         if not found:
             return {}
         uids = self.context.client.snapshot().uid_by_hotkey
@@ -181,6 +200,56 @@ class RoundLoop:
         adopted = {by_uid[uid]: value for uid, value in found.items() if uid in by_uid}
         if adopted:
             log.info("adopting the coordinator's vector of %d weights", len(adopted))
+        return adopted
+
+    def _verified_overlay(
+        self, own: Mapping[str, float], published: Mapping[str, Any]
+    ) -> dict[str, float] | None:
+        if published.get("paused"):
+            return None
+        uid_by_hotkey = self.context.client.snapshot().uid_by_hotkey
+        penalties = normalise_penalties(published.get("penalties") or (), uid_by_hotkey)
+        reserved = published.get("reserved") or {}
+        hotkey = str(reserved.get("hotkey", "") or "")
+        try:
+            share = float(reserved.get("share", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            share = 0.0
+        uid = uid_by_hotkey.get(hotkey) if hotkey else None
+        held = (
+            normalise_reserved({"hotkey": hotkey, "uid": uid, "share": share})
+            if hotkey and uid is not None
+            else {}
+        )
+        if not penalties and not held:
+            return None
+        measured, _ = to_uid_weights(own, uid_by_hotkey)
+        if held:
+            measured.pop(int(held["uid"]), None)
+            total = sum(measured.values())
+            if total > 0.0:
+                measured = {u: v / total for u, v in measured.items()}
+        expected = apply_reserved(apply_penalties(measured, penalties), held)
+        mine = {str(u): round(float(v), 9) for u, v in expected.items()}
+        theirs = {str(u): round(float(v), 9) for u, v in (published.get("weights") or {}).items()}
+        if mine != theirs:
+            log.warning(
+                "the coordinator's standing vector does not reproduce from the settled one; "
+                "keeping mine"
+            )
+            return None
+        by_uid = {u: h for h, u in uid_by_hotkey.items()}
+        adopted = {
+            by_uid[int(u)]: float(v)
+            for u, v in (published.get("weights") or {}).items()
+            if int(u) in by_uid
+        }
+        if penalties:
+            log.info(
+                "applying %d declared penalties from the coordinator: %s",
+                len(penalties),
+                ", ".join(f"uid {p['uid']} x{p['factor']:.2f}" for p in penalties),
+            )
         return adopted
 
     def wait_for_close(self, round_: Round) -> bool:

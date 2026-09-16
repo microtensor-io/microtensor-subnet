@@ -19,7 +19,13 @@ from microtensor.coordinator.collect import (
 from microtensor.coordinator.config import config_hash, served_config
 from microtensor.coordinator.report import Report, canonical
 from microtensor.coordinator.reputation import update as update_standing
-from microtensor.coordinator.settle import Entry, Settlement, merkle_root, standing_weights
+from microtensor.coordinator.settle import (
+    Entry,
+    Settlement,
+    merkle_root,
+    normalise_penalties,
+    standing_weights,
+)
 from microtensor.coordinator.settle import build as build_settlement
 from microtensor.coordinator.store import CoordinatorStore
 from microtensor.coordinator.tokens import TOKEN_HEADER, KeyRing, TokenInvalid
@@ -237,8 +243,9 @@ class Coordinator:
     def weights(self) -> dict[str, Any]:
         held = self.reserve() if self.reserve is not None else {}
         if held.get("paused"):
-            return {"weights": {}, "paused": True, "reserved": {}}
-        folded = standing_weights(self.store, held or {}, self.uid_by_hotkey)
+            return {"weights": {}, "paused": True, "reserved": {}, "penalties": []}
+        declared = normalise_penalties(held.get("penalties") or (), self.uid_by_hotkey)
+        folded = standing_weights(self.store, held or {}, self.uid_by_hotkey, declared)
         return {
             "weights": {str(uid): value for uid, value in sorted(folded.items())},
             "paused": False,
@@ -246,6 +253,7 @@ class Coordinator:
                 "hotkey": str(held.get("hotkey", "")),
                 "share": float(held.get("share", 0.0)),
             },
+            "penalties": declared,
         }
 
     def assignment(self, hotkey: str) -> dict[str, Any]:

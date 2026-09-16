@@ -287,8 +287,63 @@ def measured_weights(store: Any) -> dict[int, float]:
     return weights
 
 
+def normalise_penalties(
+    penalties: Sequence[Mapping[str, Any]] | None, uid_by_hotkey: Mapping[str, int]
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in penalties or ():
+        if not isinstance(entry, Mapping):
+            continue
+        hotkey = str(entry.get("hotkey", "")).strip()
+        try:
+            factor = float(entry.get("factor", 1.0))
+        except (TypeError, ValueError):
+            continue
+        uid = uid_by_hotkey.get(hotkey)
+        if not hotkey or uid is None or hotkey in seen or not 0.0 <= factor < 1.0:
+            continue
+        seen.add(hotkey)
+        out.append(
+            {
+                "hotkey": hotkey,
+                "uid": int(uid),
+                "factor": factor,
+                "reason": str(entry.get("reason", ""))[:300],
+            }
+        )
+    return sorted(out, key=lambda p: p["uid"])
+
+
+def apply_penalties(
+    weights: Mapping[int, float], penalties: Sequence[Mapping[str, Any]]
+) -> dict[int, float]:
+    if not penalties:
+        return dict(weights)
+    factors = {int(p["uid"]): float(p["factor"]) for p in penalties}
+    out: dict[int, float] = {}
+    removed = 0.0
+    for uid, value in weights.items():
+        if uid in factors:
+            kept = value * factors[uid]
+            removed += value - kept
+            if kept > 0.0:
+                out[uid] = kept
+        elif value > 0.0:
+            out[uid] = value
+    pool = sum(v for u, v in out.items() if u not in factors)
+    if removed > 0.0 and pool > 0.0:
+        for uid in list(out):
+            if uid not in factors:
+                out[uid] += removed * out[uid] / pool
+    return out
+
+
 def standing_weights(
-    store: Any, held: Mapping[str, Any], uid_by_hotkey: Mapping[str, int]
+    store: Any,
+    held: Mapping[str, Any],
+    uid_by_hotkey: Mapping[str, int],
+    penalties: Sequence[Mapping[str, Any]] = (),
 ) -> dict[int, float]:
     resolved: dict[str, Any] = {}
     hotkey = str(held.get("hotkey", "")) if held else ""
@@ -301,7 +356,7 @@ def standing_weights(
             return weights
         return {u: v for u, v in weights.items() if u != resolved["uid"]}
 
-    measured = without_hold(measured_weights(store))
+    measured = apply_penalties(without_hold(measured_weights(store)), penalties)
     return apply_reserved(measured, normalise_reserved(resolved))
 
 
