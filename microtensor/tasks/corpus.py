@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
@@ -46,6 +46,7 @@ class Corpus:
     track: str
     version: str
     tasks: tuple[Task, ...]
+    databases: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         get_track(self.track)
@@ -91,6 +92,7 @@ class Corpus:
                     }
                     for task in self.tasks
                 ],
+                **({"databases": sorted(self.databases)} if self.databases else {}),
             }
         )
 
@@ -218,7 +220,49 @@ def attach_tests(corpus: Corpus, bundle: dict[str, dict[str, Any]]) -> Corpus:
                 f"task {task.ref!r}: the tests file does not hash to the declared digest"
             )
         attached.append(replace(task, gold=dict(entry)))
-    return Corpus(track=corpus.track, version=corpus.version, tasks=tuple(attached))
+    return Corpus(
+        track=corpus.track,
+        version=corpus.version,
+        tasks=tuple(attached),
+        databases=dict(corpus.databases),
+    )
+
+
+def with_databases(tasks: Sequence[Task], databases: Mapping[str, str]) -> tuple[Task, ...]:
+    if not databases:
+        return tuple(tasks)
+    out: list[Task] = []
+    for task in tasks:
+        gold = task.gold
+        if isinstance(gold, dict) and isinstance(gold.get("tests"), list):
+            cases: list[Any] = []
+            changed = False
+            for case in gold["tests"]:
+                if (
+                    isinstance(case, dict)
+                    and "db" not in case
+                    and str(case.get("db_ref", "")) in databases
+                ):
+                    case = {**case, "db": databases[str(case["db_ref"])]}
+                    changed = True
+                cases.append(case)
+            if changed:
+                task = replace(task, gold={**gold, "tests": cases})
+        out.append(task)
+    return tuple(out)
+
+
+def unresolved_databases(corpus: Corpus) -> list[str]:
+    missing: list[str] = []
+    for task in corpus:
+        gold = task.gold
+        cases = gold.get("tests") if isinstance(gold, dict) else None
+        for case in cases if isinstance(cases, list) else []:
+            reference = case.get("db_ref") if isinstance(case, dict) else None
+            if reference is not None and str(reference) not in corpus.databases:
+                missing.append(task.ref)
+                break
+    return missing
 
 
 def corpus_digest(corpora: dict[str, Corpus]) -> str:
@@ -232,8 +276,22 @@ def corpus_digest(corpora: dict[str, Corpus]) -> str:
     return canonical_hash({track: corpora[track].digest() for track in sorted(corpora)})
 
 
+def load_databases(root: Path) -> dict[str, str]:
+    path = root / "databases.json"
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CorpusError(f"{path} could not be read: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise CorpusError(f"{path} must hold an object keyed by database digest")
+    return {str(k): str(v) for k, v in loaded.items()}
+
+
 def load_all(root: Path, version: str = CORPUS_VERSION) -> dict[str, Corpus]:
     corpora: dict[str, Corpus] = {}
+    databases = load_databases(root)
     for path in sorted(root.glob("*.jsonl")):
         if path.name.endswith(SIDECAR_SUFFIXES):
             continue
@@ -241,6 +299,8 @@ def load_all(root: Path, version: str = CORPUS_VERSION) -> dict[str, Corpus]:
         tests_path = path.with_name(f"{path.stem}.tests.jsonl")
         if tests_path.is_file():
             corpus = attach_tests(corpus, load_tests(tests_path))
+        if databases:
+            corpus = replace(corpus, databases=dict(databases))
         corpora[path.stem] = corpus
     if not corpora:
         raise CorpusError(f"no corpus files found under {root}")

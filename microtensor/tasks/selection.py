@@ -13,7 +13,15 @@ from microtensor.core.constants import (
 from microtensor.core.hashing import round_seed, select_deterministic, task_nonce
 from microtensor.core.tracks import get_track
 from microtensor.harness.contract import Request
-from microtensor.tasks.corpus import FIXED, NOVEL, ROTATING, Corpus, CorpusError, Task
+from microtensor.tasks.corpus import (
+    FIXED,
+    NOVEL,
+    ROTATING,
+    Corpus,
+    CorpusError,
+    Task,
+    with_databases,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,9 +93,9 @@ def select(
         hardware_class=hardware_class,
         seed=seed,
         corpus_version=corpus.version,
-        rotating=corpus.by_ref(rotating_refs),
-        fixed=corpus.by_ref(fixed_refs),
-        novel=corpus.by_ref(novel_refs),
+        rotating=with_databases(corpus.by_ref(rotating_refs), corpus.databases),
+        fixed=with_databases(corpus.by_ref(fixed_refs), corpus.databases),
+        novel=with_databases(corpus.by_ref(novel_refs), corpus.databases),
         round_index=round_index,
     )
 
