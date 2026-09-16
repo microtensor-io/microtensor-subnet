@@ -108,7 +108,7 @@ disabled until its reference-extractor exemption is written down.
 | Class | Max size `Sₖ` | Max sustained RSS `Rₖ` | Max p95 `Lₖ` | Reference device |
 |---|---|---|---|---|
 | `mt-16g` | 8 GB | 16 GB | 400,000 ms | x86-64 server, cpu only, one thread; certified device `dev:20ff37be9bc03389` |
-| `mt-4g` | 2.5 GB | 4 GB | 250,000 ms | x86-64 workstation, cpu only, one thread |
+| `mt-4g` | 3 GB | 4 GB | 250,000 ms | x86-64 workstation, cpu only, one thread |
 | `mt-3g` | 1.5 GB | 3 GB | 15,000 ms | developer workstation, cpu only |
 | `mt-1g` | 600 MB | 1 GB | 8,000 ms | small host, cpu only |
 
