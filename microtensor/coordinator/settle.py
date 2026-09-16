@@ -288,7 +288,7 @@ def measured_weights(store: Any) -> dict[int, float]:
 
 
 def normalise_penalties(
-    penalties: Sequence[Mapping[str, Any]] | None, uid_by_hotkey: Mapping[str, int]
+    penalties: Sequence[Any] | None, uid_by_hotkey: Mapping[str, int]
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
