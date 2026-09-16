@@ -122,7 +122,7 @@ class ValidatorContext:
         # debug a validator that is behaving correctly. It holds each round and
         # looks again instead. Standing alone with no corpus is still fatal:
         # there is nothing to wait for.
-        if missing and config.coordinated and not corpora:
+        if missing and config.coordinated:
             log.warning(
                 "no corpus yet for %s; the coordinator serves one when an arena is "
                 "live, so this validator will hold and look again each round",
@@ -194,13 +194,17 @@ class ValidatorContext:
         goes live. Returns whether anything is held now, so the caller can say
         what it is waiting for rather than failing.
         """
-        if self.corpora:
+        needed = {track for track, _ in self.competitions}
+        if needed <= set(self.corpora):
             return True
         found = _corpora_for(self.config, self.coordinator)
         if found:
             self.corpora.update(found)
             log.info("the coordinator now serves %s", ", ".join(sorted(found)))
-        return bool(self.corpora)
+        missing = sorted(needed - set(self.corpora))
+        if missing:
+            log.warning("still no corpus for %s; holding this round", ", ".join(missing))
+        return not missing
 
     def close(self) -> None:
         self.state.close()
