@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import functools
 import logging
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from microtensor.chain.config import ChainConfig
 from microtensor.chain.metagraph import MetagraphSnapshot, snapshot_from
@@ -87,11 +89,24 @@ def with_retry(
     raise ChainError(f"{label} failed after {attempts} attempts: {last}") from last
 
 
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _serialised(method: F) -> F:
+    @functools.wraps(method)
+    def call(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return cast(F, call)
+
+
 class SubtensorClient:
     def __init__(self, config: ChainConfig, wallet: Any | None = None) -> None:
         self._config = config
         self._wallet = wallet
         self._subtensor: Any | None = None
+        self._lock = threading.RLock()
         self._cached: MetagraphSnapshot | None = None
         self._cached_at = 0.0
 
@@ -129,6 +144,7 @@ class SubtensorClient:
             lambda: factory(network=self._config.resolved_endpoint),
         )
 
+    @_serialised
     def block(self) -> int:
         """The current block, from whichever surface this build exposes.
 
@@ -145,12 +161,14 @@ class SubtensorClient:
 
         raise ChainError(UNADAPTED.format(what="block reader"))
 
+    @_serialised
     def block_hash(self, block: int) -> str:
         reader = getattr(self.subtensor, "get_block_hash", None)
         if not callable(reader):
             raise ChainError(UNADAPTED.format(what="block hash reader"))
         return str(with_retry("get_block_hash", lambda: reader(block)))
 
+    @_serialised
     def snapshot(self, *, refresh: bool = False) -> MetagraphSnapshot:
         age = time.monotonic() - self._cached_at
         fresh = self._cached is not None and age < METAGRAPH_TTL_SECONDS
@@ -184,6 +202,7 @@ class SubtensorClient:
 
         raise ChainError("this bittensor build exposes no metagraph reader")
 
+    @_serialised
     def commitments(self, hotkeys: Sequence[str]) -> dict[str, str]:
         carried = self._commitments_from_metagraph(hotkeys)
         if carried is not None:
@@ -209,6 +228,7 @@ class SubtensorClient:
                 found[hotkey] = str(raw)
         return found
 
+    @_serialised
     def commitment_blocks(self, hotkeys: Sequence[str]) -> dict[str, int]:
         """The block each hotkey's current commitment landed in.
 
@@ -275,6 +295,7 @@ class SubtensorClient:
 
         return found
 
+    @_serialised
     def publish(self, payload: str) -> bool:
         writer = getattr(self.subtensor, "commit", None) or getattr(
             self.subtensor, "set_commitment", None
@@ -288,6 +309,7 @@ class SubtensorClient:
             )
         )
 
+    @_serialised
     def transfer(self, dest: str, amount_tao: float) -> TransferReceipt:
         """Move TAO from this wallet's coldkey and say exactly where it landed.
 
@@ -324,6 +346,7 @@ class SubtensorClient:
             extrinsic_hash=str(receipt.extrinsic_hash), block=int(block), block_hash=block_hash
         )
 
+    @_serialised
     def commit_reveal_enabled(self) -> bool:
         for name in ("commit_reveal_enabled", "get_subnet_reveal_period_epochs"):
             probe = getattr(self.subtensor, name, None)
@@ -339,6 +362,7 @@ class SubtensorClient:
             return bool(result) and int(result) > 0
         return False
 
+    @_serialised
     def set_weights(self, vector: WeightVector) -> tuple[bool, str]:
         if vector.is_empty:
             return False, "refusing to submit an empty weight vector"
@@ -416,6 +440,7 @@ class SubtensorClient:
     def is_registered(self, hotkey: str) -> bool:
         return self.snapshot().is_registered(hotkey)
 
+    @_serialised
     def close(self) -> None:
         subtensor, self._subtensor = self._subtensor, None
         if subtensor is None:
