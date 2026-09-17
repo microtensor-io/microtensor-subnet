@@ -11,6 +11,7 @@ from microtensor.coordinator.collect import Reconciled
 from microtensor.core.constants import (
     ANOMALY_MIN_REPLICATION,
     ANOMALY_QUALITY,
+    CONCENTRATION_CAP_FRACTION,
     REFERENCE_COST_MS,
 )
 from microtensor.scoring import frontier
@@ -339,11 +340,77 @@ def apply_penalties(
     return out
 
 
+def normalise_compute(
+    compute: Mapping[str, Any] | None,
+    uid_by_hotkey: Mapping[str, int],
+    coldkeys: Mapping[str, str] | None = None,
+    cap: float = CONCENTRATION_CAP_FRACTION,
+) -> dict[str, Any]:
+    if not isinstance(compute, Mapping):
+        return {}
+    try:
+        share = float(compute.get("share", 0.0))
+    except (TypeError, ValueError):
+        return {}
+    raw = compute.get("hotkeys")
+    if not 0.0 < share < 1.0 or not isinstance(raw, Mapping):
+        return {}
+    fractions: dict[str, float] = {}
+    for hotkey, value in raw.items():
+        try:
+            fraction = float(value)
+        except (TypeError, ValueError):
+            continue
+        if str(hotkey) in uid_by_hotkey and fraction > 0.0:
+            fractions[str(hotkey)] = fraction
+    total = sum(fractions.values())
+    if total <= 0.0:
+        return {}
+    fractions = {h: f / total for h, f in fractions.items()}
+    owners = dict(coldkeys or {})
+    for _ in range(3):
+        by_owner: dict[str, float] = {}
+        for hotkey, fraction in fractions.items():
+            owner = owners.get(hotkey, hotkey)
+            by_owner[owner] = by_owner.get(owner, 0.0) + fraction
+        over = {o: t - cap for o, t in by_owner.items() if t > cap + 1e-12}
+        if not over:
+            break
+        excess = sum(over.values())
+        for hotkey in list(fractions):
+            owner = owners.get(hotkey, hotkey)
+            if owner in over:
+                fractions[hotkey] *= cap / by_owner[owner]
+        room = {h: f for h, f in fractions.items() if owners.get(h, h) not in over}
+        pool = sum(room.values())
+        if pool <= 0.0:
+            break
+        for hotkey in room:
+            fractions[hotkey] += excess * room[hotkey] / pool
+    uids = {int(uid_by_hotkey[h]): round(f, 12) for h, f in fractions.items()}
+    return {"share": share, "uids": dict(sorted(uids.items()))}
+
+
+def apply_compute(weights: Mapping[int, float], compute: Mapping[str, Any]) -> dict[int, float]:
+    if not compute:
+        return dict(weights)
+    share = float(compute.get("share", 0.0))
+    uids = {int(u): float(f) for u, f in dict(compute.get("uids") or {}).items()}
+    paid = share * sum(uids.values())
+    if paid <= 0.0:
+        return dict(weights)
+    out = {u: v * (1.0 - paid) for u, v in weights.items() if v * (1.0 - paid) > 0.0}
+    for uid, fraction in uids.items():
+        out[uid] = out.get(uid, 0.0) + share * fraction
+    return out
+
+
 def standing_weights(
     store: Any,
     held: Mapping[str, Any],
     uid_by_hotkey: Mapping[str, int],
     penalties: Sequence[Mapping[str, Any]] = (),
+    compute: Mapping[str, Any] | None = None,
 ) -> dict[int, float]:
     resolved: dict[str, Any] = {}
     hotkey = str(held.get("hotkey", "")) if held else ""
@@ -357,6 +424,7 @@ def standing_weights(
         return {u: v for u, v in weights.items() if u != resolved["uid"]}
 
     measured = apply_penalties(without_hold(measured_weights(store)), penalties)
+    measured = apply_compute(measured, compute or {})
     return apply_reserved(measured, normalise_reserved(resolved))
 
 
