@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from microtensor.chain.config import ChainConfig
 from microtensor.chain.metagraph import MetagraphSnapshot, snapshot_from
@@ -88,14 +89,16 @@ def with_retry(
     raise ChainError(f"{label} failed after {attempts} attempts: {last}") from last
 
 
-def _serialised(method):  # type: ignore[no-untyped-def]
-    def call(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _serialised(method: F) -> F:
+    @functools.wraps(method)
+    def call(self: Any, *args: Any, **kwargs: Any) -> Any:
         with self._lock:
             return method(self, *args, **kwargs)
 
-    call.__name__ = method.__name__
-    call.__doc__ = method.__doc__
-    return call
+    return cast(F, call)
 
 
 class SubtensorClient:
