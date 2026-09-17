@@ -655,6 +655,18 @@ fault.
 
 ---
 
+### The compute share
+
+Ten percent of miner emission is the compute pool's. The control plane scores
+every verified rig on each tick (GPU class weight, accepted GPUs, connected
+fraction of the trailing day, isolation, driver, rental opt out and work
+completed), zeroes a rig the tick it goes offline, and publishes the
+allocation on the emission gate beside the hold and the penalties. The
+coordinator folds it into the standing vector after the arena shares, and
+validators verify the fold like every other declared input. Payment for the
+work rigs do is settled off chain from the pool's ledger; emission is the
+retainer for verified availability.
+
 ### What a training run does and does not establish
 
 Every submission must carry a public run in `microtensor/training-runs`, named
