@@ -55,6 +55,7 @@ class RoundLoop:
         self.rounds_run = 0
         self._last_weight_block = 0
         self.updater = updater
+        self.measuring: Any = None
         self.restarting = False
 
     def stop(self, *_: object) -> None:
@@ -320,7 +321,13 @@ class RoundLoop:
 
         if not self.wait_for_close(round_):
             return None
-        outcome = run_round(self.context, round_, heartbeat=self._heartbeat)
+        if self.measuring is not None:
+            self.measuring.start()
+        try:
+            outcome = run_round(self.context, round_, heartbeat=self._heartbeat)
+        finally:
+            if self.measuring is not None:
+                self.measuring.stop()
         self.rounds_run += 1
         if outcome is not None and outcome.settled:
             self._last_weight_block = self.context.client.block()
