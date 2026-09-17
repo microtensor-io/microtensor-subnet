@@ -332,11 +332,10 @@ def apply_penalties(
                 out[uid] = kept
         elif value > 0.0:
             out[uid] = value
-    pool = sum(v for u, v in out.items() if u not in factors)
-    if removed > 0.0 and pool > 0.0:
-        for uid in list(out):
-            if uid not in factors:
-                out[uid] += removed * out[uid] / pool
+    others = [u for u in out if u not in factors]
+    if removed > 0.0 and others:
+        for uid in others:
+            out[uid] += removed / len(others)
     return out
 
 
