@@ -48,6 +48,7 @@ validator = [
     "wandb>=0.17",
     "httpx>=0.27",
     "asyncssh>=2.14",
+    "substrate-interface>=1.7",
 ]
 # Exactly pinned, not floored: the wheel carries the llama.cpp build, and the
 # build is where the numerics come from. A range here would let two validators
