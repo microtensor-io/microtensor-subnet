@@ -176,6 +176,22 @@ To run standalone, leave `--coordinator` unset and `MT_COORDINATOR_URL` empty.
 supervisor to restart it, so only use it under systemd or docker. Backgrounded
 in a shell, the first update leaves it down.
 
+## 9. Compute pool rigs
+
+`mt validator run` also verifies compute pool rigs, as idle time work under the
+same hotkey: express ticks every thirty seconds and hourly deep passes over SSH,
+paused whenever a system is being measured so envelope numbers are untouched. It
+registers with the pool on first start and waits for the operator to activate
+the hotkey; the rig challenge library is fetched once from the compute repo's
+release and checked against its digest. Weights for rigs are set through the
+coordinator's vector like everything else; nothing here sets weights.
+
+```bash
+mt validator rigs register     # register with the pool without running rounds
+mt validator rigs run          # verify rigs alone, on a host with no arena validator
+mt validator run --no-rigs     # score arenas only
+```
+
 ## What the logs show
 
 Startup, in order; each line is a stage completing:

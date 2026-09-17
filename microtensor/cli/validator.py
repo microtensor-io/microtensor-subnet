@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from microtensor.chain.wallet import hotkey_address
 from microtensor.cli.common import (
@@ -81,7 +82,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     rigs = inner.add_parser("rigs", help="compute pool rig verification on its own")
     _add_validator_arguments(rigs)
-    rigs.add_argument("rigs_action", choices=["run", "register", "hotkey"])
+    rigs.add_argument("rigs_action", choices=["run", "register", "hotkey", "show", "sign-release"])
+    rigs.add_argument(
+        "rigs_argument", nargs="?", default="", help="what to show, or the digest to sign"
+    )
     rigs.add_argument("--pool", default="", help="pool server; defaults to the public server")
     rigs.set_defaults(handler=_rigs)
 
@@ -347,6 +351,35 @@ def _rigs(args: argparse.Namespace) -> int:
         finally:
             asyncio.run(validator.close())
         print("active" if active else "registered, awaiting operator activation")
+        return 0
+    if args.rigs_action == "show":
+        import json
+
+        async def show() -> Any:
+            try:
+                if args.rigs_argument == "scores":
+                    return await validator.pool.scores()
+                return await validator.pool.rigs(due=args.rigs_argument == "due")
+            finally:
+                await validator.close()
+
+        print(json.dumps(asyncio.run(show()), indent=2, default=str))
+        return 0
+    if args.rigs_action == "sign-release":
+        import json
+        import time
+
+        from microtensor.rigs.protocol.session import release_message
+
+        async def sign() -> Any:
+            try:
+                stamp = int(time.time())
+                signature = validator.identity.sign(release_message(args.rigs_argument, stamp))
+                return await validator.pool.release(args.rigs_argument, stamp, signature)
+            finally:
+                await validator.close()
+
+        print(json.dumps(asyncio.run(sign()), indent=2, default=str))
         return 0
     ensure_library(settings.agent_library)
     return asyncio.run(validator.run())
