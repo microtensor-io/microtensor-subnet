@@ -67,7 +67,23 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     run = inner.add_parser("run", help="run the round loop until stopped")
     _add_validator_arguments(run)
     run.add_argument("--max-rounds", type=int, help="stop after this many rounds")
+    run.add_argument(
+        "--no-rigs",
+        action="store_true",
+        help="do not verify compute pool rigs as idle time work beside the rounds",
+    )
+    run.add_argument(
+        "--pool",
+        default="",
+        help="pool server the rig checks report to; defaults to the public server",
+    )
     run.set_defaults(handler=_run)
+
+    rigs = inner.add_parser("rigs", help="compute pool rig verification on its own")
+    _add_validator_arguments(rigs)
+    rigs.add_argument("rigs_action", choices=["run", "register", "hotkey"])
+    rigs.add_argument("--pool", default="", help="pool server; defaults to the public server")
+    rigs.set_defaults(handler=_rigs)
 
     once = inner.add_parser("once", help="evaluate and settle exactly one round")
     _add_validator_arguments(once)
@@ -300,9 +316,46 @@ def _updater(args: argparse.Namespace) -> UpdateChecker | None:
     return UpdateChecker(settings)
 
 
+def _start_rigs(args: argparse.Namespace, context: ValidatorContext, loop: RoundLoop) -> None:
+    from microtensor.rigs.sidejob import Measuring, settings_for, start_thread
+
+    if getattr(args, "no_rigs", False) or context.wallet is None or not context.hotkey:
+        return
+    measuring = Measuring()
+    loop.measuring = measuring
+    settings = settings_for(context.config.work_dir, context.hotkey, server_url=args.pool)
+    start_thread(settings, context.wallet.hotkey, measuring)
+
+
+def _rigs(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from microtensor.rigs.sidejob import ensure_library, settings_for
+    from microtensor.rigs.validator.main import Validator
+
+    chain = chain_config(args)
+    wallet = open_wallet(chain, required=True)
+    hotkey = hotkey_address(wallet)
+    if args.rigs_action == "hotkey":
+        print(hotkey)
+        return 0
+    settings = settings_for(Path(args.work_dir), hotkey, server_url=args.pool)
+    validator = Validator(settings, keypair=wallet.hotkey)
+    if args.rigs_action == "register":
+        try:
+            active = asyncio.run(validator.ensure_registered())
+        finally:
+            asyncio.run(validator.close())
+        print("active" if active else "registered, awaiting operator activation")
+        return 0
+    ensure_library(settings.agent_library)
+    return asyncio.run(validator.run())
+
+
 def _run(args: argparse.Namespace) -> int:
     context = _build(args, probe=True)
     loop = RoundLoop(context, updater=_updater(args))
+    _start_rigs(args, context, loop)
     loop.install_signal_handlers()
     try:
         loop.run(max_rounds=args.max_rounds)
