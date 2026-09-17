@@ -6,8 +6,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from substrateinterface import Keypair, KeypairType
-
 from microtensor.rigs.protocol.session import (
     HEADER_HOTKEY,
     HEADER_SIGNATURE,
@@ -15,6 +13,14 @@ from microtensor.rigs.protocol.session import (
     signing_bytes,
 )
 from microtensor.rigs.validator.config import Settings
+
+try:
+    from bittensor_wallet import Keypair
+except ImportError:  # pragma: no cover
+    from substrateinterface import Keypair
+
+ED25519 = 0
+SR25519 = 1
 
 SS58_FORMAT = 42
 
@@ -62,11 +68,7 @@ def load_keypair(settings: Settings) -> Keypair:
         if private:
             raw = bytes.fromhex(private[2:] if private.startswith("0x") else private)
             public = str(data.get("publicKey", "") or "")
-            crypto = (
-                KeypairType.ED25519
-                if int(data.get("cryptoType", 1) or 1) == 0
-                else KeypairType.SR25519
-            )
+            crypto = ED25519 if int(data.get("cryptoType", 1) or 1) == 0 else SR25519
             return Keypair(
                 public_key=bytes.fromhex(public[2:] if public.startswith("0x") else public)
                 if public

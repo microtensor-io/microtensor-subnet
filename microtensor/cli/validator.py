@@ -321,7 +321,11 @@ def _updater(args: argparse.Namespace) -> UpdateChecker | None:
 
 
 def _start_rigs(args: argparse.Namespace, context: ValidatorContext, loop: RoundLoop) -> None:
-    from microtensor.rigs.sidejob import Measuring, settings_for, start_thread
+    try:
+        from microtensor.rigs.sidejob import Measuring, settings_for, start_thread
+    except ImportError as exc:
+        log.warning("rig verification is off: %s; install microtensor[validator]", exc)
+        return
 
     if getattr(args, "no_rigs", False) or context.wallet is None or not context.hotkey:
         return
