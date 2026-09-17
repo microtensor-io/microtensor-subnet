@@ -23,6 +23,7 @@ from microtensor.coordinator.settle import (
     Entry,
     Settlement,
     merkle_root,
+    normalise_compute,
     normalise_penalties,
     standing_weights,
 )
@@ -243,9 +244,10 @@ class Coordinator:
     def weights(self) -> dict[str, Any]:
         held = self.reserve() if self.reserve is not None else {}
         if held.get("paused"):
-            return {"weights": {}, "paused": True, "reserved": {}, "penalties": []}
+            return {"weights": {}, "paused": True, "reserved": {}, "penalties": [], "compute": {}}
         declared = normalise_penalties(held.get("penalties") or (), self.uid_by_hotkey)
-        folded = standing_weights(self.store, held or {}, self.uid_by_hotkey, declared)
+        compute = normalise_compute(held.get("compute"), self.uid_by_hotkey, self.coldkeys)
+        folded = standing_weights(self.store, held or {}, self.uid_by_hotkey, declared, compute)
         return {
             "weights": {str(uid): value for uid, value in sorted(folded.items())},
             "paused": False,
@@ -254,6 +256,7 @@ class Coordinator:
                 "share": float(held.get("share", 0.0)),
             },
             "penalties": declared,
+            "compute": compute,
         }
 
     def assignment(self, hotkey: str) -> dict[str, Any]:

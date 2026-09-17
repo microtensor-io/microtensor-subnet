@@ -10,8 +10,10 @@ from typing import Any
 from microtensor.chain.rounds import Round, round_for_block
 from microtensor.chain.weights import quantise_weights
 from microtensor.coordinator.settle import (
+    apply_compute,
     apply_penalties,
     apply_reserved,
+    normalise_compute,
     normalise_penalties,
     normalise_reserved,
 )
@@ -221,7 +223,9 @@ class RoundLoop:
             if hotkey and uid is not None
             else {}
         )
-        if not penalties and not held:
+        snapshot = self.context.client.snapshot()
+        compute = normalise_compute(published.get("compute"), uid_by_hotkey, snapshot.coldkeys())
+        if not penalties and not held and not compute:
             return None
         measured, _ = to_uid_weights(own, uid_by_hotkey)
         if held:
@@ -229,7 +233,9 @@ class RoundLoop:
             total = sum(measured.values())
             if total > 0.0:
                 measured = {u: v / total for u, v in measured.items()}
-        expected = apply_reserved(apply_penalties(measured, penalties), held)
+        expected = apply_reserved(
+            apply_compute(apply_penalties(measured, penalties), compute), held
+        )
         mine = {str(u): round(float(v), 9) for u, v in expected.items()}
         theirs = {str(u): round(float(v), 9) for u, v in (published.get("weights") or {}).items()}
         if mine != theirs:

@@ -29,6 +29,7 @@ from microtensor.coordinator.server import (
 from microtensor.coordinator.settle import (
     Entry,
     Settlement,
+    normalise_compute,
     normalise_penalties,
     standing_weights,
 )
@@ -598,10 +599,14 @@ def _anchor(args: argparse.Namespace) -> int:
 
 
 def _weight_vector(
-    store: CoordinatorStore, held: dict[str, Any], uid_by_hotkey: dict[str, int]
+    store: CoordinatorStore,
+    held: dict[str, Any],
+    uid_by_hotkey: dict[str, int],
+    coldkeys: dict[str, str] | None = None,
 ) -> WeightVector:
     declared = normalise_penalties((held or {}).get("penalties") or (), uid_by_hotkey)
-    return quantise_weights(standing_weights(store, held or {}, uid_by_hotkey, declared))
+    compute = normalise_compute((held or {}).get("compute"), uid_by_hotkey, coldkeys)
+    return quantise_weights(standing_weights(store, held or {}, uid_by_hotkey, declared, compute))
 
 
 def _weights(args: argparse.Namespace) -> int:
@@ -633,8 +638,9 @@ def _weights(args: argparse.Namespace) -> int:
             vector = WeightVector((), ())
         else:
             with _store(args) as store:
-                uids = dict(client.snapshot(refresh=True).uid_by_hotkey)
-                vector = _weight_vector(store, held, uids)
+                snapshot = client.snapshot(refresh=True)
+                uids = dict(snapshot.uid_by_hotkey)
+                vector = _weight_vector(store, held, uids, dict(snapshot.coldkeys()))
 
         if vector.is_empty:
             log.info("nothing to set: no hold resolved and no round has settled")
