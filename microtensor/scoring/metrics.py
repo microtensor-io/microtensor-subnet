@@ -96,9 +96,39 @@ def _field_key(value: Any) -> str:
     return re.sub(r"[\s\-]+", "_", _normalise_text(value))
 
 
+def _leaf_pairs(value: Any, path: str = "") -> set[str]:
+    if isinstance(value, dict):
+        found: set[str] = set()
+        for key, item in value.items():
+            step = _field_key(key)
+            found |= _leaf_pairs(item, f"{path}.{step}" if path else step)
+        return found
+    if isinstance(value, list | tuple):
+        found = set()
+        for index, item in enumerate(value):
+            found |= _leaf_pairs(item, f"{path}.{index}" if path else str(index))
+        return found
+    if value is None or not str(value).strip():
+        return set()
+    if not path:
+        return {_normalise_text(value)}
+    return {f"{path}={_normalise_text(value)}"}
+
+
+def _leaf_string(value: Any) -> str:
+    text = str(value)
+    path, separator, rest = text.partition("=")
+    if not separator or not path.strip():
+        return _normalise_text(text)
+    key = ".".join(_field_key(part) for part in path.split("."))
+    return f"{key}={_normalise_text(rest)}"
+
+
 def _pairs(value: Any) -> set[str]:
     if isinstance(value, dict):
-        return {f"{_field_key(k)}={_normalise_text(v)}" for k, v in value.items()}
+        return _leaf_pairs(value)
+    if isinstance(value, list | tuple):
+        return {_leaf_string(item) for item in value if str(item).strip()}
     return _as_set(value)
 
 
