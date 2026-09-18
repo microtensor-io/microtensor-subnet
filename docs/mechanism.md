@@ -756,9 +756,11 @@ Per round, each validator:
 4. Applies **hysteresis at every rank boundary**, not only the top.
 5. Applies **incumbent decay**.
 6. Applies the **concentration cap**.
-7. Normalises over all UIDs, then smooths:
+7. Applies the **declared penalties**, then the compute share, then the
+   reserved hold, each published beside the vector.
+8. Normalises over all UIDs, then smooths:
    `w = α·w_new + (1-α)·w_prev`, with the prior persisted.
-8. Sets the vector on chain, once per round. When the subnet's
+9. Sets the vector on chain, once per round. When the subnet's
    `commit_reveal_weights_enabled` hyperparameter is on, the runtime routes the
    extrinsic through commit-reveal transparently; the validator queries the
    hyperparameter each round and logs which path was taken, so an operator can
@@ -811,6 +813,38 @@ Weight moves toward a new score faster on the way **down** than up
 (`DECAY_RATE > RECOVERY_RATE`). A regression is acted on immediately; a recovery
 is earned back. Symmetric smoothing lets an artifact alternate between good and
 broken while holding a mid position.
+
+### Penalties
+
+The operator can declare a penalty against a hotkey: a factor in `[0, 1)` and
+a reason. The control plane publishes the list on the emission gate, the
+coordinator folds it into the standing vector, and every validator recomputes
+the fold from the published list and adopts the vector only if it reproduces.
+A penalty is live the moment it is declared, inside a round or between rounds,
+with nothing re-settled: measured weights do not change, only the vector built
+from them.
+
+```
+kept_i     = w_i · f_i                      for each penalised uid i
+removed    = Σ (w_i − kept_i)
+w_j       += removed / |others|             for every other uid j with w_j > 0
+```
+
+The share a penalty removes is split **equally** among the other uids that hold
+weight, not in proportion to what they hold. Proportional redistribution would
+hand most of the removed share to the leaders, which turns a penalty on one
+miner into a bonus for whoever is already paid most; an equal split changes
+nobody's rank and treats the removed share as a flat dividend to the rest of
+the paid cohort. A factor of `0` removes the hotkey's whole share; a factor of
+`0.5` halves it. Penalised uids never receive a share of what another penalty
+removed. The fold runs after the concentration cap and before the compute share
+and the reserved hold, so neither the pool's retainer nor the hold is touched
+by it.
+
+The list is public: the coordinator serves it under `penalties` on
+`/v1/weights`, each entry carrying the hotkey, its uid, the factor and the
+reason, so a penalised miner and everyone else can see exactly what was
+applied and why.
 
 ---
 
