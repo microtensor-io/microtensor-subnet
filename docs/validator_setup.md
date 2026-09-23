@@ -1,6 +1,6 @@
 # Running a Microtensor validator
 
-Netuid **92** on finney.
+Netuid **$MT_NETUID** on testnet. Set `MT_NETUID` to the subnet you are running against.
 
 ## Requirements
 
@@ -57,8 +57,8 @@ schemes miners use. `https` needs nothing extra.
 ## 2. Register
 
 ```bash
-btcli subnet register --netuid 92 --wallet.name <coldkey> --wallet.hotkey <hotkey>
-btcli stake add --netuid 92 --wallet.name <coldkey> --amount <alpha>
+btcli subnet register --netuid $MT_NETUID --subtensor.network test --wallet.name <coldkey> --wallet.hotkey <hotkey>
+btcli stake add --netuid $MT_NETUID --subtensor.network test --wallet.name <coldkey> --amount <alpha>
 ```
 
 Weights are only counted if your hotkey holds a validator permit.
@@ -80,13 +80,14 @@ receives its first assignment at the next round open.
 ## 4. Configure
 
 ```bash
-export MT_NETWORK=finney
+export MT_NETWORK=test
+export MT_NETUID=<your netuid>
 export MT_WALLET_NAME=<coldkey>
 export MT_WALLET_HOTKEY=<hotkey>
 export MT_COORDINATOR_URL=https://coordinator.microtensor.cloud
 ```
 
-`MT_NETUID` defaults to 92. Flags override environment; `--coordinator` and
+`MT_NETUID` must be set to the subnet you validate. Flags override environment; `--coordinator` and
 `MT_COORDINATOR_URL` are the same setting.
 
 The cpu budget and task count of a coordinated round come from the anchored
@@ -200,7 +201,7 @@ Startup, in order; each line is a stage completing:
 training run store reachable at microtensor/training-runs
 Enabling default logging (Warning level)        ← bittensor, during wallet load
 taking assignments from the coordinator at …    ← metagraph fetched, hotkey checked
-validator up on netuid 92 across N competitions
+validator up on netuid $MT_NETUID across N competitions
 round 1236 open: 5400 blocks until submissions close
 ```
 
@@ -235,7 +236,7 @@ After=network-online.target
 [Service]
 Type=simple
 User=validator
-Environment=MT_NETUID=92
+Environment=MT_NETUID=<your netuid>
 Environment=MT_WALLET_NAME=<coldkey>
 Environment=MT_WALLET_HOTKEY=<hotkey>
 Environment=MT_HOME=/var/lib/microtensor

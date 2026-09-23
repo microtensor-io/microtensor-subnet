@@ -1,5 +1,5 @@
 [Unit]
-Description=Microtensor coordinator (subnet 92)
+Description=Microtensor coordinator
 After=network-online.target
 Wants=network-online.target
 
@@ -9,8 +9,9 @@ User=microtensor
 WorkingDirectory=/opt/microtensor
 Environment=MT_ROLE=coordinator
 Environment=MT_HOME=/var/lib/microtensor
-Environment=MT_NETUID=92
-Environment=MT_NETWORK=finney
+# MT_NETUID must be set to the subnet this coordinator runs
+Environment=MT_NETUID=
+Environment=MT_NETWORK=test
 ExecStart=/opt/microtensor/.venv/bin/mt coordinator serve --host 127.0.0.1 --port 8443
 
 # on-failure rather than always. A deliberate exit, on a config-anchor

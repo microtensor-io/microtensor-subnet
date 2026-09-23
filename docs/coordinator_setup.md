@@ -1,6 +1,6 @@
 # Running the Microtensor coordinator
 
-This guide is for the team that operates subnet 92. One machine runs the
+This guide is for the team that operates the subnet. One machine runs the
 coordinator; everyone else runs a worker validator. If you are a third party
 setting up measurement hardware, read [validator_setup.md](validator_setup.md)
 instead. The two audiences share almost nothing.
@@ -72,7 +72,7 @@ cd microtensor-subnet
 python -m venv .venv && source .venv/bin/activate
 pip install ".[coordinator]"
 
-mt coordinator init --netuid 92
+mt coordinator init --netuid $MT_NETUID --network test
 ```
 
 `init` claims the home directory for the coordinator role. From then on
