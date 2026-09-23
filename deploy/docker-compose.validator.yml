@@ -10,7 +10,7 @@ services:
     cap_add:
       - SYS_ADMIN
     environment:
-      MT_NETUID: "${MT_NETUID:?set the testnet netuid}"
+      MT_NETUID: "${MT_NETUID:-576}"
       MT_NETWORK: "${MT_NETWORK:-test}"
       MT_WALLET_NAME: "${MT_WALLET_NAME:?set the coldkey wallet name}"
       MT_WALLET_HOTKEY: "${MT_WALLET_HOTKEY:?set the hotkey name}"

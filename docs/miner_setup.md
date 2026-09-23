@@ -168,15 +168,15 @@ pip install ".[validator]"
 
 ### Register
 
-Microtensor runs on testnet. Set `MT_NETUID` to the subnet you are submitting to; the network defaults to `test`.
+Microtensor is **netuid 576** on Bittensor testnet, and that is the built-in default.
 
 ```bash
-btcli subnet register --netuid $MT_NETUID --subtensor.network test --wallet.name <coldkey> --wallet.hotkey <hotkey>
+btcli subnet register --netuid 576 --subtensor.network test --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
 ```bash
 export MT_NETWORK=test
-export MT_NETUID=<your netuid>
+export MT_NETUID=576
 export MT_WALLET_NAME=<coldkey>
 export MT_WALLET_HOTKEY=<hotkey>
 ```
@@ -357,7 +357,7 @@ them.
 Everything above is one-time. Mining is five commands total:
 
 ```bash
-btcli subnet register --netuid $MT_NETUID --subtensor.network test --wallet.name <coldkey> --wallet.hotkey <hotkey>
+btcli subnet register --netuid 576 --subtensor.network test --wallet.name <coldkey> --wallet.hotkey <hotkey>
 
 mt miner init --artifact ./my-model --track code --hardware-class mt-3g \
               --source hf:youracct/mt-code-3b@a1b2c3d

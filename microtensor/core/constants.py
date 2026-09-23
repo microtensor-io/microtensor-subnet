@@ -37,7 +37,7 @@ RELEASE_VERSION: Final[str] = "0.4.12"
 # bug fix has no reason to declare.
 MECHANISM_VERSION: Final[str] = "0.5.0"
 DEFAULT_NETWORK: Final[str] = os.environ.get("MT_NETWORK", "").strip() or "test"
-DEFAULT_NETUID: Final[int] = _blocks("MT_NETUID", 92)
+DEFAULT_NETUID: Final[int] = _blocks("MT_NETUID", 576)
 GENESIS_BLOCK: Final[int] = _blocks("MT_GENESIS_BLOCK", -17805488)
 
 BLOCK_TIME_SECONDS: Final[int] = 12
