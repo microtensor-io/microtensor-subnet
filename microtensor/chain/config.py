@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, fields, replace
 from typing import Any, Final
 
-from microtensor.core.constants import DEFAULT_NETUID
+from microtensor.core.constants import DEFAULT_NETUID, DEFAULT_NETWORK
 
 NETWORKS: Final[dict[str, str]] = {
     "finney": "wss://entrypoint-finney.opentensor.ai:443",
@@ -19,7 +19,7 @@ ENV_PREFIX: Final[str] = "MT_"
 @dataclass(frozen=True, slots=True)
 class ChainConfig:
     netuid: int = DEFAULT_NETUID
-    network: str = "finney"
+    network: str = DEFAULT_NETWORK
     endpoint: str = ""
     wallet_name: str = "default"
     wallet_hotkey: str = "default"

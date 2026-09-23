@@ -9,7 +9,7 @@ from microtensor.rigs.validator.storage.keys import MASTER_SECRET_ENV
 
 TRUE_VALUES = ("1", "true", "yes", "on")
 DEFAULT_SERVER_URL = "https://api.microtensor.cloud"
-DEFAULT_CHAIN_ENDPOINT = "wss://entrypoint-finney.opentensor.ai:443"
+DEFAULT_CHAIN_ENDPOINT = "wss://test.finney.opentensor.ai:443"
 DEFAULT_STATE_DIR = "/var/lib/compute-validator"
 DEFAULT_CHALLENGE_LIBRARY = "/usr/lib/libmtverify.so"
 DEFAULT_AGENT_LIBRARY = "/usr/lib/libmtchallenge.so"
@@ -61,7 +61,7 @@ class Settings:
     hotkey_seed: str = field(default_factory=lambda: _text("CV_HOTKEY_SEED"))
     hotkey_mnemonic: str = field(default_factory=lambda: _text("CV_HOTKEY_MNEMONIC"))
     wallet_hotkey_file: str = field(default_factory=lambda: _text("CV_WALLET_HOTKEY_FILE"))
-    network: str = field(default_factory=lambda: _text("CV_NETWORK", "finney"))
+    network: str = field(default_factory=lambda: _text("CV_NETWORK", "test"))
     netuid: int = field(default_factory=lambda: _int("CV_NETUID", 92))
     chain_endpoint: str = field(
         default_factory=lambda: _text("CV_CHAIN_ENDPOINT", DEFAULT_CHAIN_ENDPOINT)

@@ -267,7 +267,7 @@ def card(
         f"# Microtensor archive · {track}/{hardware_class} · round {round_index}",
         "",
         "This repository is an archival copy of a system submitted to the",
-        "Microtensor subnet (Bittensor netuid 92) and certified by its",
+        "Microtensor subnet and certified by its",
         "validators. The figures below were measured by the network on",
         "reference hardware. They are not self-reported.",
         "",

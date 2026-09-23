@@ -5,6 +5,8 @@ import logging
 import os
 from pathlib import Path
 
+from microtensor.core.constants import DEFAULT_NETUID, DEFAULT_NETWORK
+
 log = logging.getLogger("microtensor.cli.archive")
 
 
@@ -27,8 +29,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     round_.add_argument("--staging", default="~/.microtensor/archive-staging")
     round_.add_argument("--dry-run", action="store_true")
     round_.add_argument("--state", default="")
-    round_.add_argument("--network", default=os.environ.get("MT_NETWORK", "finney"))
-    round_.add_argument("--netuid", type=int, default=int(os.environ.get("MT_NETUID", "92")))
+    round_.add_argument("--network", default=os.environ.get("MT_NETWORK", DEFAULT_NETWORK))
+    round_.add_argument("--netuid", type=int, default=DEFAULT_NETUID)
     round_.add_argument("--endpoint", default=os.environ.get("MT_ENDPOINT", ""))
     round_.add_argument("--no-chain", action="store_true")
     round_.add_argument("--frontier-only", action="store_true")
