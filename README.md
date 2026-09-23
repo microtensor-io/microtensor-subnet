@@ -4,7 +4,7 @@
 
 ### A Decentralized Network for Certified Inference Systems
 
-Bittensor subnet
+Bittensor subnet 576 (testnet)
 
 [Miner](docs/miner_setup.md) •
 [Validator](docs/validator_setup.md) •
@@ -210,7 +210,7 @@ from a local checkout.
 
 ## Status
 
-Runs on Bittensor testnet. The mechanism is complete and runs end to end:
+Netuid 576 on Bittensor testnet. The mechanism is complete and runs end to end:
 `mt validator loopback` settles rounds against a synthetic chain on a local
 machine, with no wallet and no network.
 

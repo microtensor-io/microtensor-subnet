@@ -8,7 +8,7 @@ services:
     restart: on-failure
     environment:
       MT_ROLE: coordinator
-      MT_NETUID: "${MT_NETUID:?set the testnet netuid}"
+      MT_NETUID: "${MT_NETUID:-576}"
       MT_NETWORK: ${MT_NETWORK:-test}
       MT_MIN_ROUNDS_OBSERVED: ${MT_MIN_ROUNDS_OBSERVED:-1}
       MT_REFERENCE_COST_MS: ${MT_REFERENCE_COST_MS:-10000}

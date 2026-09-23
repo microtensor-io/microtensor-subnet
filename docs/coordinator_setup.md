@@ -72,7 +72,7 @@ cd microtensor-subnet
 python -m venv .venv && source .venv/bin/activate
 pip install ".[coordinator]"
 
-mt coordinator init --netuid $MT_NETUID --network test
+mt coordinator init --netuid 576 --network test
 ```
 
 `init` claims the home directory for the coordinator role. From then on
