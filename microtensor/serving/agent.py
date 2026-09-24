@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Final
@@ -16,6 +16,7 @@ REQUEST: Final[str] = "request"
 RESPONSE: Final[str] = "response"
 HEARTBEAT: Final[str] = "heartbeat"
 CANCEL: Final[str] = "cancel"
+CHUNK: Final[str] = "chunk"
 
 PROTOCOL_VERSION: Final[int] = 1
 MIN_CONCURRENCY: Final[int] = 1
@@ -133,6 +134,10 @@ def response(
     }
 
 
+def chunk(correlation: str, delta: str) -> dict[str, Any]:
+    return {"type": CHUNK, "correlation": correlation, "delta": delta}
+
+
 def backoff(attempt: int, ceiling: float = RECONNECT_CEILING_SECONDS) -> float:
     if attempt <= 0:
         return 0.0
@@ -146,6 +151,11 @@ class Engine:
 
     async def generate(self, request: Mapping[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("bind an engine before serving")
+
+    async def stream(
+        self, request: Mapping[str, Any], on_delta: Callable[[str], Awaitable[None]]
+    ) -> dict[str, Any]:
+        return await self.generate(request)
 
 
 def decode_frame(raw: str | bytes) -> dict[str, Any]:
@@ -165,10 +175,19 @@ async def serve_one(engine: Engine, frame: Mapping[str, Any], state: Inflight) -
     return await serve_taken(engine, frame, state)
 
 
-async def serve_taken(engine: Engine, frame: Mapping[str, Any], state: Inflight) -> dict[str, Any]:
+async def serve_taken(
+    engine: Engine,
+    frame: Mapping[str, Any],
+    state: Inflight,
+    on_delta: Callable[[str], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     correlation = str(frame.get("correlation", ""))
     try:
-        found = await engine.generate(frame.get("request", {}))
+        request = frame.get("request", {})
+        if on_delta is None:
+            found = await engine.generate(request)
+        else:
+            found = await engine.stream(request, on_delta)
         answer = response(
             correlation,
             text=str(found.get("text", "")),
@@ -204,18 +223,16 @@ def _websockets() -> Any:
 
 
 class HttpEngine(Engine):
-    async def generate(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        httpx = _httpx()
+    @staticmethod
+    def _body(request: Mapping[str, Any]) -> dict[str, Any]:
         prompt = str(request.get("prompt", ""))
         if not prompt:
             raise AgentError("the gateway sent a request with no prompt")
-
         body: dict[str, Any] = {
             "prompt": prompt,
             "n_predict": int(request.get("max_tokens", DEFAULT_MAX_TOKENS)),
             "temperature": float(request.get("temperature", 0.0)),
             "return_tokens": True,
-            "stream": False,
         }
         for name in ("top_p", "top_k", "seed", "repeat_penalty"):
             if request.get(name) is not None:
@@ -223,22 +240,61 @@ class HttpEngine(Engine):
         stop = request.get("stop")
         if stop:
             body["stop"] = list(stop)
+        return body
+
+    @staticmethod
+    def _answer(text: str, prompt_tokens: list[int], raw: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "text": text,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": [int(t) for t in raw.get("tokens", [])],
+            "finish_reason": "length" if raw.get("stopped_limit") else "stop",
+        }
+
+    async def _prompt_tokens(self, client: Any, prompt: str) -> list[int]:
+        counted = await client.post("/tokenize", json={"content": prompt})
+        counted.raise_for_status()
+        return [int(t) for t in counted.json().get("tokens", [])]
+
+    async def generate(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        httpx = _httpx()
+        body = dict(self._body(request), stream=False)
 
         async with httpx.AsyncClient(base_url=self.url, timeout=self.timeout) as client:
-            counted = await client.post("/tokenize", json={"content": prompt})
-            counted.raise_for_status()
-            prompt_tokens = [int(t) for t in counted.json().get("tokens", [])]
-
+            prompt_tokens = await self._prompt_tokens(client, body["prompt"])
             found = await client.post("/completion", json=body)
             found.raise_for_status()
             answer = found.json()
 
-        return {
-            "text": str(answer.get("content", "")),
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": [int(t) for t in answer.get("tokens", [])],
-            "finish_reason": "length" if answer.get("stopped_limit") else "stop",
-        }
+        return self._answer(str(answer.get("content", "")), prompt_tokens, answer)
+
+    async def stream(
+        self, request: Mapping[str, Any], on_delta: Callable[[str], Awaitable[None]]
+    ) -> dict[str, Any]:
+        httpx = _httpx()
+        body = dict(self._body(request), stream=True)
+        text: list[str] = []
+        answer: dict[str, Any] = {}
+
+        async with httpx.AsyncClient(base_url=self.url, timeout=self.timeout) as client:
+            prompt_tokens = await self._prompt_tokens(client, body["prompt"])
+            async with client.stream("POST", "/completion", json=body) as found:
+                found.raise_for_status()
+                async for line in found.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        piece = json.loads(line[5:].strip())
+                    except ValueError:
+                        continue
+                    delta = str(piece.get("content", ""))
+                    if delta:
+                        text.append(delta)
+                        await on_delta(delta)
+                    if piece.get("stop"):
+                        answer = piece
+
+        return self._answer("".join(text), prompt_tokens, answer)
 
     async def ready(self) -> bool:
         httpx = _httpx()
@@ -265,7 +321,12 @@ async def _beat(socket: Any, state: Inflight, every: float = HEARTBEAT_SECONDS) 
 
 
 async def _answer(socket: Any, engine: Engine, frame: Mapping[str, Any], state: Inflight) -> None:
-    found = await serve_taken(engine, frame, state)
+    correlation = str(frame.get("correlation", ""))
+
+    async def on_delta(delta: str) -> None:
+        await _send(socket, chunk(correlation, delta))
+
+    found = await serve_taken(engine, frame, state, on_delta)
     await _send(socket, found)
 
 
