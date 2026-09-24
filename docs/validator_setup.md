@@ -229,8 +229,21 @@ the probe history behind it and forces it to prove itself again. Liveness is not
 your concern: the gateway drops a disconnected operator within seconds, and that
 never touches what you decided.
 
-The logic lives in `microtensor/serving/`. The sampling loop that drives it is
-not released yet, so there is no flag to turn this on today.
+Operators hold no inbound port, so you reach them through the gateway:
+
+```bash
+mt operator verify \
+  --artifacts artifacts.json \
+  --calibrations calibrations.json \
+  --credential "$MT_SERVE_SECRET"
+```
+
+`artifacts.json` maps each model to the certified artifact on your disk.
+`calibrations.json` maps each model to its calibrated threshold. A model with
+no calibration is skipped rather than guessed at, so the loop admits nobody
+until the first model is calibrated. Add `--once` for a single pass.
+
+The logic lives in `microtensor/serving/`.
 See [operator_setup.md](operator_setup.md) for the operator's side.
 
 ## What the logs show

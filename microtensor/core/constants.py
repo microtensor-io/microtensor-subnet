@@ -136,6 +136,9 @@ COORDINATOR_SERVER_URL: Final[str] = ""
 # ceilings nobody committed to.
 COORDINATOR_HOTKEY: Final[str] = "5FeHbWK12HHMLY4AtnWkKk8jtQajhQZMLCenGd96Hhs4UJGc"
 PUBLIC_SERVER_URL: Final[str] = "https://api.microtensor.cloud"
+GATEWAY_URL: Final[str] = os.environ.get(
+    "MT_GATEWAY_URL", "wss://api.microtensor.cloud/v1/operators/socket"
+).strip()
 # The operator plane is bound to loopback on the server host, so the default
 # is what an operator reaches over an ssh tunnel rather than a public name.
 CONTROL_URL: Final[str] = "http://127.0.0.1:8081"

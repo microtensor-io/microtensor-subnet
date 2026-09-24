@@ -57,6 +57,10 @@ validator = [
 # architectures load at all. 0.3.2 predated Qwen3 and answered every model on
 # the allowlist with `unknown model architecture: 'qwen3'`. Run
 # tests/test_gguf_architectures.py against a candidate before committing one.
+serving = [
+    "websockets>=12.0",
+    "httpx>=0.27",
+]
 gguf = [
     "llama-cpp-python==0.3.35",
 ]
@@ -80,6 +84,7 @@ dev = [
 mt = "microtensor.cli.main:main"
 mt-validator = "neurons.validator:run"
 mt-miner = "neurons.miner:run"
+mt-operator = "neurons.operator:run"
 
 [tool.setuptools.dynamic]
 version = { attr = "microtensor.core.constants.RELEASE_VERSION" }
@@ -101,6 +106,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "microtensor/serving/verify.py" = ["S105"]
+"microtensor/serving/client.py" = ["S310"]
+"microtensor/serving/probe.py" = ["S310"]
 "tests/*" = ["S", "PLR2004"]
 "microtensor/rigs/**" = ["N", "A", "C4", "RUF", "S", "B", "SIM", "UP", "E501", "W"]
 
@@ -132,6 +139,9 @@ module = [
     "nacl.*",
     "fastapi.*",
     "uvicorn.*",
+    "httpx.*",
+    "websockets.*",
+    "asyncssh.*",
 ]
 ignore_missing_imports = true
 
