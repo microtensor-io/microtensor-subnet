@@ -9,10 +9,13 @@ execute it on their own certified hardware, so your box is busy exactly while
 you are training and improving the model. Once per round you come online inside
 the submission window, send one extrinsic, and go back to work.
 
-If you are here to evaluate other people's models, read
-[validator_setup.md](validator_setup.md) instead. If you want to serve
-certified models rather than build them, read
-[operator_setup.md](operator_setup.md).
+This guide is for **model miners**: you build artifacts and compete on the
+frontier. Two other roles have their own guides and their own emission.
+
+- To serve models other people built, read
+  [operator_setup.md](operator_setup.md). That is the inference layer, paid from
+  the serving pool for billed tokens rather than per round.
+- To evaluate submissions, read [validator_setup.md](validator_setup.md).
 
 ---
 

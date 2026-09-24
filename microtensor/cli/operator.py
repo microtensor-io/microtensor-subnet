@@ -19,12 +19,13 @@ from microtensor.cli.common import (
 from microtensor.core.constants import GATEWAY_URL, PUBLIC_SERVER_URL
 from microtensor.serving import client
 from microtensor.serving import loop as probe_loop
-from microtensor.serving.agent import AgentError, HttpEngine, Settings, run
+from microtensor.serving.agent import AgentError, Pool, Served, Settings, run, served
 from microtensor.serving.client import ServerError
 
 log = logging.getLogger("microtensor.cli.operator")
 
 DEFAULT_ENGINE_URL = "http://127.0.0.1:8080"
+DEFAULT_CONCURRENCY = 4
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -53,11 +54,21 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     status.set_defaults(handler=_status)
 
     serve = inner.add_parser("run", help="dial the gateway and answer requests")
-    serve.add_argument("--model", required=True)
-    serve.add_argument("--artifact-digest", required=True)
-    serve.add_argument("--engine-url", default=DEFAULT_ENGINE_URL, help="your local llama.cpp")
+    serve.add_argument(
+        "--serve",
+        action="append",
+        default=[],
+        metavar="MODEL=DIGEST@URL[,URL]",
+        help="one model to serve; repeat the flag for each",
+    )
+    serve.add_argument("--serves-file", type=Path, help="a json pool instead of --serve flags")
+    serve.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help="requests at once per model from --serve; the json file sets its own",
+    )
     serve.add_argument("--gateway", default=GATEWAY_URL)
-    serve.add_argument("--concurrency", type=int, default=8)
     serve.add_argument("--worker", default="", help="a name when one host runs several")
     _shared(serve)
     serve.set_defaults(handler=_run)
@@ -137,24 +148,50 @@ def _status(args: argparse.Namespace) -> int:
     return _show(found)
 
 
+def parse_serve(entry: str, concurrency: int = DEFAULT_CONCURRENCY) -> Served:
+    text = entry.strip()
+    if "=" not in text or "@" not in text:
+        raise AgentError(f"cannot read {entry!r}; expected MODEL=DIGEST@URL[,URL]")
+    model, rest = text.split("=", 1)
+    digest, addresses = rest.split("@", 1)
+    return served(model.strip(), digest.strip(), addresses, concurrency)
+
+
+def load_serves(path: Path) -> list[Served]:
+    found = json.loads(path.read_text(encoding="utf-8"))
+    rows = found.get("models", found) if isinstance(found, dict) else found
+    if not isinstance(rows, list):
+        raise AgentError(f"{path} must hold a list of models")
+    return [
+        served(
+            str(row.get("model", "")),
+            str(row.get("artifact_digest", "")),
+            row.get("engines", row.get("engine_url", DEFAULT_ENGINE_URL)),
+            int(row.get("concurrency", DEFAULT_CONCURRENCY)),
+        )
+        for row in rows
+    ]
+
+
 def _run(args: argparse.Namespace) -> int:
     wallet = _wallet(args)
     try:
+        serves = load_serves(args.serves_file) if args.serves_file else []
+        serves += [parse_serve(entry, args.concurrency) for entry in args.serve]
         settings = Settings(
             gateway=args.gateway,
             hotkey=hotkey_address(wallet),
-            model=args.model,
-            artifact_digest=args.artifact_digest,
-            engine_url=args.engine_url,
-            concurrency=args.concurrency,
+            serves=tuple(serves),
             worker=args.worker,
         )
     except AgentError as exc:
         return fail(str(exc))
+    except (OSError, ValueError) as exc:
+        return fail(f"could not read the pool: {exc}")
 
-    engine = HttpEngine(settings.engine_url)
+    pool = Pool(settings.serves)
     try:
-        asyncio.run(_serve(settings, engine))
+        asyncio.run(_serve(settings, pool))
     except KeyboardInterrupt:
         print("stopped")
     except AgentError as exc:
@@ -162,11 +199,13 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _serve(settings: Settings, engine: HttpEngine) -> None:
-    if not await engine.ready():
-        raise AgentError(f"no engine answering at {settings.engine_url}; start it first")
-    log.info("engine ready at %s", settings.engine_url)
-    await run(settings, engine)
+async def _serve(settings: Settings, pool: Pool) -> None:
+    missing = await pool.unready()
+    if missing:
+        raise AgentError(f"no engine answering for {'; '.join(missing)}; start them first")
+    for entry in settings.serves:
+        log.info("%s ready on %s at %d", entry.model, ", ".join(entry.engines), entry.concurrency)
+    await run(settings, pool)
 
 
 def _verify(args: argparse.Namespace) -> int:
