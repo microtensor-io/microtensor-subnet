@@ -1,17 +1,3 @@
-"""Canonical logits for a served sequence, from the certified artifact.
-
-One prefill of prompt and completion through the validator's own copy of the
-artifact yields the logits at every generated position. Prefill is parallel
-and therefore far cheaper than the generation it checks, which is what makes
-auditing a sample of live traffic affordable.
-
-Alignment is the whole of the care here. Evaluating the sequence
-p_0..p_{n-1} y_0..y_{m-1} gives one logit row per token, and row i predicts
-token i+1. The row that decides y_0 is therefore the last prompt row, and the
-row that decides y_k is the row of y_{k-1}. Off by one here does not fail
-loudly: it silently scores every honest operator against the wrong position.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -32,13 +18,6 @@ def _llama() -> Any:
 
 
 def open_artifact(path: Path, *, context: int = DEFAULT_CONTEXT, threads: int = THREADS) -> Any:
-    """The certified artifact, opened to return logits at every position.
-
-    `logits_all` is the one setting that differs from the measurement engine,
-    which asks for the last row only. Everything else matches it, so the
-    numbers the audit compares against come from the same configuration the
-    certificate was measured under.
-    """
     weights = Path(path)
     if not weights.is_file():
         raise VerificationError(f"no artifact at {weights}")
@@ -60,13 +39,6 @@ def open_artifact(path: Path, *, context: int = DEFAULT_CONTEXT, threads: int = 
 
 
 def aligned_rows(scores: Any, prompt_length: int, completion_length: int) -> list[list[float]]:
-    """The logit rows that decide each generated token, in order.
-
-    `scores` is one row per evaluated token. Row `prompt_length - 1` decides
-    the first generated token, and the rows for the generated tokens themselves
-    decide the ones that follow, so the last generated token's own row is never
-    read: nothing comes after it.
-    """
     if prompt_length < 1:
         raise VerificationError("a prompt must carry at least one token to condition on")
     if completion_length < 1:
@@ -85,7 +57,6 @@ def aligned_rows(scores: Any, prompt_length: int, completion_length: int) -> lis
 def canonical_logits(
     model: Any, prompt_tokens: list[int], completion_tokens: list[int]
 ) -> list[list[float]]:
-    """One prefill over the whole served sequence, returning the rows to score."""
     if not completion_tokens:
         return []
     if not prompt_tokens:

@@ -1,37 +1,3 @@
-"""Division of the miner share between modelling and serving.
-
-A reserve fraction is withheld, leaving the available emission. The serving
-pool is what the epoch's settlement earns at the rebate rate, capped at a
-fraction of the available emission; modelling receives the remainder.
-
-    available = (1 - reserve) * emission
-    serving   = min( rebate * total_score, cap * available )
-    modelling = available - serving
-
-Three properties follow, and each is a test rather than a claim. With no
-billed traffic the serving pool is empty and the whole of the available
-emission funds modelling, so emission never pays for unbought service.
-Serving can never exceed its cap, so modelling always receives at least one
-minus the cap and can never be starved by a layer that sells what modelling
-produced. And an operator buying its own traffic loses money, provided the
-rebate obeys the bound below.
-
-The bound. An operator paying for its own tokens recovers its revenue share
-and gains the rebate on the reference value. Since the reference rate is set
-no higher than the lowest price the model sells at, choosing
-
-    rebate < 1 - revenue_share
-
-makes the round trip lossy for every model, from the first billed request,
-and the check is enforced here rather than left to whoever edits a constant.
-
-All arithmetic is exact. Emission is an integer in the chain's smallest unit
-and every ratio is a `Fraction`, so two validators cannot disagree by a
-rounding. What a division cannot split evenly is handed to the largest share,
-which is decided by score and then by identity, so the remainder is placed by
-the data and not by dictionary order.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -102,7 +68,6 @@ def identity(row: Settled) -> str:
 
 
 def divide(emission: int, settled: Sequence[Settled], dials: Dials | None = None) -> Split:
-    """The epoch's split, and what each operator takes of the serving pool."""
     if emission < 0:
         raise PoolError("emission cannot be negative")
     rules = dials or Dials()
@@ -129,12 +94,6 @@ def divide(emission: int, settled: Sequence[Settled], dials: Dials | None = None
 
 
 def _shares(serving: int, earned: Sequence[Settled]) -> dict[str, int]:
-    """The serving pool by score, with the remainder to the largest earner.
-
-    Summing per operator first matters: an operator serving several models is
-    one identity on the weight vector, and rounding each of its models
-    separately would cost it a unit per model rather than a unit in total.
-    """
     if serving <= 0 or not earned:
         return {}
     totals: dict[str, int] = {}
@@ -154,13 +113,6 @@ def _shares(serving: int, earned: Sequence[Settled]) -> dict[str, int]:
 
 
 def weights(split: Split, uid_by_operator: Mapping[str, int]) -> dict[int, int]:
-    """The serving side of the weight vector, keyed by uid.
-
-    An operator the metagraph does not name is dropped rather than carried,
-    because a weight cannot be set for a uid that does not exist. Its share is
-    not redistributed: it was earned by an identity this network cannot pay,
-    and moving it would pay somebody who did not earn it.
-    """
     found: dict[int, int] = {}
     for operator, share in split.shares.items():
         uid = uid_by_operator.get(operator)
