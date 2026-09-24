@@ -4,6 +4,9 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import time
+from pathlib import Path
 
 from microtensor.chain.wallet import hotkey_address
 from microtensor.cli.common import (
@@ -15,7 +18,9 @@ from microtensor.cli.common import (
 )
 from microtensor.core.constants import GATEWAY_URL, PUBLIC_SERVER_URL
 from microtensor.serving import client
+from microtensor.serving import loop as probe_loop
 from microtensor.serving.agent import AgentError, HttpEngine, Settings, run
+from microtensor.serving.client import ServerError
 
 log = logging.getLogger("microtensor.cli.operator")
 
@@ -56,6 +61,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     serve.add_argument("--worker", default="", help="a name when one host runs several")
     _shared(serve)
     serve.set_defaults(handler=_run)
+
+    verify = inner.add_parser("verify", help="probe operators and report verdicts, as a validator")
+    verify.add_argument("--gateway-url", default="", help="the gateway's http base")
+    verify.add_argument(
+        "--credential", default="", help="the serving credential; or MT_SERVE_SECRET"
+    )
+    verify.add_argument("--artifacts", type=Path, required=True, help="model to artifact path map")
+    verify.add_argument("--calibrations", type=Path, required=True, help="model to threshold map")
+    verify.add_argument("--model", default="", help="only this model")
+    verify.add_argument("--per-operator", type=int, default=8)
+    verify.add_argument("--once", action="store_true", help="one pass, then stop")
+    verify.add_argument("--pause", type=float, default=probe_loop.CYCLE_PAUSE_SECONDS)
+    _shared(verify)
+    verify.set_defaults(handler=_verify)
 
 
 def _shared(parser: argparse.ArgumentParser) -> None:
@@ -148,3 +167,49 @@ async def _serve(settings: Settings, engine: HttpEngine) -> None:
         raise AgentError(f"no engine answering at {settings.engine_url}; start it first")
     log.info("engine ready at %s", settings.engine_url)
     await run(settings, engine)
+
+
+def _verify(args: argparse.Namespace) -> int:
+    wallet = _wallet(args)
+    credential = args.credential or os.environ.get("MT_SERVE_SECRET", "")
+    if not credential:
+        return fail("a validator needs the serving credential to reach operators")
+
+    gateway = args.gateway_url or _http(args.gateway)
+    artifacts = probe_loop.load_artifacts(args.artifacts)
+    calibrations = probe_loop.load_calibrations(args.calibrations)
+    if not artifacts:
+        return fail(f"no artifact paths in {args.artifacts}")
+    if not calibrations:
+        return fail(f"no calibrations in {args.calibrations}")
+
+    missing = sorted(set(artifacts) - set(calibrations))
+    if missing:
+        return fail(f"no calibration for {', '.join(missing)}; an uncalibrated model cannot judge")
+
+    while True:
+        try:
+            tally = probe_loop.cycle(
+                server=args.server,
+                gateway=gateway,
+                credential=credential,
+                wallet=wallet,
+                artifacts=artifacts,
+                calibrations=calibrations,
+                model=args.model,
+                per_operator=args.per_operator,
+            )
+        except ServerError as exc:
+            return fail(str(exc))
+        print(json.dumps(tally.to_dict(), sort_keys=True))
+        if args.once:
+            return 0
+        time.sleep(max(1.0, args.pause))
+
+
+def _http(gateway: str) -> str:
+    if gateway.startswith("wss://"):
+        return "https://" + gateway[len("wss://") :].split("/v1/")[0]
+    if gateway.startswith("ws://"):
+        return "http://" + gateway[len("ws://") :].split("/v1/")[0]
+    return gateway
