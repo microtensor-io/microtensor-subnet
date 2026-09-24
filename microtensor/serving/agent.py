@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Final
 
 log = logging.getLogger("microtensor.serving.agent")
@@ -20,6 +21,8 @@ PROTOCOL_VERSION: Final[int] = 1
 MIN_CONCURRENCY: Final[int] = 1
 HEARTBEAT_SECONDS: Final[float] = 15.0
 RECONNECT_CEILING_SECONDS: Final[float] = 60.0
+DEFAULT_MAX_TOKENS: Final[int] = 512
+HEALTH_TIMEOUT: Final[float] = 5.0
 
 
 class AgentError(RuntimeError):
@@ -158,8 +161,12 @@ def decode_frame(raw: str | bytes) -> dict[str, Any]:
 
 
 async def serve_one(engine: Engine, frame: Mapping[str, Any], state: Inflight) -> dict[str, Any]:
-    correlation = str(frame.get("correlation", ""))
     state.take()
+    return await serve_taken(engine, frame, state)
+
+
+async def serve_taken(engine: Engine, frame: Mapping[str, Any], state: Inflight) -> dict[str, Any]:
+    correlation = str(frame.get("correlation", ""))
     try:
         found = await engine.generate(frame.get("request", {}))
         answer = response(
@@ -178,3 +185,144 @@ async def serve_one(engine: Engine, frame: Mapping[str, Any], state: Inflight) -
         log.warning("request %s failed: %s", correlation or "?", exc)
         state.release(ok=False)
         return response(correlation, error=f"{type(exc).__name__}: {exc}")
+
+
+def _httpx() -> Any:
+    try:
+        import httpx
+    except ImportError as exc:
+        raise AgentError("httpx is required to drive a local engine") from exc
+    return httpx
+
+
+def _websockets() -> Any:
+    try:
+        import websockets
+    except ImportError as exc:
+        raise AgentError("websockets is required to dial the gateway") from exc
+    return websockets
+
+
+class HttpEngine(Engine):
+    async def generate(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        httpx = _httpx()
+        prompt = str(request.get("prompt", ""))
+        if not prompt:
+            raise AgentError("the gateway sent a request with no prompt")
+
+        body: dict[str, Any] = {
+            "prompt": prompt,
+            "n_predict": int(request.get("max_tokens", DEFAULT_MAX_TOKENS)),
+            "temperature": float(request.get("temperature", 0.0)),
+            "return_tokens": True,
+            "stream": False,
+        }
+        for name in ("top_p", "top_k", "seed", "repeat_penalty"):
+            if request.get(name) is not None:
+                body[name] = request[name]
+        stop = request.get("stop")
+        if stop:
+            body["stop"] = list(stop)
+
+        async with httpx.AsyncClient(base_url=self.url, timeout=self.timeout) as client:
+            counted = await client.post("/tokenize", json={"content": prompt})
+            counted.raise_for_status()
+            prompt_tokens = [int(t) for t in counted.json().get("tokens", [])]
+
+            found = await client.post("/completion", json=body)
+            found.raise_for_status()
+            answer = found.json()
+
+        return {
+            "text": str(answer.get("content", "")),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": [int(t) for t in answer.get("tokens", [])],
+            "finish_reason": "length" if answer.get("stopped_limit") else "stop",
+        }
+
+    async def ready(self) -> bool:
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(base_url=self.url, timeout=HEALTH_TIMEOUT) as client:
+                found = await client.get("/health")
+            return bool(found.status_code == 200)
+        except Exception:
+            return False
+
+
+def _drop(running: dict[str, asyncio.Task[None]], key: str, _: asyncio.Task[None]) -> None:
+    running.pop(key, None)
+
+
+async def _send(socket: Any, frame: Mapping[str, Any]) -> None:
+    await socket.send(json.dumps(frame, separators=(",", ":")))
+
+
+async def _beat(socket: Any, state: Inflight, every: float = HEARTBEAT_SECONDS) -> None:
+    while True:
+        await asyncio.sleep(every)
+        await _send(socket, heartbeat(state))
+
+
+async def _answer(socket: Any, engine: Engine, frame: Mapping[str, Any], state: Inflight) -> None:
+    found = await serve_taken(engine, frame, state)
+    await _send(socket, found)
+
+
+async def session(settings: Settings, engine: Engine) -> None:
+    websockets = _websockets()
+    state = Inflight(limit=settings.concurrency)
+    running: dict[str, asyncio.Task[None]] = {}
+
+    async with websockets.connect(settings.gateway, max_size=None) as socket:
+        await _send(socket, hello(settings))
+        log.info("dialled %s as %s for %s", settings.gateway, settings.hotkey[:12], settings.model)
+        pulse = asyncio.create_task(_beat(socket, state))
+        try:
+            async for raw in socket:
+                frame = decode_frame(raw)
+                kind = str(frame.get("type", ""))
+                correlation = str(frame.get("correlation", ""))
+
+                if kind == REQUEST:
+                    if not state.free:
+                        await _send(socket, response(correlation, error="at declared concurrency"))
+                        continue
+                    state.take()
+                    task = asyncio.create_task(_answer(socket, engine, frame, state))
+                    running[correlation] = task
+                    task.add_done_callback(partial(_drop, running, correlation))
+                elif kind == CANCEL:
+                    found = running.pop(correlation, None)
+                    if found is not None:
+                        found.cancel()
+                elif kind == HEARTBEAT:
+                    await _send(socket, heartbeat(state))
+        finally:
+            pulse.cancel()
+            for task in list(running.values()):
+                task.cancel()
+            if running:
+                await asyncio.gather(*running.values(), return_exceptions=True)
+
+
+async def run(settings: Settings, engine: Engine, *, stop: asyncio.Event | None = None) -> None:
+    attempt = 0
+    while stop is None or not stop.is_set():
+        try:
+            await session(settings, engine)
+            attempt = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            attempt += 1
+            delay = backoff(attempt)
+            log.warning("dial failed (%s); retrying in %.0fs", exc, delay)
+            if stop is None:
+                await asyncio.sleep(delay)
+                continue
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=delay)
+                return
+            except asyncio.TimeoutError:
+                continue
