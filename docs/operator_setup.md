@@ -236,17 +236,76 @@ asserted in a document.
 | `microtensor/serving/verify.py` | margins, likelihood, calibration and the verdict |
 | `microtensor/serving/settle.py` | the four gates, the Wilson bound and per epoch scoring |
 | `microtensor/serving/pools.py` | the two pool split and the weight vector |
-| `microtensor/serving/agent.py` | the operator side protocol frames and request handling |
+| `microtensor/serving/agent.py` | your side: protocol frames, the engine binding and the run loop |
+| `microtensor/serving/client.py` | register, collateral, declare and status, signed by your hotkey |
+| `microtensor/serving/probe.py` | the validator side of one probe |
+| `microtensor/serving/loop.py` | the validator's probe cycle and what it reports |
 
 ---
 
-## 9 · Availability
+## 9 · Running it
 
-The verification, settlement, emission and routing logic is built and tested.
-The operator client is not yet released: `Engine.generate` raises
-`NotImplementedError` until an engine is bound, there is no run loop around it,
-and the server exposes no operator routes yet. There is nothing to install and
-no command to run today.
+```bash
+pip install -e ".[serving]"
+```
 
-This page gains its install and run commands when those land. Watch the
-repository for the release.
+Start your engine on the certified artifact first. Any build of the llama.cpp
+server will do; nothing is patched:
+
+```bash
+llama-server --model mt-invoice-4g.gguf --host 127.0.0.1 --port 8080 \
+  --parallel 8 --ctx-size 4096
+```
+
+Then walk the four steps once:
+
+```bash
+mt operator register --label "my node"
+mt operator collateral --reference 0x<extrinsic hash> --block <block>
+mt operator declare --model mt/invoice-4g --artifact-digest sha256:<digest>
+mt operator status
+```
+
+`register` prints how much collateral this network asks for and the coldkey to
+send it to. `collateral` is checked on chain before it counts, so report the
+transfer only after it is in a block.
+
+Then serve:
+
+```bash
+mt operator run \
+  --model mt/invoice-4g \
+  --artifact-digest sha256:<digest> \
+  --engine-url http://127.0.0.1:8080 \
+  --concurrency 8
+```
+
+It refuses to start if nothing answers at the engine URL, dials the gateway,
+and reconnects on its own with backoff. There is no inbound port to open.
+
+`mt operator status` shows your state, what you declared, and every probe each
+validator has run against you.
+
+---
+
+## 10 · What is live, and what is not
+
+| | state |
+|---|---|
+| Register, collateral, declare, status | live |
+| Dialling in and answering routed traffic | live |
+| Validator probes and admission | live, but see below |
+| Verification by canonical prefill | live |
+| Settlement, gates and the emission split | built, not yet run per epoch |
+
+**Admission needs a calibrated model.** A threshold is calibrated per model from
+honest serving and is only used once the same model at a lower precision lands
+on the far side of it. Until a model carries that calibration, every verdict is
+`unproven`, which counts against nobody and admits nobody. Calibration runs are
+in progress; watch the repository for the first calibrated model.
+
+**Nothing is paid yet.** The gates, the Wilson bound, the per epoch scoring and
+the two pool split are written and tested, but no serving epoch settles on the
+coordinator yet, so the serving pool is still empty and modelling receives
+everything. That is the designed behaviour with no billed traffic, not a
+placeholder.
