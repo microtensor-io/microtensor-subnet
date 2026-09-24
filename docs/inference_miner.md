@@ -11,11 +11,12 @@ afterwards, on the validator, out of your critical path.
 This guide is for **inference operators**. You serve models other people built
 and you are paid for billed tokens, not per round.
 
-- To build the models instead, read [miner_setup.md](miner_setup.md). That is a
+[miner_setup.md](miner_setup.md) compares all three kinds of miner.
+
+- To build the models instead, read [system_miner.md](system_miner.md). That is a
   different role with a different hotkey, measured on reference hardware and
   paid from the modelling pool.
-- To rent out hardware by the hour, that is the compute pool, a third module
-  again with its own hotkey and its own emission.
+- To rent out GPUs by the hour, read [compute_miner.md](compute_miner.md).
 
 ---
 
