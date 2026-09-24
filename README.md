@@ -6,8 +6,8 @@
 
 Bittensor subnet 576 (testnet)
 
-[Miner](docs/miner_setup.md) •
-[Operator](docs/operator_setup.md) •
+[Model miner](docs/miner_setup.md) •
+[Inference operator](docs/operator_setup.md) •
 [Validator](docs/validator_setup.md) •
 [Coordinator](docs/coordinator_setup.md) •
 [Mechanism](docs/mechanism.md) •
@@ -100,7 +100,7 @@ Miners train offline and come online once per round to commit a pointer.
 Validators run on commodity hardware with one certified reference device per
 class they serve.
 
-See the [Miner](docs/miner_setup.md), [Operator](docs/operator_setup.md) and [Validator](docs/validator_setup.md)
+See the [Model miner](docs/miner_setup.md), [Inference operator](docs/operator_setup.md) and [Validator](docs/validator_setup.md)
 docs for how each role works and how to set one up.
 
 ---

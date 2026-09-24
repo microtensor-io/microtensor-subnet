@@ -8,9 +8,14 @@ the same artifact. You earn from the serving pool for tokens somebody paid for.
 generate. You return the tokens you already produced, and the checking happens
 afterwards, on the validator, out of your critical path.
 
-If you are here to build models, read [miner_setup.md](miner_setup.md). If you
-are here to rent out hardware by the hour, that is the compute pool, which is a
-different subnet module with its own hotkey and its own emission.
+This guide is for **inference operators**. You serve models other people built
+and you are paid for billed tokens, not per round.
+
+- To build the models instead, read [miner_setup.md](miner_setup.md). That is a
+  different role with a different hotkey, measured on reference hardware and
+  paid from the modelling pool.
+- To rent out hardware by the hour, that is the compute pool, a third module
+  again with its own hotkey and its own emission.
 
 ---
 
@@ -34,23 +39,37 @@ knows about the others.
 
 Two processes.
 
-**A stock inference engine.** You start it yourself against the certified
-artifact, exactly as published. Nothing is patched, nothing is instrumented and
-no custom build is required. The artifact is pinned by its manifest digest, and
-what you serve must hash to that digest.
+**Stock inference engines**, one per model you serve. You start them yourself
+against the certified artifacts, exactly as published. Nothing is patched,
+nothing is instrumented and no custom build is required. Each artifact is pinned
+by its manifest digest, and what you serve must hash to that digest.
 
-**The agent.** It dials the gateway over a websocket and holds the connection
-open. Requests arrive on that socket, the agent runs them against your local
-engine, and the answer goes back on the same socket.
+**One agent.** It dials the gateway over a websocket and holds the connection
+open for every model at once. Requests arrive on that socket naming the model
+they are for, the agent runs them against the right local engine, and the answer
+goes back on the same socket.
 
 Dialling out is the design, not a workaround. You need no inbound port, no
 public address, no certificate and no reverse proxy. A machine behind NAT or on
 a domestic connection serves exactly as well as one in a rack.
 
-You declare one number about your hardware: concurrency, the number of requests
-you will take at once. You do not declare a GPU model, a memory figure or a
-region, because none of those are verifiable and none of them are what you are
-paid on.
+### Serve a pool, not one model
+
+Certified artifacts are small on purpose, between one and sixteen gibibytes,
+because the whole point is frontier quality on ordinary hardware. One machine
+holds several resident and many more on disk. A process per model would waste
+that: ten models would mean ten agents, ten connections and ten copies of
+everything.
+
+So one agent serves a set. You name each model with its digest, the local engine
+addresses behind it, and its own concurrency. Each model holds its own share, so
+a busy model cannot starve a quiet one.
+
+Concurrency is the only number you declare about your hardware. You do not
+declare a device, a memory figure or a region, because none of those are
+verifiable and none of them are what you are paid on. The request shape limits
+come from the arena class the artifact was certified under and apply to every
+operator serving that model.
 
 ---
 
@@ -255,6 +274,9 @@ server will do; nothing is patched:
 ```bash
 llama-server --model mt-invoice-4g.gguf --host 127.0.0.1 --port 8080 \
   --parallel 8 --ctx-size 4096
+
+llama-server --model mt-text2sql-16g.gguf --host 127.0.0.1 --port 8081 \
+  --parallel 4 --ctx-size 8192
 ```
 
 Then walk the four steps once:
@@ -262,26 +284,60 @@ Then walk the four steps once:
 ```bash
 mt operator register --label "my node"
 mt operator collateral --reference 0x<extrinsic hash> --block <block>
-mt operator declare --model mt/invoice-4g --artifact-digest sha256:<digest>
+mt operator declare --model mt/invoice-4g   --artifact-digest sha256:<digest>
+mt operator declare --model mt/text2sql-16g --artifact-digest sha256:<digest>
 mt operator status
 ```
+
+Declare once per model. Changing the digest on one model ends your eligibility
+for that model alone and leaves the others untouched.
 
 `register` prints how much collateral this network asks for and the coldkey to
 send it to. `collateral` is checked on chain before it counts, so report the
 transfer only after it is in a block.
 
-Then serve:
+Then serve every model you declared, from one process:
 
 ```bash
 mt operator run \
-  --model mt/invoice-4g \
-  --artifact-digest sha256:<digest> \
-  --engine-url http://127.0.0.1:8080 \
+  --serve mt/invoice-4g=sha256:<digest>@http://127.0.0.1:8080 \
+  --serve mt/text2sql-16g=sha256:<digest>@http://127.0.0.1:8081 \
   --concurrency 8
 ```
 
-It refuses to start if nothing answers at the engine URL, dials the gateway,
+It checks every engine answers before it dials, then holds the connection open
 and reconnects on its own with backoff. There is no inbound port to open.
+`--concurrency` is per model.
+
+Past a handful of models, use a file instead, which also lets each model carry
+its own concurrency and its own replica addresses:
+
+```json
+{
+  "models": [
+    {
+      "model": "mt/invoice-4g",
+      "artifact_digest": "sha256:...",
+      "engines": ["http://127.0.0.1:8080", "http://127.0.0.1:8090"],
+      "concurrency": 16
+    },
+    {
+      "model": "mt/text2sql-16g",
+      "artifact_digest": "sha256:...",
+      "engines": ["http://127.0.0.1:8081"],
+      "concurrency": 4
+    }
+  ]
+}
+```
+
+```bash
+mt operator run --serves-file pool.json
+```
+
+Several addresses for one model are replicas, and requests go to whichever is
+least busy. A second machine is a second process under the same hotkey with its
+own `--worker` name.
 
 `mt operator status` shows your state, what you declared, and every probe each
 validator has run against you.
