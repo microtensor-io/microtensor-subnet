@@ -1,26 +1,3 @@
-"""The inference operator's agent.
-
-It dials the gateway, and for every request routed to it: runs the generation
-on a local engine the operator started themselves, and returns the completion
-together with the token ids that produced it. Nothing else is asked of the
-operator. There is no proof to build, no activations to capture, and no patch
-to the engine, because verification happens entirely on the validator, which
-re-derives the canonical logits for those tokens from the certified artifact.
-
-Dialling out rather than listening is the operational decision that matters.
-An operator behind NAT, on a home connection, or inside a network it does not
-control can serve without an inbound port, a public address, or a certificate,
-and the gateway keeps one hardened door rather than one per operator.
-
-The agent declares one number, how many requests it can run at once. Every
-other limit belongs to the model: the artifact's own maximum input, the class
-ceilings, and the latency objectives are the network's, applied to every
-operator serving that model, and a value sent here can only lower them.
-
-Nothing in this module retains request content. Tokens pass through to the
-reply and are not written down.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -74,8 +51,6 @@ class Settings:
 
 @dataclass(slots=True)
 class Inflight:
-    """What the agent is running, so a heartbeat reports capacity honestly."""
-
     limit: int
     running: int = 0
     served: int = 0
@@ -106,7 +81,6 @@ class Inflight:
 
 
 def hello(settings: Settings) -> dict[str, Any]:
-    """The opening frame. Connecting and being admitted is the registration."""
     return {
         "type": HELLO,
         "version": PROTOCOL_VERSION,
@@ -138,13 +112,6 @@ def response(
     finish_reason: str = "stop",
     error: str = "",
 ) -> dict[str, Any]:
-    """What the agent returns, and the whole of what verification needs.
-
-    The token ids are the evidence. A validator holding the certified artifact
-    re-derives what it would have produced for this prompt and compares, so an
-    operator that served something cheaper is visible without having committed
-    to anything beyond the tokens it already generated.
-    """
     if error:
         return {"type": RESPONSE, "correlation": correlation, "error": error}
     return {
@@ -164,27 +131,12 @@ def response(
 
 
 def backoff(attempt: int, ceiling: float = RECONNECT_CEILING_SECONDS) -> float:
-    """Reconnect delay, doubling and capped.
-
-    A gateway restart drops every operator at once, so a fixed retry would
-    bring them all back in the same instant and do it again. Doubling spreads
-    the return; the ceiling stops an operator that has been down a while from
-    waiting an hour to notice the gateway is back.
-    """
     if attempt <= 0:
         return 0.0
     return min(float(ceiling), 2.0 ** min(attempt - 1, 16))
 
 
 class Engine:
-    """The local inference server, driven over HTTP.
-
-    The operator starts this themselves and the agent never configures it.
-    What the agent needs back is the generated text and the token ids on both
-    sides, which every engine can report, so no engine is patched and the
-    artifact served is the one the certificate names.
-    """
-
     def __init__(self, url: str, timeout: float = 1800.0) -> None:
         self.url = url.rstrip("/")
         self.timeout = timeout
@@ -206,12 +158,6 @@ def decode_frame(raw: str | bytes) -> dict[str, Any]:
 
 
 async def serve_one(engine: Engine, frame: Mapping[str, Any], state: Inflight) -> dict[str, Any]:
-    """One routed request, start to finish, never raising into the socket.
-
-    A failure returns an error frame rather than dropping the connection: the
-    gateway needs to route the next request somewhere, and a dropped leg looks
-    like an operator that vanished rather than one request that went wrong.
-    """
     correlation = str(frame.get("correlation", ""))
     state.take()
     try:
