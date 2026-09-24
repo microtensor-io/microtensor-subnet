@@ -138,6 +138,9 @@ module = [
     "nacl.*",
     "fastapi.*",
     "uvicorn.*",
+    "httpx.*",
+    "websockets.*",
+    "asyncssh.*",
 ]
 ignore_missing_imports = true
 
