@@ -244,7 +244,7 @@ no calibration is skipped rather than guessed at, so the loop admits nobody
 until the first model is calibrated. Add `--once` for a single pass.
 
 The logic lives in `microtensor/serving/`.
-See [operator_setup.md](operator_setup.md) for the operator's side.
+See [inference_miner.md](inference_miner.md) for the miner's side.
 
 ## What the logs show
 
