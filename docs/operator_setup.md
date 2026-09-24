@@ -53,7 +53,7 @@ Dialling out is the design, not a workaround. You need no inbound port, no
 public address, no certificate and no reverse proxy. A machine behind NAT or on
 a domestic connection serves exactly as well as one in a rack.
 
-### Serve a pool, not one model
+### Serve a pool, and do not pick it
 
 Certified artifacts are small on purpose, between one and sixteen gibibytes,
 because the whole point is frontier quality on ordinary hardware. One machine
@@ -61,9 +61,14 @@ holds several resident and many more on disk. A process per model would waste
 that: ten models would mean ten agents, ten connections and ten copies of
 everything.
 
-So one agent serves a set. You name each model with its digest, the local engine
-addresses behind it, and its own concurrency. Each model holds its own share, so
-a busy model cannot starve a quiet one.
+So one agent serves a set, and the set is chosen for you. The network publishes
+which artifacts are certified and how wanted each one is, and a planner on your
+machine ranks them against your capacity, fetches what it chose, starts an
+engine per model and declares them.
+
+You never type a model name. You would not want to: the catalogue changes every
+round as new artifacts win their arenas, and only the network can see which
+models have requests and nobody serving them.
 
 Concurrency is the only number you declare about your hardware. You do not
 declare a device, a memory figure or a region, because none of those are
@@ -256,6 +261,8 @@ asserted in a document.
 | `microtensor/serving/settle.py` | the four gates, the Wilson bound and per epoch scoring |
 | `microtensor/serving/pools.py` | the two pool split and the weight vector |
 | `microtensor/serving/agent.py` | your side: protocol frames, the engine binding and the run loop |
+| `microtensor/serving/plan.py` | which models to hold, given the catalogue and your capacity |
+| `microtensor/serving/supervise.py` | acting on the plan: fetch, start, declare, redial |
 | `microtensor/serving/client.py` | register, collateral, declare and status, signed by your hotkey |
 | `microtensor/serving/probe.py` | the validator side of one probe |
 | `microtensor/serving/loop.py` | the validator's probe cycle and what it reports |
@@ -268,79 +275,84 @@ asserted in a document.
 pip install -e ".[serving]"
 ```
 
-Start your engine on the certified artifact first. Any build of the llama.cpp
-server will do; nothing is patched:
-
-```bash
-llama-server --model mt-invoice-4g.gguf --host 127.0.0.1 --port 8080 \
-  --parallel 8 --ctx-size 4096
-
-llama-server --model mt-text2sql-16g.gguf --host 127.0.0.1 --port 8081 \
-  --parallel 4 --ctx-size 8192
-```
-
-Then walk the four steps once:
+### Register and post collateral
 
 ```bash
 mt operator register --label "my node"
 mt operator collateral --reference 0x<extrinsic hash> --block <block>
-mt operator declare --model mt/invoice-4g   --artifact-digest sha256:<digest>
-mt operator declare --model mt/text2sql-16g --artifact-digest sha256:<digest>
-mt operator status
 ```
-
-Declare once per model. Changing the digest on one model ends your eligibility
-for that model alone and leaves the others untouched.
 
 `register` prints how much collateral this network asks for and the coldkey to
 send it to. `collateral` is checked on chain before it counts, so report the
 transfer only after it is in a block.
 
-Then serve every model you declared, from one process:
+### See what the network would give you
+
+You do not pick models. The network publishes which artifacts are certified and
+how wanted each one is, and a planner on your machine ranks them against your
+disk, memory and slots.
 
 ```bash
+mt operator plan --slots 8
+```
+
+It prints what it would serve, what it would skip and why. Nothing is fetched
+and nothing is started. Narrow it with a policy if you want to:
+
+```bash
+mt operator plan --track invoice --class mt-4g
+```
+
+### Run it
+
+```bash
+mt operator run --auto --slots 16 --artifacts /data/artifacts
+```
+
+That is the whole thing. It fetches the artifacts it chose, verifies each digest
+against the certificate before serving it, starts an engine per model, declares
+each one, dials the gateway and answers. It rereads the catalogue periodically
+and redials when what it should hold changes.
+
+| flag | means |
+|---|---|
+| `--slots` | requests at once across every model, the one number you own |
+| `--disk-gb` / `--memory-gb` | what you allow; zero means everything free |
+| `--max-models` | a ceiling on how many to hold; zero leaves it to capacity |
+| `--track` / `--class` / `--not` | narrow what it will consider, repeatable |
+| `--engine` | the engine binary to start, `llama-server` by default |
+| `--worker` | a name for this machine when several share one hotkey |
+
+### How it chooses
+
+Models rank by how wanted they are, which is requests in the last hour divided
+by operators already serving them. A model somebody asked for and nobody serves
+rises to the top, so the tail gets covered instead of everyone piling onto the
+same popular model. Ties break toward the cold model, then the smaller one.
+
+What you already hold is favoured, so the set does not thrash when two models
+are close. Your slots are shared across what it chose, and each model keeps its
+own share, so a busy model cannot starve a quiet one.
+
+### Choosing yourself instead
+
+Declare each model and name it:
+
+```bash
+mt operator declare --model mt/invoice-4g --artifact-digest sha256:<digest>
+
+llama-server --model mt-invoice-4g.gguf --host 127.0.0.1 --port 8080 \
+  --parallel 8 --ctx-size 4096
+
 mt operator run \
   --serve mt/invoice-4g=sha256:<digest>@http://127.0.0.1:8080 \
-  --serve mt/text2sql-16g=sha256:<digest>@http://127.0.0.1:8081 \
   --concurrency 8
 ```
 
-It checks every engine answers before it dials, then holds the connection open
-and reconnects on its own with backoff. There is no inbound port to open.
-`--concurrency` is per model.
-
-Past a handful of models, use a file instead, which also lets each model carry
-its own concurrency and its own replica addresses:
-
-```json
-{
-  "models": [
-    {
-      "model": "mt/invoice-4g",
-      "artifact_digest": "sha256:...",
-      "engines": ["http://127.0.0.1:8080", "http://127.0.0.1:8090"],
-      "concurrency": 16
-    },
-    {
-      "model": "mt/text2sql-16g",
-      "artifact_digest": "sha256:...",
-      "engines": ["http://127.0.0.1:8081"],
-      "concurrency": 4
-    }
-  ]
-}
-```
-
-```bash
-mt operator run --serves-file pool.json
-```
-
-Several addresses for one model are replicas, and requests go to whichever is
-least busy. A second machine is a second process under the same hotkey with its
-own `--worker` name.
-
-`mt operator status` shows your state, what you declared, and every probe each
-validator has run against you.
+You then own keeping up with the catalogue. When a new artifact wins that arena
+your digest goes stale and you stop being eligible until you declare the new one.
+A `--serves-file` json pool does the same for several models, with per model
+concurrency and replica addresses.
 
 ---
 
@@ -348,7 +360,8 @@ validator has run against you.
 
 | | state |
 |---|---|
-| Register, collateral, declare, status | live |
+| Register, collateral, status | live |
+| Choosing what to serve from the catalogue | live |
 | Dialling in and answering routed traffic | live |
 | Validator probes and admission | live, but see below |
 | Verification by canonical prefill | live |

@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 from microtensor.chain.wallet import hotkey_address
 from microtensor.cli.common import (
@@ -17,7 +18,7 @@ from microtensor.cli.common import (
     open_wallet,
 )
 from microtensor.core.constants import GATEWAY_URL, PUBLIC_SERVER_URL
-from microtensor.serving import client
+from microtensor.serving import client, plan, supervise
 from microtensor.serving import loop as probe_loop
 from microtensor.serving.agent import AgentError, Pool, Served, Settings, run, served
 from microtensor.serving.client import ServerError
@@ -53,6 +54,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _shared(status)
     status.set_defaults(handler=_status)
 
+    preview = inner.add_parser("plan", help="what auto mode would serve on this machine")
+    preview.add_argument("--disk-gb", type=int, default=0)
+    preview.add_argument("--memory-gb", type=int, default=0)
+    preview.add_argument("--slots", type=int, default=8)
+    preview.add_argument("--max-models", type=int, default=0)
+    preview.add_argument("--track", action="append", default=[])
+    preview.add_argument("--class", dest="classes", action="append", default=[])
+    preview.add_argument("--not", dest="excluded", action="append", default=[])
+    preview.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+    _shared(preview)
+    preview.set_defaults(handler=_plan)
+
     serve = inner.add_parser("run", help="dial the gateway and answer requests")
     serve.add_argument(
         "--serve",
@@ -70,6 +83,22 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     serve.add_argument("--gateway", default=GATEWAY_URL)
     serve.add_argument("--worker", default="", help="a name when one host runs several")
+    serve.add_argument(
+        "--auto",
+        action="store_true",
+        help="let the network decide what you serve, from the catalogue and what is wanted",
+    )
+    serve.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+    serve.add_argument("--disk-gb", type=int, default=0, help="disk you allow, 0 for all free")
+    serve.add_argument("--memory-gb", type=int, default=0, help="memory you allow, 0 for all free")
+    serve.add_argument("--slots", type=int, default=8, help="requests at once across every model")
+    serve.add_argument("--max-models", type=int, default=0, help="0 leaves it to your capacity")
+    serve.add_argument("--track", action="append", default=[], help="only these tracks")
+    serve.add_argument("--class", dest="classes", action="append", default=[])
+    serve.add_argument("--not", dest="excluded", action="append", default=[])
+    serve.add_argument("--engine", default="llama-server", help="the engine binary to start")
+    serve.add_argument("--threads", type=int, default=0)
+    serve.add_argument("--review-seconds", type=float, default=supervise.REVIEW_SECONDS)
     _shared(serve)
     serve.set_defaults(handler=_run)
 
@@ -175,6 +204,8 @@ def load_serves(path: Path) -> list[Served]:
 
 def _run(args: argparse.Namespace) -> int:
     wallet = _wallet(args)
+    if args.auto:
+        return _auto(args, wallet)
     try:
         serves = load_serves(args.serves_file) if args.serves_file else []
         serves += [parse_serve(entry, args.concurrency) for entry in args.serve]
@@ -252,3 +283,86 @@ def _http(gateway: str) -> str:
     if gateway.startswith("ws://"):
         return "http://" + gateway[len("ws://") :].split("/v1/")[0]
     return gateway
+
+
+def _auto(args: argparse.Namespace, wallet: Any) -> int:
+    try:
+        capacity = plan.Capacity(
+            disk_bytes=(args.disk_gb or 1) * plan.GIB,
+            memory_bytes=(args.memory_gb or 1) * plan.GIB,
+            slots=args.slots,
+            max_models=args.max_models,
+        )
+    except plan.PlanError as exc:
+        return fail(str(exc))
+
+    hotkey = hotkey_address(wallet)
+
+    def declare(model: str, digest: str) -> None:
+        client.declare(args.server, wallet, model=model, artifact_digest=digest)
+
+    bench = supervise.Bench(
+        server=args.server,
+        hotkey=hotkey,
+        artifacts=args.artifacts,
+        capacity=capacity,
+        policy=plan.Policy(
+            tracks=frozenset(args.track),
+            classes=frozenset(args.classes),
+            exclude=frozenset(args.excluded),
+        ),
+        worker=args.worker,
+        gateway=args.gateway,
+        fetch=supervise.artifact_of,
+        start=supervise.launcher(args.engine, threads=args.threads),
+        declare=declare,
+        ready=supervise.engine_ready,
+    )
+    if not args.disk_gb:
+        bench.capacity = plan.Capacity(
+            disk_bytes=supervise.free_disk(args.artifacts) or plan.GIB,
+            memory_bytes=bench.capacity.memory_bytes,
+            slots=capacity.slots,
+            max_models=capacity.max_models,
+        )
+    if not args.memory_gb:
+        bench.capacity = plan.Capacity(
+            disk_bytes=bench.capacity.disk_bytes,
+            memory_bytes=supervise.usable_memory() or 4 * plan.GIB,
+            slots=capacity.slots,
+            max_models=capacity.max_models,
+        )
+
+    print(f"serving as {hotkey}, letting the network choose from {args.server}")
+    try:
+        asyncio.run(supervise.supervise(bench, review_seconds=args.review_seconds))
+    except KeyboardInterrupt:
+        print("stopped")
+    except (supervise.SuperviseError, AgentError) as exc:
+        return fail(str(exc))
+    finally:
+        bench.stop_all()
+    return 0
+
+
+def _plan(args: argparse.Namespace) -> int:
+    try:
+        rows = supervise.catalogue(args.server)
+    except ServerError as exc:
+        return fail(str(exc))
+    capacity = plan.Capacity(
+        disk_bytes=(args.disk_gb * plan.GIB) or supervise.free_disk(args.artifacts) or plan.GIB,
+        memory_bytes=(args.memory_gb * plan.GIB) or supervise.usable_memory() or 4 * plan.GIB,
+        slots=args.slots,
+        max_models=args.max_models,
+    )
+    found = plan.build(
+        rows,
+        capacity,
+        policy=plan.Policy(
+            tracks=frozenset(args.track),
+            classes=frozenset(args.classes),
+            exclude=frozenset(args.excluded),
+        ),
+    )
+    return _show(found.to_dict())

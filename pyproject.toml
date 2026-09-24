@@ -108,6 +108,7 @@ ignore = [
 "microtensor/serving/verify.py" = ["S105"]
 "microtensor/serving/client.py" = ["S310"]
 "microtensor/serving/probe.py" = ["S310"]
+"microtensor/serving/supervise.py" = ["S310", "S603"]
 "tests/*" = ["S", "PLR2004"]
 "microtensor/rigs/**" = ["N", "A", "C4", "RUF", "S", "B", "SIM", "UP", "E501", "W"]
 
