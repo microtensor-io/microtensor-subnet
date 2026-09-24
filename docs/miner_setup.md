@@ -10,7 +10,9 @@ you are training and improving the model. Once per round you come online inside
 the submission window, send one extrinsic, and go back to work.
 
 If you are here to evaluate other people's models, read
-[validator_setup.md](validator_setup.md) instead.
+[validator_setup.md](validator_setup.md) instead. If you want to serve
+certified models rather than build them, read
+[operator_setup.md](operator_setup.md).
 
 ---
 

@@ -193,6 +193,46 @@ mt validator rigs run          # verify rigs alone, on a host with no arena vali
 mt validator run --no-rigs     # score arenas only
 ```
 
+## 10. Inference operators
+
+Measuring models in rounds and verifying live serving are separate duties on the
+same hotkey. The second runs continuously rather than per round.
+
+You sample requests operators already answered, take the prompt and the token
+ids they returned, and evaluate the whole sequence in one prefill through your
+own copy of the certified artifact. Nothing is asked of the operator beyond what
+it already sent the client, so verification stays off its critical path.
+
+Under greedy decoding you record the margin each returned token lost by, since
+honest hardware can disagree only where two candidates were effectively tied.
+Under sampled decoding you record the mean negative log likelihood at the
+temperature that was requested. The threshold is calibrated per model from
+honest serving and is used only if the same model at a lower precision lands on
+the far side of it.
+
+| verdict | meaning |
+|---|---|
+| `pass` | the tokens are what the certified artifact produces |
+| `cheat` | they are not, past the calibrated threshold |
+| `unproven` | the sample could not be evaluated, and nothing is held against the operator |
+
+An empty response, a missing or unseparable calibration, a prefill that could
+not be aligned, and greedy and sampled statistics that disagree all resolve to
+`unproven`.
+
+Admission runs as a sequential test rather than a fixed probe count, so a clean
+operator is admitted in well under a hundred probes and a substituted one is
+rejected about as quickly. One validator rejecting keeps an operator out.
+
+Withdrawing an operator on trust advances its generation counter, which discards
+the probe history behind it and forces it to prove itself again. Liveness is not
+your concern: the gateway drops a disconnected operator within seconds, and that
+never touches what you decided.
+
+The logic lives in `microtensor/serving/`. The sampling loop that drives it is
+not released yet, so there is no flag to turn this on today.
+See [operator_setup.md](operator_setup.md) for the operator's side.
+
 ## What the logs show
 
 Startup, in order; each line is a stage completing:
