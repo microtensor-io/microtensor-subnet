@@ -48,6 +48,8 @@ def _call(url: str, *, method: str, body: bytes | None, headers: dict[str, str])
         raise ServerError(f"{exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise ServerError(f"could not reach {url}: {exc.reason}") from exc
+    except (OSError, ValueError) as exc:
+        raise ServerError(f"could not read {url}: {exc}") from exc
     return json.loads(raw) if raw else {}
 
 
