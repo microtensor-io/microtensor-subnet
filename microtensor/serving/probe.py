@@ -7,7 +7,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,9 @@ class Answered:
     prompt_tokens: list[int]
     completion_tokens: list[int]
     latency_ms: float
+    escalated: bool = False
+    answered_by: str = "front"
+    router_features: dict[str, float] = field(default_factory=dict)
 
     @property
     def empty(self) -> bool:
@@ -137,6 +141,9 @@ def ask(
         prompt_tokens=[int(t) for t in tokens.get("prompt", [])],
         completion_tokens=[int(t) for t in tokens.get("completion", [])],
         latency_ms=(time.perf_counter() - started) * 1000.0,
+        escalated=bool(found.get("escalated")),
+        answered_by=str(found.get("answered_by", "front")),
+        router_features={k: float(v) for k, v in dict(found.get("router_features") or {}).items()},
     )
 
 
@@ -176,3 +183,51 @@ def withdraw(server: str, wallet: Any, *, hotkey: str, reason: str) -> dict[str,
 
 def prompt_for(rng: random.Random) -> str:
     return rng.choice(PROMPTS)
+
+
+def routing_holds(answered: Answered, router: Any, features: Mapping[str, float]) -> bool:
+    from microtensor.serving import cascade
+
+    if router is None:
+        return not answered.escalated
+    chosen = str(router.choose(features))
+    return (chosen == cascade.ESCALATE) is answered.escalated
+
+
+def judge_system(
+    engines: Mapping[str, Any],
+    answered: Answered,
+    calibration: verify.Calibration,
+    router: Any = None,
+    features: Mapping[str, float] | None = None,
+) -> verify.Judgement:
+    from microtensor.serving import cascade
+
+    if router is not None:
+        found = dict(features or answered.router_features)
+        if not found:
+            return verify.Judgement(
+                verdict=verify.UNPROVEN,
+                score=0.0,
+                threshold=calibration.threshold,
+                reason="no router features to check the escalation against",
+            )
+        if not routing_holds(answered, router, found):
+            return verify.Judgement(
+                verdict=verify.CHEAT,
+                score=0.0,
+                threshold=calibration.threshold,
+                reason=f"the router says {'escalate' if answered.escalated else 'resolve'} "
+                f"and the operator did the opposite",
+            )
+
+    role = cascade.SPECIALIST if answered.escalated else cascade.FRONT
+    engine = engines.get(role)
+    if engine is None:
+        return verify.Judgement(
+            verdict=verify.UNPROVEN,
+            score=0.0,
+            threshold=calibration.threshold,
+            reason=f"this validator holds no {role} artifact for {answered.model}",
+        )
+    return judge(engine, answered, calibration)

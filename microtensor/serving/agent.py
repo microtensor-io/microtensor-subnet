@@ -36,6 +36,8 @@ class Served:
     artifact_digest: str
     engines: tuple[str, ...]
     concurrency: int = 4
+    specialist: tuple[str, ...] = ()
+    router: Any = None
 
     def __post_init__(self) -> None:
         if not self.model or not self.artifact_digest:
@@ -53,15 +55,27 @@ class Served:
         }
 
 
-def served(
-    model: str, artifact_digest: str, engines: str | Iterable[str], concurrency: int = 4
-) -> Served:
+def _urls(engines: str | Iterable[str]) -> tuple[str, ...]:
     if isinstance(engines, str):
-        urls = tuple(u.strip() for u in engines.split(",") if u.strip())
-    else:
-        urls = tuple(str(u).strip() for u in engines if str(u).strip())
+        return tuple(u.strip() for u in engines.split(",") if u.strip())
+    return tuple(str(u).strip() for u in engines if str(u).strip())
+
+
+def served(
+    model: str,
+    artifact_digest: str,
+    engines: str | Iterable[str],
+    concurrency: int = 4,
+    specialist: str | Iterable[str] = (),
+    router: Any = None,
+) -> Served:
     return Served(
-        model=model, artifact_digest=artifact_digest, engines=urls, concurrency=concurrency
+        model=model,
+        artifact_digest=artifact_digest,
+        engines=_urls(engines),
+        concurrency=concurrency,
+        specialist=_urls(specialist),
+        router=router,
     )
 
 
@@ -348,7 +362,29 @@ class Pool:
         self._engines: dict[str, list[Engine]] = {
             entry.model: [build(url) for url in entry.engines] for entry in serves
         }
+        self._specialists: dict[str, list[Engine]] = {
+            entry.model: [build(url) for url in entry.specialist]
+            for entry in serves
+            if entry.specialist
+        }
+        self._routers: dict[str, Any] = {
+            entry.model: entry.router for entry in serves if entry.router is not None
+        }
         self._running: dict[int, int] = {}
+
+    def router(self, model: str) -> Any:
+        return self._routers.get(model)
+
+    def has_specialist(self, model: str) -> bool:
+        return bool(self._specialists.get(model))
+
+    def take_specialist(self, model: str) -> Engine:
+        held = self._specialists.get(model)
+        if not held:
+            raise AgentError(f"no specialist loaded for {model}")
+        chosen = min(held, key=lambda e: self._running.get(id(e), 0))
+        self._running[id(chosen)] = self._running.get(id(chosen), 0) + 1
+        return chosen
 
     def models(self) -> list[str]:
         return sorted(self._engines)
@@ -395,6 +431,60 @@ async def serve_one(pool: Pool, frame: Mapping[str, Any], state: Capacity) -> di
     return await serve_taken(pool, frame, state)
 
 
+async def run_system(
+    pool: Pool,
+    model: str,
+    request: Mapping[str, Any],
+    on_delta: Callable[[str], Awaitable[None]] | None = None,
+) -> tuple[dict[str, Any], Engine | None, Engine | None]:
+    from microtensor.serving import cascade
+
+    front = pool.take(model)
+    specialist: Engine | None = None
+    asked = dict(request)
+
+    if pool.router(model) is not None and pool.has_specialist(model):
+        asked.setdefault("logprobs", True)
+        first = await front.generate(asked)
+        answered = cascade.Answer(
+            legs=[
+                cascade.Leg(
+                    role=cascade.FRONT,
+                    text=str(first.get("text", "")),
+                    prompt_tokens=list(first.get("prompt_tokens", [])),
+                    completion_tokens=list(first.get("completion_tokens", [])),
+                    finish_reason=str(first.get("finish_reason", "stop")),
+                )
+            ]
+        )
+        answered.router_features = cascade.features_of(first, len(first.get("prompt_tokens") or []))
+        if pool.router(model).choose(answered.router_features) == cascade.ESCALATE:
+            specialist = pool.take_specialist(model)
+            if on_delta is None:
+                second = await specialist.generate(request)
+            else:
+                second = await specialist.stream(request, on_delta)
+            answered.escalated = True
+            answered.legs.append(
+                cascade.Leg(
+                    role=cascade.SPECIALIST,
+                    text=str(second.get("text", "")),
+                    prompt_tokens=list(second.get("prompt_tokens", [])),
+                    completion_tokens=list(second.get("completion_tokens", [])),
+                    finish_reason=str(second.get("finish_reason", "stop")),
+                )
+            )
+        elif on_delta is not None and answered.served.text:
+            await on_delta(answered.served.text)
+        return answered.to_dict(), front, specialist
+
+    if on_delta is None:
+        found = await front.generate(request)
+    else:
+        found = await front.stream(request, on_delta)
+    return dict(found) | {"escalated": False, "answered_by": "front"}, front, None
+
+
 async def serve_taken(
     pool: Pool,
     frame: Mapping[str, Any],
@@ -404,13 +494,11 @@ async def serve_taken(
     correlation = str(frame.get("correlation", ""))
     model = str(frame.get("model", ""))
     engine: Engine | None = None
+    specialist: Engine | None = None
     try:
-        engine = pool.take(model)
-        request = frame.get("request", {})
-        if on_delta is None:
-            found = await engine.generate(request)
-        else:
-            found = await engine.stream(request, on_delta)
+        found, engine, specialist = await run_system(
+            pool, model, frame.get("request", {}), on_delta
+        )
         answer = response(
             correlation,
             model=model,
@@ -419,6 +507,10 @@ async def serve_taken(
             completion_tokens=list(found.get("completion_tokens", [])),
             finish_reason=str(found.get("finish_reason", "stop")),
         )
+        answer["escalated"] = bool(found.get("escalated"))
+        answer["answered_by"] = str(found.get("answered_by", "front"))
+        if found.get("router_features"):
+            answer["router_features"] = dict(found["router_features"])
         state.release(model, ok=True)
         return answer
     except asyncio.CancelledError:
@@ -431,6 +523,8 @@ async def serve_taken(
     finally:
         if engine is not None:
             pool.release(engine)
+        if specialist is not None:
+            pool.release(specialist)
 
 
 def _drop(running: dict[str, asyncio.Task[None]], key: str, _: asyncio.Task[None]) -> None:
