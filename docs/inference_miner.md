@@ -4,8 +4,10 @@ You serve certified systems on your own hardware and are paid for tokens
 clients actually bought. One process, one outbound connection, many models.
 
 ```
- gateway ──websocket──► mt operator run ──http──► llama-server :18080  (mt/invoice-4g)
-              ▲               │         ──http──► llama-server :18081  (mt/text2sql-16g)
+ gateway ──websocket──► mt operator run ──http──► sglang :18080  (mt/invoice-4g front)
+              ▲               │         ──http──► sglang :18081  (mt/invoice-4g specialist)
+              │               │         ──http──► sglang :18082  (mt/text2sql-16g)
+              │               └─ router in process, one small onnx classifier per system
               │               │
               │               └─► returns text + prompt/completion token ids
               │
@@ -31,7 +33,7 @@ To choose between the three kinds of miner read [miner_setup.md](miner_setup.md)
 | RAM | 16 GB | host memory, separate from the card |
 | Disk | 50 GB | artifacts are 1 to 16 GiB each and cached by digest |
 | Network | outbound 443 | nothing inbound |
-| Engine | `llama-server` on PATH | GGUF is the only servable format today |
+| Engine | SGLang, plus llama.cpp for GGUF | the agent picks from the format the artifact declares |
 | Collateral | 1 TAO | forfeited on a cheat verdict |
 
 ### A GPU is required, and here is why
@@ -73,12 +75,51 @@ starting point.
 
 ---
 
+### Engines and formats
+
+The agent reads the format from the artifact's own manifest and starts the
+engine that serves it. You install the engines; it chooses between them.
+
+| format | engine | why |
+|---|---|---|
+| `awq` | SGLang with `--quantization awq_marlin` | INT4 weights on the Marlin kernel, the fast path on Ampere and newer |
+| `fp8`, `safetensors` | SGLang | its native path |
+| `gguf` | llama.cpp | what llama.cpp is for |
+
+**Radix prefix caching is why SGLang.** It is on by default, and shared prefixes
+across requests are what agent and chat traffic looks like. The gateway routes a
+conversation back to the operator that already holds its cache, and SGLang
+reuses it instead of recomputing the prefix. That pairing is the single biggest
+win available to you. Chunked prefill is on, CUDA graphs are on, and speculative
+decoding is off, which is right for models this size.
+
+### Several systems on one card
+
+Each engine gets `--mem-fraction-static` set to its share of the card, computed
+from how many systems the planner chose, with eight percent left for the driver
+and fragmentation. A system with a specialist takes two shares, because the
+front and the specialist are separate engines.
+
+This is the part the networks doing this today do not attempt. They dedicate a
+card, or four, to one large model. Our systems are one to sixteen gibibytes, so
+packing is where the advantage is, and it is why VRAM decides what you earn.
+
+---
+
 ## 2 · Install
 
 ```bash
 git clone https://github.com/microtensor-io/microtensor-subnet
 cd microtensor-subnet
 pip install -e ".[serving]"
+
+pip install "sglang[all]"
+```
+
+Add llama.cpp as well if you intend to hold GGUF systems:
+
+```bash
+apt install -y llama.cpp
 ```
 
 The `serving` extra pulls `websockets` and `httpx`. Neither is imported until
@@ -232,9 +273,9 @@ seconds and redials when what it should hold changes.
 |---|---|---|
 | `--auto` | off | let the network choose; without it you list models yourself |
 | `--artifacts PATH` | `artifacts` | artifact cache, keyed by digest |
-| `--engine BIN` | `llama-server` | engine binary to start |
+| `--engine BIN` | per backend | the binary to start; `llama-server` or `python` by default |
 | `--threads N` | engine default | passed through to each engine |
-| `--gpu-layers N` | -1 | layers offloaded to the card; -1 is all, which is the point |
+| `--gpu-layers N` | -1 | llama.cpp only; layers offloaded to the card, -1 is all |
 | `--worker NAME` | hostname derived | names this machine when several share one hotkey |
 | `--review-seconds N` | 300 | how often to reread the catalogue |
 | `--gateway URL` | `wss://api.microtensor.cloud/v1/operators/socket` | where to dial |
@@ -412,7 +453,7 @@ share and that bound is enforced in code.
 |---|---|
 | `an inference miner needs a GPU` | no card found; the agent looked for nvidia-smi, rocm-smi and apple silicon |
 | `no engine answering for <model> at <url>` | the engine did not come up; run it by hand and read its output |
-| `is onnx, and only gguf can be served` | that system is not in a format serving can verify yet |
+| `nothing serves 'onnx'` | that system is in a format no engine here handles |
 | `runs at N ms a token here and its envelope allows M` | this machine is too slow for that system; a GPU or a smaller class |
 | `404: could not read the catalogue` | pointing at a server that does not serve it; check `--server` |
 | `no validator has admitted this hotkey for that model` | you declared a model you are not admitted for; that one is dropped, the rest keep serving |
