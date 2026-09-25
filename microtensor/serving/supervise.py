@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from microtensor.serving import plan
+from microtensor.serving import cascade, plan
 from microtensor.serving.agent import Pool, Served, Settings, served, session
 from microtensor.serving.client import ServerError
 
@@ -57,6 +57,7 @@ class Engine:
     artifact: Path
     port: int
     process: Any = None
+    role: str = cascade.FRONT
 
     @property
     def url(self) -> str:
@@ -200,7 +201,7 @@ def launcher(
         argv = [
             binary,
             "--model",
-            str(weights_in(engine.artifact)),
+            str(cascade.entrypoint_of(engine.artifact)),
             "--host",
             "127.0.0.1",
             "--port",
@@ -252,6 +253,8 @@ class Bench:
     disk: Callable[[Path], int] = free_disk
     memory: Callable[[], int] = accelerator_memory
     engines: dict[str, Engine] = field(default_factory=dict)
+    specialists: dict[str, Engine] = field(default_factory=dict)
+    routers: dict[str, Any] = field(default_factory=dict)
     timed: dict[str, float] = field(default_factory=dict)
     bench: Callable[[Engine], Awaitable[float]] | None = None
     last: plan.Plan | None = None
@@ -269,6 +272,7 @@ class Bench:
 
     def _port(self) -> int:
         taken = {engine.port for engine in self.engines.values()}
+        taken |= {engine.port for engine in self.specialists.values()}
         port = FIRST_PORT
         while port in taken:
             port += 1
@@ -282,7 +286,17 @@ class Bench:
             engine = self.engines.get(entry.model)
             if engine is None:
                 continue
-            found.append(served(entry.model, entry.artifact_digest, engine.url, entry.concurrency))
+            second = self.specialists.get(entry.model)
+            found.append(
+                served(
+                    entry.model,
+                    entry.artifact_digest,
+                    engine.url,
+                    entry.concurrency,
+                    specialist=second.url if second else (),
+                    router=self.routers.get(entry.model),
+                )
+            )
         return tuple(found)
 
     def settings(self) -> Settings:
@@ -352,17 +366,15 @@ class Bench:
         if entry.model in self.engines:
             return
 
-        engine = Engine(model=entry.model, artifact=artifact, port=self._port())
-        engine = Engine(
-            model=engine.model,
-            artifact=engine.artifact,
-            port=engine.port,
-            process=self.start(engine),
-        )
+        engine = self._raise_engine(entry.model, artifact, cascade.FRONT)
         self.engines[entry.model] = engine
         if self.ready is not None and not await self.ready(engine):
             self.stop(entry.model)
             raise SuperviseError(f"{entry.model} never answered on {engine.url}")
+
+        found = system_of(artifact)
+        if not found.single:
+            await self._raise_rest(entry.model, artifact, found)
 
         if self.bench is not None and entry.model not in self.timed:
             try:
@@ -388,7 +400,52 @@ class Bench:
             except ServerError as exc:
                 log.warning("could not declare %s: %s", entry.model, exc)
 
+    def _raise_engine(self, model: str, artifact: Path, role: str) -> Engine:
+        if self.start is None:
+            raise SuperviseError("this bench has no way to start an engine")
+        engine = Engine(model=model, artifact=artifact, port=self._port(), role=role)
+        return Engine(
+            model=engine.model,
+            artifact=engine.artifact,
+            port=engine.port,
+            process=self.start(engine),
+            role=role,
+        )
+
+    async def _raise_rest(self, model: str, artifact: Path, found: cascade.System) -> None:
+        root = artifact if artifact.is_dir() else artifact.parent
+
+        if found.specialist is not None:
+            where = root / (found.specialist.path or cascade.SPECIALIST)
+            if not where.exists():
+                raise SuperviseError(
+                    f"{model} declares a specialist at {where}, which the archive does not carry"
+                )
+            engine = self._raise_engine(model, where, cascade.SPECIALIST)
+            self.specialists[model] = engine
+            if self.ready is not None and not await self.ready(engine):
+                self.stop(model)
+                raise SuperviseError(f"the specialist for {model} never answered on {engine.url}")
+
+        if found.router is not None:
+            where = root / (found.router.path or f"{cascade.ROUTER}.onnx")
+            if not where.exists():
+                raise SuperviseError(
+                    f"{model} declares a router at {where}, which the archive does not carry"
+                )
+            self.routers[model] = cascade.load_router(where, found.router_features)
+            log.info(
+                "%s is a system: front, router on %s, specialist",
+                model,
+                ", ".join(found.router_features) or "no features",
+            )
+
     def stop(self, model: str) -> None:
+        for engine in (self.specialists.pop(model, None),):
+            if engine is not None and engine.process is not None:
+                with contextlib.suppress(Exception):
+                    engine.process.terminate()
+        self.routers.pop(model, None)
         engine = self.engines.pop(model, None)
         if engine is None:
             return
@@ -503,10 +560,9 @@ def artifact_of(offer: plan.Offer, where: Path, timeout: int = 900) -> Path:
     if not offer.archive_repo:
         raise SuperviseError(f"{offer.model} publishes no archive to fetch from")
 
-    where.mkdir(parents=True, exist_ok=True)
     digest = offer.artifact_digest.split(":")[-1]
-    landed = where / f"{digest[:16]}.gguf"
-    if landed.exists() and _matches(digest_file(landed), digest):
+    landed = where / digest[:16]
+    if (landed / MANIFEST_NAME).exists():
         return landed
 
     source = offer.archive_repo
@@ -516,22 +572,43 @@ def artifact_of(offer: plan.Offer, where: Path, timeout: int = 900) -> Path:
     fetcher = fetcher_for(scheme)
 
     staging = where / f"staging-{digest[:16]}"
-    staging.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fetcher(locator, f"{digest[:16]}.gguf", staging, timeout)
-    except Unfetchable as exc:
-        staging.unlink(missing_ok=True)
-        raise SuperviseError(str(exc)) from exc
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
 
-    found = digest_file(staging)
-    if not _matches(found, digest):
-        staging.unlink(missing_ok=True)
+    try:
+        fetcher(locator, MANIFEST_NAME, staging / MANIFEST_NAME, timeout)
+        manifest = json.loads((staging / MANIFEST_NAME).read_text(encoding="utf-8"))
+        wanted = [str(name) for name in (manifest.get("files") or {})]
+        if not wanted:
+            wanted = [str((manifest.get("load") or {}).get("entrypoint", ""))]
+        for name in wanted:
+            if not name or name == MANIFEST_NAME:
+                continue
+            target = staging / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fetcher(locator, name, target, timeout)
+    except (Unfetchable, ValueError, OSError) as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise SuperviseError(f"{offer.model} could not be fetched: {exc}") from exc
+
+    entry = cascade.entrypoint_of(staging)
+    found = digest_file(entry)
+    declared = str(manifest.get("artifact_digest", "")) or offer.artifact_digest
+    if not _matches(found, declared):
+        shutil.rmtree(staging, ignore_errors=True)
         raise SuperviseError(
-            f"{offer.model} fetched to {found[:16]}, which is not the certified {digest[:16]}"
+            f"{offer.model} fetched to {found.split(':')[-1][:16]}, which is not the "
+            f"certified {declared.split(':')[-1][:16]}"
         )
+
+    shutil.rmtree(landed, ignore_errors=True)
     staging.replace(landed)
     log.info("fetched %s to %s", offer.model, landed)
     return landed
+
+
+def system_of(artifact: Path) -> cascade.System:
+    return cascade.System.from_manifest(cascade.manifest_of(artifact))
 
 
 async def engine_ready(engine: Engine) -> bool:
