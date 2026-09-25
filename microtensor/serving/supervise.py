@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +28,7 @@ IDLE_SECONDS = 60.0
 FIRST_PORT = 18080
 READY_ATTEMPTS = 120
 READY_PAUSE = 2.0
+MANIFEST_NAME = "manifest.json"
 
 
 class SuperviseError(RuntimeError):
@@ -73,12 +75,42 @@ def usable_memory() -> int:
     return int(psutil.virtual_memory().available)
 
 
-def launcher(binary: str, threads: int = 0, context: int = 4096) -> Callable[[Engine], Any]:
+SERVABLE_FORMATS: frozenset[str] = frozenset({"gguf"})
+
+
+def format_of(artifact: Path) -> str:
+    found = artifact if artifact.is_dir() else artifact.parent
+    manifest = found / MANIFEST_NAME
+    if manifest.exists():
+        try:
+            return str(json.loads(manifest.read_text(encoding="utf-8")).get("format", ""))
+        except ValueError:
+            return ""
+    return artifact.suffix.lstrip(".").lower()
+
+
+def weights_in(artifact: Path) -> Path:
+    if artifact.is_file():
+        return artifact
+    for child in sorted(artifact.glob("*.gguf")):
+        return child
+    raise SuperviseError(f"no servable weights under {artifact}")
+
+
+def launcher(
+    binary: str, threads: int = 0, context: int = 4096, gpu_layers: int = -1
+) -> Callable[[Engine], Any]:
     def start(engine: Engine) -> Any:
+        declared = format_of(engine.artifact)
+        if declared and declared not in SERVABLE_FORMATS:
+            raise SuperviseError(
+                f"{engine.model} is {declared}, and only "
+                f"{', '.join(sorted(SERVABLE_FORMATS))} can be served and verified today"
+            )
         argv = [
             binary,
             "--model",
-            str(engine.artifact),
+            str(weights_in(engine.artifact)),
             "--host",
             "127.0.0.1",
             "--port",
@@ -88,12 +120,29 @@ def launcher(binary: str, threads: int = 0, context: int = 4096) -> Callable[[En
         ]
         if threads:
             argv += ["--threads", str(threads)]
+        if gpu_layers:
+            argv += ["--n-gpu-layers", str(gpu_layers)]
         log.info("starting %s on port %d", engine.model, engine.port)
-        return subprocess.Popen(
-            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     return start
+
+
+async def measure(engine: Engine, tokens: int = 32) -> float:
+    from microtensor.serving.agent import HttpEngine
+
+    driver = HttpEngine(engine.url)
+    started = time.perf_counter()
+    try:
+        found = await driver.generate(
+            {"prompt": "Count from one to twenty.", "max_tokens": tokens, "temperature": 0.0}
+        )
+    except Exception as exc:
+        raise SuperviseError(f"{engine.model} could not be measured: {exc}") from exc
+    produced = len(found.get("completion_tokens") or [])
+    if produced <= 0:
+        raise SuperviseError(f"{engine.model} produced nothing when measured")
+    return ((time.perf_counter() - started) * 1000.0) / produced
 
 
 @dataclass(slots=True)
@@ -113,6 +162,8 @@ class Bench:
     disk: Callable[[Path], int] = free_disk
     memory: Callable[[], int] = usable_memory
     engines: dict[str, Engine] = field(default_factory=dict)
+    timed: dict[str, float] = field(default_factory=dict)
+    bench: Callable[[Engine], Awaitable[float]] | None = None
     last: plan.Plan | None = None
 
     def held(self) -> dict[str, str]:
@@ -164,7 +215,13 @@ class Bench:
 
     def decide(self) -> plan.Plan:
         offers = self.read(self.server)
-        return plan.build(offers, self.measure(), held=self.held(), policy=self.policy)
+        return plan.build(
+            offers,
+            self.measure(),
+            held=self.held(),
+            policy=self.policy,
+            measured=self.timed,
+        )
 
     async def apply(self, found: plan.Plan) -> plan.Plan:
         for model in found.drop:
@@ -193,6 +250,7 @@ class Bench:
         return self.last
 
     async def raise_one(self, entry: plan.Holding, offer: plan.Offer | None) -> None:
+        ceiling = offer.tpot_ms if offer is not None else 0.0
         if self.fetch is None or self.start is None:
             raise SuperviseError("this bench has no way to fetch or start an engine")
         if offer is not None:
@@ -215,6 +273,25 @@ class Bench:
         if self.ready is not None and not await self.ready(engine):
             self.stop(entry.model)
             raise SuperviseError(f"{entry.model} never answered on {engine.url}")
+
+        if self.bench is not None and entry.model not in self.timed:
+            try:
+                self.timed[entry.model] = await self.bench(engine)
+                log.info(
+                    "%s runs at %.0f ms a token on this machine",
+                    entry.model,
+                    self.timed[entry.model],
+                )
+            except SuperviseError:
+                self.stop(entry.model)
+                raise
+            if ceiling and self.timed[entry.model] > ceiling:
+                self.stop(entry.model)
+                raise SuperviseError(
+                    f"{entry.model} runs at {self.timed[entry.model]:.0f} ms a token here "
+                    f"and its envelope allows {ceiling:.0f}"
+                )
+
         if self.declare is not None:
             try:
                 self.declare(entry.model, entry.artifact_digest)
@@ -320,9 +397,6 @@ def summary(found: plan.Plan) -> str:
 
 def offers_of(rows: Sequence[Mapping[str, Any]]) -> list[plan.Offer]:
     return [plan.Offer.from_wire(row) for row in rows]
-
-
-MANIFEST_NAME = "manifest.json"
 
 
 def _matches(found: str, wanted: str) -> bool:

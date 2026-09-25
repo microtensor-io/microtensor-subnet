@@ -24,6 +24,8 @@ class Offer:
     size_bytes: int = 0
     peak_rss_bytes: int = 0
     servable: bool = True
+    ttft_ms: float = 0.0
+    tpot_ms: float = 0.0
     wanted: float = 0.0
     cold: bool = False
     operators_online: int = 0
@@ -40,6 +42,8 @@ class Offer:
             size_bytes=int(row.get("size_bytes") or 0),
             peak_rss_bytes=int(row.get("peak_rss_bytes") or 0),
             servable=bool(row.get("servable", True)),
+            ttft_ms=float(row.get("ttft_ms") or 0.0),
+            tpot_ms=float(row.get("tpot_ms") or 0.0),
             wanted=float(row.get("wanted") or 0.0),
             cold=bool(row.get("cold", False)),
             operators_online=int(row.get("operators_online") or 0),
@@ -153,9 +157,11 @@ def build(
     *,
     held: Mapping[str, str] | None = None,
     policy: Policy | None = None,
+    measured: Mapping[str, float] | None = None,
 ) -> Plan:
     rules = policy or Policy()
     holding = dict(held or {})
+    timings = dict(measured or {})
 
     rows = [o if isinstance(o, Offer) else Offer.from_wire(o) for o in offers]
     reasons: dict[str, str] = {}
@@ -175,6 +181,13 @@ def build(
             continue
         if offer.size_bytes > capacity.disk_bytes:
             reasons[offer.model] = "it does not fit on disk"
+            continue
+        seen = timings.get(offer.model)
+        if seen is not None and offer.tpot_ms and seen > offer.tpot_ms:
+            reasons[offer.model] = (
+                f"this machine takes {seen:.0f} ms a token and the envelope allows "
+                f"{offer.tpot_ms:.0f}"
+            )
             continue
         usable.append(offer)
 

@@ -25,16 +25,41 @@ To choose between the three kinds of miner read [miner_setup.md](miner_setup.md)
 |---|---|---|
 | OS | Linux, macOS or Windows | tested on Ubuntu 22.04 and 24.04 |
 | Python | 3.10 | 3.11 or newer preferred |
-| CPU | 4 cores | certified systems are measured on one thread, so cores are concurrency |
-| RAM | 8 GB | each held system needs its peak resident memory; see the catalogue |
+| CPU | 8 cores | fallback only; see the note below |
+| RAM | 16 GB | each held system needs its peak resident memory; see the catalogue |
 | Disk | 50 GB | artifacts are 1 to 16 GiB each and cached by digest |
-| GPU | none required | helps throughput, is never required |
+| GPU | see below | effectively required above the smallest class |
 | Network | outbound 443 | nothing inbound |
-| Engine | `llama-server` on PATH | any build; nothing is patched |
+| Engine | `llama-server` on PATH | GGUF is the only servable format today |
 | Collateral | 1 TAO | forfeited on a cheat verdict |
 
-A 16 core box with 32 GB of RAM holds roughly six 4 GiB systems at once and is a
-sensible starting point.
+### You almost certainly need a GPU
+
+The arena measures a system on **one CPU thread with no GPU offload**, seeded
+and greedy, because two validators have to produce the same number and
+determinism demands it. That measurement is a cost figure for ranking systems on
+the frontier. It is not a serving target and you must not read it as one.
+
+For scale, the live `guard/mt-4g` system measures at 3.75 tokens a second with a
+p95 of 57 seconds on that reference thread. No customer waits 57 seconds.
+
+Serving is judged against a separate envelope, published per model, set by what
+a client will actually tolerate. Your time to first token and time per output
+token are measured against that, and missing it forfeits the epoch.
+
+| class | on CPU | on GPU |
+|---|---|---|
+| `mt-1g` | workable on 8 or more modern cores | comfortable |
+| `mt-3g` | marginal | comfortable |
+| `mt-4g` | no | yes |
+| `mt-16g` | no | yes, with the memory to match |
+
+Nothing in the protocol demands a GPU. The gates do. Run `mt operator plan` and
+the planner tells you what this machine can actually hold, and after the first
+cycle it refuses anything it measured as too slow.
+
+A 16 core box with 32 GB of RAM and one consumer card holds roughly six 4 GiB
+systems at once and is a sensible starting point.
 
 ---
 
@@ -152,7 +177,12 @@ the smaller artifact. A model you already hold has its score multiplied by 1.5,
 so the set does not thrash when two are close.
 
 Refused outright: a system with no published serving envelope, one that does not
-fit in memory or on disk, and anything your policy excludes.
+fit in memory or on disk, one this machine already measured as too slow for its
+envelope, and anything your policy excludes.
+
+On the first cycle a system is unmeasured, so the planner tries it. The agent
+benchmarks each engine as it comes up, drops anything slower than its envelope,
+and remembers the figure so later cycles never pick it again.
 
 ### Narrowing it
 
@@ -194,6 +224,7 @@ seconds and redials when what it should hold changes.
 | `--artifacts PATH` | `artifacts` | artifact cache, keyed by digest |
 | `--engine BIN` | `llama-server` | engine binary to start |
 | `--threads N` | engine default | passed through to each engine |
+| `--gpu-layers N` | -1 | layers offloaded to the GPU; -1 is all, 0 keeps it on the CPU |
 | `--worker NAME` | hostname derived | names this machine when several share one hotkey |
 | `--review-seconds N` | 300 | how often to reread the catalogue |
 | `--gateway URL` | `wss://api.microtensor.cloud/v1/operators/socket` | where to dial |
@@ -349,8 +380,11 @@ a miner with few requests passes unless the evidence is unambiguous.
 | time per output token | 5 % over the model's ceiling | requests that completed |
 | cheat share | 1 % | verdicts rendered against you |
 
-Ceilings come from the arena class the system was certified under, so they are
-the same envelope it was measured against when it won.
+Ceilings come from the **serving envelope**, published per model. They are not
+the arena's class ceilings. The arena measures cost on one CPU thread for
+ranking; serving is judged on what a client will wait for. Using the arena
+figure here would make the gate meaningless, because it allows two minutes a
+query.
 
 A failed gate forfeits that epoch and excludes nobody. You start the next one
 clean. Scoring never bans.
@@ -367,6 +401,8 @@ share and that bound is enforced in code.
 | symptom | cause |
 |---|---|
 | `no engine answering for <model> at <url>` | the engine did not come up; run it by hand and read its output |
+| `is onnx, and only gguf can be served` | that system is not in a format serving can verify yet |
+| `runs at N ms a token here and its envelope allows M` | this machine is too slow for that system; a GPU or a smaller class |
 | `404: could not read the catalogue` | pointing at a server that does not serve it; check `--server` |
 | `no validator has admitted this hotkey for that model` | you declared a model you are not admitted for; that one is dropped, the rest keep serving |
 | `the declared artifact is not the one admitted for that model` | your digest is stale; the arena produced a new winner |

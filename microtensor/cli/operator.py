@@ -98,6 +98,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     serve.add_argument("--not", dest="excluded", action="append", default=[])
     serve.add_argument("--engine", default="llama-server", help="the engine binary to start")
     serve.add_argument("--threads", type=int, default=0)
+    serve.add_argument(
+        "--gpu-layers",
+        type=int,
+        default=-1,
+        help="layers to offload to the GPU; -1 offloads all, 0 keeps it on the CPU",
+    )
     serve.add_argument("--review-seconds", type=float, default=supervise.REVIEW_SECONDS)
     _shared(serve)
     serve.set_defaults(handler=_run)
@@ -314,9 +320,10 @@ def _auto(args: argparse.Namespace, wallet: Any) -> int:
         worker=args.worker,
         gateway=args.gateway,
         fetch=supervise.artifact_of,
-        start=supervise.launcher(args.engine, threads=args.threads),
+        start=supervise.launcher(args.engine, threads=args.threads, gpu_layers=args.gpu_layers),
         declare=declare,
         ready=supervise.engine_ready,
+        bench=supervise.measure,
     )
     if not args.disk_gb:
         bench.capacity = plan.Capacity(
