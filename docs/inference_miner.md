@@ -25,41 +25,51 @@ To choose between the three kinds of miner read [miner_setup.md](miner_setup.md)
 |---|---|---|
 | OS | Linux, macOS or Windows | tested on Ubuntu 22.04 and 24.04 |
 | Python | 3.10 | 3.11 or newer preferred |
-| CPU | 8 cores | fallback only; see the note below |
-| RAM | 16 GB | each held system needs its peak resident memory; see the catalogue |
+| GPU | **required** | NVIDIA, AMD or Apple silicon; the agent refuses to start without one |
+| VRAM | 8 GB | this is the budget the planner spends; see the table below |
+| CPU | 8 cores | for the agent and the engines, not for generation |
+| RAM | 16 GB | host memory, separate from the card |
 | Disk | 50 GB | artifacts are 1 to 16 GiB each and cached by digest |
-| GPU | see below | effectively required above the smallest class |
 | Network | outbound 443 | nothing inbound |
 | Engine | `llama-server` on PATH | GGUF is the only servable format today |
 | Collateral | 1 TAO | forfeited on a cheat verdict |
 
-### You almost certainly need a GPU
+### A GPU is required, and here is why
 
-The arena measures a system on **one CPU thread with no GPU offload**, seeded
-and greedy, because two validators have to produce the same number and
-determinism demands it. That measurement is a cost figure for ranking systems on
-the frontier. It is not a serving target and you must not read it as one.
+The agent detects your card at startup and refuses to run without one. It looks
+for `nvidia-smi`, then `rocm-smi`, then Apple silicon, and prints what it found.
+
+The reason is a distinction that trips people up. The arena measures a system on
+**one CPU thread with no GPU offload**, seeded and greedy, because two
+validators have to produce the same number and determinism demands it. That is a
+cost figure for ranking systems on the frontier. It is not a serving target.
 
 For scale, the live `guard/mt-4g` system measures at 3.75 tokens a second with a
-p95 of 57 seconds on that reference thread. No customer waits 57 seconds.
+p95 of 57 seconds on that reference thread. No client waits 57 seconds.
 
 Serving is judged against a separate envelope, published per model, set by what
 a client will actually tolerate. Your time to first token and time per output
-token are measured against that, and missing it forfeits the epoch.
+token are measured against it, and missing it forfeits the epoch. A CPU cannot
+hold that pace for any class we certify.
 
-| class | on CPU | on GPU |
+### How much card
+
+Your VRAM is the budget the planner spends. Each system needs its peak resident
+memory plus room for the key value cache at your concurrency.
+
+| class | card that holds one comfortably | holds several |
 |---|---|---|
-| `mt-1g` | workable on 8 or more modern cores | comfortable |
-| `mt-3g` | marginal | comfortable |
-| `mt-4g` | no | yes |
-| `mt-16g` | no | yes, with the memory to match |
+| `mt-1g` | 6 GB | 12 GB and up |
+| `mt-3g` | 8 GB | 16 GB and up |
+| `mt-4g` | 8 GB | 24 GB and up |
+| `mt-16g` | 24 GB | 48 GB and up |
 
-Nothing in the protocol demands a GPU. The gates do. Run `mt operator plan` and
-the planner tells you what this machine can actually hold, and after the first
-cycle it refuses anything it measured as too slow.
+More VRAM means more systems held at once, which means more of the catalogue you
+can answer for and more traffic routed to you. `mt operator plan` shows exactly
+what your card holds before you commit to anything.
 
-A 16 core box with 32 GB of RAM and one consumer card holds roughly six 4 GiB
-systems at once and is a sensible starting point.
+A 24 GB card holds roughly four `mt-4g` systems at once and is a sensible
+starting point.
 
 ---
 
@@ -224,7 +234,7 @@ seconds and redials when what it should hold changes.
 | `--artifacts PATH` | `artifacts` | artifact cache, keyed by digest |
 | `--engine BIN` | `llama-server` | engine binary to start |
 | `--threads N` | engine default | passed through to each engine |
-| `--gpu-layers N` | -1 | layers offloaded to the GPU; -1 is all, 0 keeps it on the CPU |
+| `--gpu-layers N` | -1 | layers offloaded to the card; -1 is all, which is the point |
 | `--worker NAME` | hostname derived | names this machine when several share one hotkey |
 | `--review-seconds N` | 300 | how often to reread the catalogue |
 | `--gateway URL` | `wss://api.microtensor.cloud/v1/operators/socket` | where to dial |
@@ -400,6 +410,7 @@ share and that bound is enforced in code.
 
 | symptom | cause |
 |---|---|
+| `an inference miner needs a GPU` | no card found; the agent looked for nvidia-smi, rocm-smi and apple silicon |
 | `no engine answering for <model> at <url>` | the engine did not come up; run it by hand and read its output |
 | `is onnx, and only gguf can be served` | that system is not in a format serving can verify yet |
 | `runs at N ms a token here and its envelope allows M` | this machine is too slow for that system; a GPU or a smaller class |
