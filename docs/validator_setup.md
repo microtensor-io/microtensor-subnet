@@ -229,6 +229,31 @@ the probe history behind it and forces it to prove itself again. Liveness is not
 your concern: the gateway drops a disconnected operator within seconds, and that
 never touches what you decided.
 
+### Validating inference needs no GPU
+
+Two different duties wear the same name, and only one of them is heavy.
+
+**Checking the settlement** is integer arithmetic over a few hundred rows. The
+server publishes each epoch alongside the evidence it settled on: per operator
+and model the tokens, the requests and the four gate counts, plus the rates,
+ceilings and exact fraction thresholds. You recompute the vector and refuse on
+mismatch, exactly as you already do for a round settlement.
+
+```bash
+mt operator audit
+```
+
+No model is loaded, no artifact is fetched and no card is touched. Every
+validator should run this, and it is what makes the serving pool verified rather
+than relayed.
+
+**Probing operators** is the heavy duty and it is opt in. It loads the certified
+artifact and runs a prefill, so it needs whatever that artifact needs: a CPU for
+GGUF today, a card once systems ship in a GPU only format. You do not have to
+take it on, and declining costs you nothing in the round loop.
+
+### Probing, if you take it on
+
 Operators hold no inbound port, so you reach them through the gateway:
 
 ```bash

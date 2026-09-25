@@ -18,6 +18,7 @@ from microtensor.cli.common import (
     open_wallet,
 )
 from microtensor.core.constants import GATEWAY_URL, PUBLIC_SERVER_URL
+from microtensor.serving import audit as serving_audit
 from microtensor.serving import client, plan, supervise
 from microtensor.serving import loop as probe_loop
 from microtensor.serving.agent import AgentError, Pool, Served, Settings, run, served
@@ -53,6 +54,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     status = inner.add_parser("status", help="what the server holds about this operator")
     _shared(status)
     status.set_defaults(handler=_status)
+
+    checked = inner.add_parser(
+        "audit", help="recompute the published serving settlement, no GPU needed"
+    )
+    checked.add_argument("--json", action="store_true", help="print the full report")
+    _shared(checked)
+    checked.set_defaults(handler=_audit)
 
     preview = inner.add_parser("plan", help="what auto mode would serve on this machine")
     preview.add_argument("--disk-gb", type=int, default=0)
@@ -392,3 +400,29 @@ def _plan(args: argparse.Namespace) -> int:
         ),
     )
     return _show(found.to_dict())
+
+
+def _audit(args: argparse.Namespace) -> int:
+    try:
+        found = serving_audit.audit(args.server)
+    except ServerError as exc:
+        return fail(str(exc))
+
+    if args.json:
+        return _show(found.to_dict())
+
+    if not found.checked and not found.invented and not found.omitted:
+        print("no serving epoch has settled yet; nothing to check")
+        return 0
+    if found.holds:
+        print(f"the published settlement holds: {found.agreed} of {found.checked} rows recomputed")
+        return 0
+
+    print(f"the published settlement does not hold: {found.agreed} of {found.checked} agreed")
+    for row in found.disagreements:
+        print(f"  {row}")
+    for key in found.invented:
+        print(f"  {key} was published but does not follow from the evidence")
+    for key in found.omitted:
+        print(f"  {key} follows from the evidence but was never published")
+    return 1
