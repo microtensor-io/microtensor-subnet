@@ -293,6 +293,13 @@ def _http(gateway: str) -> str:
 
 def _auto(args: argparse.Namespace, wallet: Any) -> int:
     try:
+        cards = supervise.require_accelerator()
+    except supervise.SuperviseError as exc:
+        return fail(str(exc))
+    for card in cards:
+        print(f"{card.vendor} {card.name}, {card.memory_bytes / plan.GIB:.0f} GiB")
+
+    try:
         capacity = plan.Capacity(
             disk_bytes=(args.disk_gb or 1) * plan.GIB,
             memory_bytes=(args.memory_gb or 1) * plan.GIB,
@@ -335,7 +342,7 @@ def _auto(args: argparse.Namespace, wallet: Any) -> int:
     if not args.memory_gb:
         bench.capacity = plan.Capacity(
             disk_bytes=bench.capacity.disk_bytes,
-            memory_bytes=supervise.usable_memory() or 4 * plan.GIB,
+            memory_bytes=supervise.accelerator_memory(cards),
             slots=capacity.slots,
             max_models=capacity.max_models,
         )
@@ -357,9 +364,17 @@ def _plan(args: argparse.Namespace) -> int:
         rows = supervise.catalogue(args.server)
     except ServerError as exc:
         return fail(str(exc))
+    cards = supervise.accelerators()
+    for card in cards:
+        print(f"{card.vendor} {card.name}, {card.memory_bytes / plan.GIB:.0f} GiB")
+    if not cards and not args.memory_gb:
+        return fail(
+            "no GPU found, so there is nothing to plan against. Pass --memory-gb "
+            "to see what a given card would hold"
+        )
     capacity = plan.Capacity(
         disk_bytes=(args.disk_gb * plan.GIB) or supervise.free_disk(args.artifacts) or plan.GIB,
-        memory_bytes=(args.memory_gb * plan.GIB) or supervise.usable_memory() or 4 * plan.GIB,
+        memory_bytes=(args.memory_gb * plan.GIB) or supervise.accelerator_memory(cards),
         slots=args.slots,
         max_models=args.max_models,
     )

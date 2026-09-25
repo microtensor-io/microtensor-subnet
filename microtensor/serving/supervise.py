@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import platform
 import shutil
 import subprocess
 import time
@@ -73,6 +74,95 @@ def usable_memory() -> int:
     except ImportError:
         return 0
     return int(psutil.virtual_memory().available)
+
+
+@dataclass(frozen=True, slots=True)
+class Accelerator:
+    vendor: str
+    name: str
+    memory_bytes: int
+
+
+def _ask(argv: list[str], timeout: float = 20.0) -> str:
+    try:
+        found = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return found.stdout if found.returncode == 0 else ""
+
+
+def _nvidia() -> list[Accelerator]:
+    text = _ask(
+        [
+            "nvidia-smi",
+            "--query-gpu=name,memory.total",
+            "--format=csv,noheader,nounits",
+        ]
+    )
+    found: list[Accelerator] = []
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 2 or not parts[1].isdigit():
+            continue
+        found.append(
+            Accelerator(vendor="nvidia", name=parts[0], memory_bytes=int(parts[1]) * 1024 * 1024)
+        )
+    return found
+
+
+def _amd() -> list[Accelerator]:
+    text = _ask(["rocm-smi", "--showmeminfo", "vram", "--csv"])
+    found: list[Accelerator] = []
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2 or not parts[0].lower().startswith("card"):
+            continue
+        total = next((int(p) for p in parts[1:] if p.isdigit()), 0)
+        if total:
+            found.append(Accelerator(vendor="amd", name=parts[0], memory_bytes=total))
+    return found
+
+
+def _apple() -> list[Accelerator]:
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return []
+    shared = usable_memory()
+    if not shared:
+        return []
+    return [
+        Accelerator(
+            vendor="apple", name=platform.processor() or "apple silicon", memory_bytes=shared
+        )
+    ]
+
+
+def accelerators() -> list[Accelerator]:
+    for probe in (_nvidia, _amd, _apple):
+        found = probe()
+        if found:
+            return found
+    return []
+
+
+def accelerator_memory(found: Sequence[Accelerator] | None = None) -> int:
+    held = list(found if found is not None else accelerators())
+    if not held:
+        return 0
+    if held[0].vendor == "apple":
+        return held[0].memory_bytes
+    return max(a.memory_bytes for a in held)
+
+
+def require_accelerator() -> list[Accelerator]:
+    found = accelerators()
+    if found:
+        return found
+    raise SuperviseError(
+        "an inference miner needs a GPU. Looked for nvidia-smi, rocm-smi and "
+        "apple silicon and found none. Certified systems are ranked on a single "
+        "CPU thread for determinism, but serving is judged on what a client "
+        "waits for, and a CPU cannot hold that pace"
+    )
 
 
 SERVABLE_FORMATS: frozenset[str] = frozenset({"gguf"})
@@ -160,7 +250,7 @@ class Bench:
     read: Callable[[str], list[dict[str, Any]]] = catalogue
     ready: Callable[[Engine], Awaitable[bool]] | None = None
     disk: Callable[[Path], int] = free_disk
-    memory: Callable[[], int] = usable_memory
+    memory: Callable[[], int] = accelerator_memory
     engines: dict[str, Engine] = field(default_factory=dict)
     timed: dict[str, float] = field(default_factory=dict)
     bench: Callable[[Engine], Awaitable[float]] | None = None

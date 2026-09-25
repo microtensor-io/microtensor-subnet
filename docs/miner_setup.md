@@ -7,7 +7,7 @@ find out which one you are, then follow that one's guide.
 | | system miner | inference miner | compute miner |
 |---|---|---|---|
 | you provide | a certified inference system | serving capacity | a GPU machine |
-| hardware | whatever you train on | ordinary CPU or GPU box | a card on the accepted list |
+| hardware | whatever you train on | a GPU, 8 GB or more | a card on the accepted list |
 | the network measures | your artifact, on its own reference hardware | tokens you served, by verifying a sample | availability and isolation, by SSH and probes |
 | you are paid for | where your system sits on the cost and quality frontier | billed tokens served | verified uptime and work done |
 | settles every | round | serving epoch | compute epoch |
@@ -27,12 +27,13 @@ artifact, and commit a pointer on chain once per round. Validators fetch it and
 run it on their own certified hardware, so your machine is busy only while you
 are training.
 
-**You have a machine that can run models and you want it earning continuously.**
-You are an inference miner. You post collateral, run a stock engine on certified
+**You have a GPU and want it earning continuously without training.** You are
+an inference miner. You post collateral, run a stock engine on certified
 artifacts, and answer live traffic. You do not choose which models exist and you
 do not pick which to hold; the network publishes what is certified and what is
-wanted, and a planner on your machine decides. Artifacts are small by design, so
-one ordinary box holds several.
+wanted, and a planner on your machine decides. A card is required: systems are
+ranked on a single CPU thread for determinism, but serving is judged on what a
+client waits for, and your VRAM is the budget the planner spends.
 
 **You have GPUs you want to rent out.** You are a compute miner. You put the
 machine in the pool, it is verified and characterised, and it earns for being
