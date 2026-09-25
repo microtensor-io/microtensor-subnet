@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from microtensor.serving import cascade, plan
+from microtensor.serving import cascade, engines, plan
 from microtensor.serving.agent import Pool, Served, Settings, served, session
 from microtensor.serving.client import ServerError
 
@@ -166,57 +166,58 @@ def require_accelerator() -> list[Accelerator]:
     )
 
 
-SERVABLE_FORMATS: frozenset[str] = frozenset({"gguf"})
-
-
 def format_of(artifact: Path) -> str:
-    found = artifact if artifact.is_dir() else artifact.parent
-    manifest = found / MANIFEST_NAME
-    if manifest.exists():
-        try:
-            return str(json.loads(manifest.read_text(encoding="utf-8")).get("format", ""))
-        except ValueError:
-            return ""
-    return artifact.suffix.lstrip(".").lower()
-
-
-def weights_in(artifact: Path) -> Path:
-    if artifact.is_file():
-        return artifact
-    for child in sorted(artifact.glob("*.gguf")):
-        return child
-    raise SuperviseError(f"no servable weights under {artifact}")
+    manifest = cascade.manifest_of(artifact)
+    return str((manifest.get("load") or {}).get("format", "")).lower()
 
 
 def launcher(
-    binary: str, threads: int = 0, context: int = 4096, gpu_layers: int = -1
+    binary: str = "",
+    threads: int = 0,
+    context: int = engines.DEFAULT_CONTEXT,
+    gpu_layers: int = -1,
+    share: float = 0.85,
+    concurrency: int = 8,
 ) -> Callable[[Engine], Any]:
     def start(engine: Engine) -> Any:
         declared = format_of(engine.artifact)
-        if declared and declared not in SERVABLE_FORMATS:
-            raise SuperviseError(
-                f"{engine.model} is {declared}, and only "
-                f"{', '.join(sorted(SERVABLE_FORMATS))} can be served and verified today"
+        try:
+            plan_for = engines.launch(
+                declared,
+                cascade.entrypoint_of(engine.artifact)
+                if engines.backend_for(declared) == engines.LLAMA
+                else engine.artifact,
+                engine.port,
+                binary=binary,
+                context=context,
+                concurrency=concurrency,
+                threads=threads,
+                gpu_layers=gpu_layers,
+                share=share,
             )
-        argv = [
-            binary,
-            "--model",
-            str(cascade.entrypoint_of(engine.artifact)),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(engine.port),
-            "--ctx-size",
-            str(context),
-        ]
-        if threads:
-            argv += ["--threads", str(threads)]
-        if gpu_layers:
-            argv += ["--n-gpu-layers", str(gpu_layers)]
-        log.info("starting %s on port %d", engine.model, engine.port)
-        return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (engines.EngineError, cascade.CascadeError) as exc:
+            raise SuperviseError(str(exc)) from exc
+        log.info(
+            "starting %s (%s) on port %d with %s",
+            engine.model,
+            engine.role,
+            engine.port,
+            plan_for.backend,
+        )
+        return subprocess.Popen(
+            list(plan_for.argv), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
 
     return start
+
+
+def client_for(artifact: Path) -> Callable[[str], Any]:
+    backend = engines.backend_for(format_of(artifact))
+    if backend == engines.SGLANG:
+        return engines.SGLangEngine
+    from microtensor.serving.agent import HttpEngine
+
+    return HttpEngine
 
 
 async def measure(engine: Engine, tokens: int = 32) -> float:
@@ -255,6 +256,7 @@ class Bench:
     engines: dict[str, Engine] = field(default_factory=dict)
     specialists: dict[str, Engine] = field(default_factory=dict)
     routers: dict[str, Any] = field(default_factory=dict)
+    clients: dict[str, Any] = field(default_factory=dict)
     timed: dict[str, float] = field(default_factory=dict)
     bench: Callable[[Engine], Awaitable[float]] | None = None
     last: plan.Plan | None = None
@@ -278,6 +280,11 @@ class Bench:
             port += 1
         return port
 
+    def build(self, url: str) -> Any:
+        from microtensor.serving.agent import HttpEngine
+
+        return self.clients.get(url, HttpEngine)(url)
+
     def serves(self) -> tuple[Served, ...]:
         if self.last is None:
             return ()
@@ -297,6 +304,9 @@ class Bench:
                     router=self.routers.get(entry.model),
                 )
             )
+            self.clients[engine.url] = client_for(engine.artifact)
+            if second is not None:
+                self.clients[second.url] = client_for(second.artifact)
         return tuple(found)
 
     def settings(self) -> Settings:
@@ -352,6 +362,10 @@ class Bench:
             reasons=found.reasons,
         )
         return self.last
+
+    def _share(self) -> float:
+        held = max(1, len(self.engines) + len(self.specialists) + 1)
+        return engines.share_for(held)
 
     async def raise_one(self, entry: plan.Holding, offer: plan.Offer | None) -> None:
         ceiling = offer.tpot_ms if offer is not None else 0.0
@@ -495,7 +509,7 @@ async def supervise(
 
         log.info("serving %s", ", ".join(f"{h.model} at {h.concurrency}" for h in held.hold))
         serving: asyncio.Task[None] = asyncio.create_task(
-            serve(bench.settings(), Pool(bench.serves()))
+            serve(bench.settings(), Pool(bench.serves(), build=bench.build))
         )
         try:
             await _until_stale(bench, serving, stop, review_seconds)

@@ -96,7 +96,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     serve.add_argument("--track", action="append", default=[], help="only these tracks")
     serve.add_argument("--class", dest="classes", action="append", default=[])
     serve.add_argument("--not", dest="excluded", action="append", default=[])
-    serve.add_argument("--engine", default="llama-server", help="the engine binary to start")
+    serve.add_argument(
+        "--engine",
+        default="",
+        help="engine binary; defaults to llama-server for gguf and python for sglang",
+    )
     serve.add_argument("--threads", type=int, default=0)
     serve.add_argument(
         "--gpu-layers",
