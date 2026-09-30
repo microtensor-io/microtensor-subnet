@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from microtensor.core.constants import ACCURACY_DECIMALS, MECHANISM_VERSION
 from microtensor.core.hashing import DIGEST_PREFIX, canonical_digest, canonical_hash
 from microtensor.core.protocol import Evaluation, MeasuredEnvelope, Submission
-from microtensor.core.tracks import get_track
+from microtensor.core.tracks import DECISION_PROMPT_VERSION, get_track
 
 SIGNATURE_PREFIX = "ed25519:"
 
@@ -151,6 +151,22 @@ def cost_block(evaluation: Evaluation, *, front_share: float | None = None) -> d
     }
 
 
+def _calibration_fields(evaluation: Evaluation) -> dict[str, Any]:
+    found = evaluation.calibration
+    if not found:
+        return {}
+    return {
+        "accuracy": found.get("accuracy", 0.0),
+        "brier_quality": found.get("brier_quality", 0.0),
+        "brier_skill": found.get("brier_skill", 0.0),
+        "ece": found.get("ece", 0.0),
+        "ece_novel": found.get("ece_novel", 0.0),
+        "level_mae": found.get("level_mae"),
+        "reliability": found.get("reliability", []),
+        "prompt_format": found.get("prompt_format", DECISION_PROMPT_VERSION),
+    }
+
+
 def build_certificate(
     submission: Submission,
     evaluation: Evaluation,
@@ -201,6 +217,7 @@ def build_certificate(
             "corpus_version": evaluation.corpus_version,
             "metric": track.metric,
             "metric_display": track.published_metric,
+            **_calibration_fields(evaluation),
         },
         runtime={
             "decode": decoding,

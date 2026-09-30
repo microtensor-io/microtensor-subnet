@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import json
 import re
 import struct
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
 from microtensor.core.tracks import DECIDE, DECISION_PROMPT_VERSION, Decoding
-from microtensor.harness import decision_prompt
+from microtensor.harness import chat_template, decision_prompt
 from microtensor.harness.contract import (
     EngineError,
     EngineInfo,
@@ -213,6 +215,27 @@ def validate_artifact(path: Path) -> None:
         )
 
 
+CONFIDENCE_DIGITS: Final[int] = 6
+
+
+class _Confidence:
+    def __init__(self, engine: GgufEngine) -> None:
+        self._engine = engine
+        self._seen = -1
+        self.logprobs: list[float] = []
+        self.entropies: list[float] = []
+
+    def __call__(self, input_ids: Any, logits: Any) -> bool:
+        position = len(input_ids)
+        if position <= self._seen:
+            return False
+        self._seen = position
+        logprob, entropy = self._engine._token_confidence()
+        self.logprobs.append(logprob)
+        self.entropies.append(entropy)
+        return False
+
+
 class GgufEngine:
     format = ArtifactFormat.GGUF
 
@@ -222,6 +245,7 @@ class GgufEngine:
         self._model: Any = None
         self._manifest: LoadManifest | None = None
         self._answer_ids: dict[str, int] = {}
+        self._grammars: dict[str, Any] = {}
         self._answer_fault = ""
 
     def load(self, artifact: Path, manifest: LoadManifest) -> None:
@@ -323,6 +347,63 @@ class GgufEngine:
             text = rendered if rendered is not None else request.prompt
         return len(self._model.tokenize(text.encode("utf-8"), add_bos=True, special=True))
 
+    def _token_confidence(self) -> tuple[float, float]:
+        import numpy as np
+
+        row = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
+        logits = np.ctypeslib.as_array(row, shape=(int(self._model.n_vocab()),)).astype(np.float64)
+        top = float(logits.max())
+        shifted = logits - top
+        weights = np.exp(shifted)
+        total = float(weights.sum())
+        log_total = float(np.log(total))
+        logprob = float(shifted[int(logits.argmax())]) - log_total
+        probabilities = weights / total
+        entropy = log_total - float((probabilities * shifted).sum())
+        return round(logprob, CONFIDENCE_DIGITS), round(max(0.0, entropy), CONFIDENCE_DIGITS)
+
+    def tokenize(self, text: str) -> list[int]:
+        if self._model is None:
+            return []
+        return list(self._model.tokenize(text.encode("utf-8"), add_bos=False, special=False))
+
+    def prompt_tokens(self, prompt: str, chat: bool) -> list[int]:
+        if self._model is None:
+            return []
+        rendered = self._render_chat([{"role": "user", "content": prompt}]) if chat else None
+        text = rendered if rendered is not None else prompt
+        return list(self._model.tokenize(text.encode("utf-8"), add_bos=True, special=chat))
+
+    def replay(
+        self, prompt: str, tokens: Sequence[int], chat: bool
+    ) -> tuple[list[float], list[float], list[float]]:
+        import numpy as np
+
+        if self._model is None:
+            raise EngineError("engine was asked to replay before load")
+        vocab = int(self._model.n_vocab())
+        margins: list[float] = []
+        logprobs: list[float] = []
+        entropies: list[float] = []
+        self._model.reset()
+        self._model.eval(self.prompt_tokens(prompt, chat))
+        for token in tokens:
+            if not 0 <= int(token) < vocab:
+                raise EngineError(f"token {token} is outside a vocabulary of {vocab}")
+            row = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
+            logits = np.ctypeslib.as_array(row, shape=(vocab,)).astype(np.float64)
+            top = float(logits.max())
+            shifted = logits - top
+            weights = np.exp(shifted)
+            total = float(weights.sum())
+            log_total = float(np.log(total))
+            margins.append(max(0.0, top - float(logits[int(token)])))
+            logprobs.append(round(float(shifted[int(token)]) - log_total, CONFIDENCE_DIGITS))
+            entropy = log_total - float((weights / total * shifted).sum())
+            entropies.append(round(max(0.0, entropy), CONFIDENCE_DIGITS))
+            self._model.eval([int(token)])
+        return margins, logprobs, entropies
+
     def _answer_scores(self, question: decision_prompt.Question) -> list[float]:
         logits = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
         return [float(logits[self._answer_ids[text]]) for text in question.answers]
@@ -340,7 +421,13 @@ class GgufEngine:
             return Response.failed(request.task_ref, str(exc))
 
         try:
-            rows = [self._decision_tokens(context, question) for question in questions]
+            plan = [(question, decision_prompt.stages(question)) for question in questions]
+            asked = [
+                asked_question
+                for question, staged in plan
+                for asked_question in ((staged[0], *staged[1]) if staged else (question,))
+            ]
+            rows = [self._decision_tokens(context, question) for question in asked]
             window = int(self._model.n_ctx())
             longest = max(len(row) for row in rows)
             if longest > window:
@@ -357,16 +444,26 @@ class GgufEngine:
             shared = int(self._model.n_tokens)
             saved = None if self._partial_rollback_ok() else self._save_sequence()
 
-            answers: dict[str, Any] = {}
-            for question, row in zip(questions, rows, strict=True):
+            found: list[list[float]] = []
+            for question, row in zip(asked, rows, strict=True):
                 if saved is None:
                     self._rewind(shared)
                 else:
                     self._restore_sequence(saved, shared)
                 self._model.eval(row[cut:])
-                shares = decision_prompt.to_grid(
-                    decision_prompt.softmax(self._answer_scores(question))
-                )
+                found.append(decision_prompt.softmax(self._answer_scores(question)))
+
+            answers: dict[str, Any] = {}
+            at = 0
+            for question, staged in plan:
+                if staged is None:
+                    combined = found[at]
+                    at += 1
+                else:
+                    groups = len(staged[1])
+                    combined = decision_prompt.combine(found[at], found[at + 1 : at + 1 + groups])
+                    at += 1 + groups
+                shares = decision_prompt.to_grid(combined)
                 answers[question.name] = decision_prompt.build_answer(question, shares)
             finished = time.perf_counter()
         except Exception as exc:
@@ -415,6 +512,7 @@ class GgufEngine:
         first_token_at = 0.0
         produced: list[str] = []
         count = 0
+        confidence = _Confidence(self)
 
         try:
             # Clear the KV cache first. llama.cpp keeps it between calls and
@@ -442,7 +540,11 @@ class GgufEngine:
                 "mirostat_mode": 0,
                 "seed": SEED,
                 "stream": True,
+                "stopping_criteria": confidence,
             }
+            grammar = self._grammar(request)
+            if grammar is not None:
+                sampler["grammar"] = grammar
 
             # Instruction tasks go through the model's chat template so an
             # instruct model follows the prompt instead of continuing it.
@@ -479,6 +581,8 @@ class GgufEngine:
             ttft_ms=(first_token_at - started) * 1000.0 if first_token_at else 0.0,
             total_ms=(total - started) * 1000.0,
             output_tokens=count,
+            logprobs=tuple(confidence.logprobs),
+            entropies=tuple(confidence.entropies),
         )
 
     def _chat_pieces(self, prompt: str, sampler: dict[str, Any]) -> Any:
@@ -518,33 +622,22 @@ class GgufEngine:
             yield piece
 
     def _render_chat(self, messages: list[dict[str, str]]) -> str | None:
-        """The model's own chat template, rendered with thinking off."""
         template = (getattr(self._model, "metadata", None) or {}).get("tokenizer.chat_template")
-        if not template:
+        return chat_template.render(str(template or ""), messages)
+
+    def _grammar(self, request: Request) -> Any:
+        if not request.grammar:
             return None
-        try:
-            import json as _json
+        key = json.dumps(request.grammar, sort_keys=True)
+        if key not in self._grammars:
+            from llama_cpp import LlamaGrammar
 
-            import jinja2
-
-            environment = jinja2.Environment(  # noqa: S701 - prompt text, not HTML
-                trim_blocks=True, lstrip_blocks=True
-            )
-            environment.filters["tojson"] = _json.dumps
-
-            def _raise(message: str) -> str:
-                raise ValueError(message)
-
-            environment.globals["raise_exception"] = _raise
-            return str(
-                environment.from_string(template).render(
-                    messages=messages,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
-            )
-        except Exception:
-            return None
+            if "json_schema" in request.grammar:
+                built = LlamaGrammar.from_json_schema(request.grammar["json_schema"], verbose=False)
+            else:
+                built = LlamaGrammar.from_string(request.grammar["gbnf"], verbose=False)
+            self._grammars[key] = built
+        return self._grammars[key]
 
     def unload(self) -> None:
         self._model = None

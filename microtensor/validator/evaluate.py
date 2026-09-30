@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from microtensor.core.basemodels import size_floor_bytes
 from microtensor.core.protocol import (
@@ -18,7 +19,7 @@ from microtensor.core.protocol import (
     TaskOutcome,
     evaluate_gate,
 )
-from microtensor.core.tracks import HardwareClass, get_class, get_track
+from microtensor.core.tracks import DECIDE, HardwareClass, Track, get_class, get_track
 from microtensor.envelope.device import POLICY_ENV
 from microtensor.envelope.profiler import plan_for, plan_payload, run_profile
 from microtensor.harness.cascade import CascadeResult, Leg, run_cascade
@@ -26,9 +27,15 @@ from microtensor.harness.contract import Response
 from microtensor.harness.execute import run_tasks
 from microtensor.harness.jail import run_jailed
 from microtensor.harness.limits import Limits
+from microtensor.harness.output import check as check_output
 from microtensor.harness.registry import EngineUnavailable, available, load_builtin
 from microtensor.registry.fetch import ArtifactMismatch, Unfetchable
 from microtensor.registry.fetch import materialise as fetch_artifact
+from microtensor.scoring.calibration import (
+    generation_summary,
+    partition_report,
+    sequence_confidence,
+)
 from microtensor.scoring.execution import (
     ExecutionUnavailable,
     execute_module_rate,
@@ -115,6 +122,8 @@ def _evaluation(
     n_novel: int = 0,
     cascade: CascadeResult | None = None,
     front_only: float = 0.0,
+    calibration: dict[str, Any] | None = None,
+    expected_ms: float | None = None,
 ) -> Evaluation:
     track, hardware_class = participant.competition
     return Evaluation(
@@ -137,9 +146,40 @@ def _evaluation(
         n_novel=n_novel,
         corpus_version=tasks.corpus_version,
         resolve_rate=cascade.resolve_rate if cascade else 1.0,
-        expected_ms=_expected_ms(cascade, measured),
+        expected_ms=_expected_ms(cascade, measured) if expected_ms is None else expected_ms,
         front_only_score=front_only,
         system_digest=participant.manifest.system_digest,
+        calibration=dict(calibration or {}),
+    )
+
+
+def _calibration(tasks: RoundTasks, by_ref: Mapping[str, Response]) -> dict[str, Any]:
+    def pairs(bucket: Sequence[Task]) -> list[tuple[Any, Any, Any]]:
+        found: list[tuple[Any, Any, Any]] = []
+        for task in bucket:
+            response = by_ref.get(task.ref)
+            output = response.output if response and response.ok else None
+            found.append((output, task.gold, task.inputs.get("decision")))
+        return found
+
+    return partition_report(
+        {ROTATING: pairs(tasks.rotating), FIXED: pairs(tasks.fixed), NOVEL: pairs(tasks.novel)},
+        NOVEL,
+    )
+
+
+def _generation_calibration(
+    outcomes: Sequence[TaskOutcome], by_ref: Mapping[str, Response]
+) -> dict[str, Any] | None:
+    responses = [by_ref.get(outcome.task_ref) for outcome in outcomes]
+    if not any(response is not None and response.logprobs for response in responses):
+        return None
+    return generation_summary(
+        (
+            sequence_confidence(response.logprobs) if response is not None and response.ok else 0.0,
+            outcome.score,
+        )
+        for outcome, response in zip(outcomes, responses, strict=True)
     )
 
 
@@ -208,7 +248,13 @@ def profile(
     return None, f"profiling failed: {result.error}"
 
 
-def _outcome(task: Task, response: Response | None, metric: str, partition: str) -> TaskOutcome:
+def _outcome(
+    task: Task,
+    response: Response | None,
+    metric: str,
+    partition: str,
+    track: Track | None = None,
+) -> TaskOutcome:
     if response is None or not response.ok:
         return TaskOutcome(
             task_ref=task.ref,
@@ -229,6 +275,16 @@ def _outcome(task: Task, response: Response | None, metric: str, partition: str)
                 error=f"solution screened: {reason}",
                 fault=Fault.ARTIFACT,
             )
+    invalid = check_output(track, response) if track is not None else ""
+    if invalid:
+        return TaskOutcome(
+            task_ref=task.ref,
+            score=0.0,
+            completed=True,
+            partition=partition,
+            error=f"invalid output: {invalid}",
+            latency_ms=response.total_ms,
+        )
     if has_module_tests(task.gold):
         value = execute_module_rate(str(response.output), task.gold["tests"])
     else:
@@ -304,15 +360,18 @@ def outcomes_from(
     that decides emission is the quality of what the system finally answered.
     """
     by_ref = {leg.task_ref: leg for leg in legs}
+    track = get_track(tasks.track)
 
     end_to_end: list[TaskOutcome] = []
     front_only: list[TaskOutcome] = []
     for task in tasks.all:
         leg = by_ref.get(task.ref)
         partition = partition_of(tasks, task.ref)
-        end_to_end.append(_outcome(task, leg.response if leg else None, metric, partition))
+        end_to_end.append(
+            _outcome(task, leg.response if leg else None, metric, partition, track)
+        )
         front_only.append(
-            _outcome(task, leg.front_response if leg else None, metric, partition)
+            _outcome(task, leg.front_response if leg else None, metric, partition, track)
         )
     return tuple(end_to_end), tuple(front_only)
 
@@ -326,7 +385,8 @@ def score(
     *,
     cpu_seconds: int = 0,
 ) -> tuple[tuple[TaskOutcome, ...], dict[str, Response], str]:
-    metric = get_track(tasks.track).metric
+    track = get_track(tasks.track)
+    metric = track.metric
     requests = to_requests(
         tasks.all, tasks.seed, tasks.track, participant.manifest.artifact_digest
     )
@@ -363,6 +423,7 @@ def score(
                 by_ref.get(task.ref),
                 metric,
                 partition_of(tasks, task.ref),
+                track,
             )
             for task in tasks.all
         )
@@ -439,11 +500,34 @@ def _extraction_partition_scores(
     )
 
 
+
+def _decision_partition_scores(
+    tasks: RoundTasks, by_ref: dict[str, Response]
+) -> tuple[float, float, float, int, int, int]:
+    from microtensor.scoring.metrics import decision_skill
+
+    buckets: dict[str, list[tuple[Any, Any, Any]]] = {ROTATING: [], FIXED: [], NOVEL: []}
+    for task in tasks.all:
+        response = by_ref.get(task.ref)
+        output = response.output if response and response.ok else None
+        spec = task.inputs.get("decision")
+        buckets[partition_of(tasks, task.ref)].append((output, task.gold, spec))
+    return (
+        decision_skill(buckets[ROTATING]),
+        decision_skill(buckets[FIXED]),
+        decision_skill(buckets[NOVEL]),
+        len(buckets[ROTATING]),
+        len(buckets[FIXED]),
+        len(buckets[NOVEL]),
+    )
+
+
 # Metrics whose ranked quality is aggregated over the whole document set rather
 # than averaged per task. Registering here keeps the dispatch in one place.
 _DATASET_METRICS = {
     "map_at_iou": _detection_partition_scores,
     "entity_micro_f1": _extraction_partition_scores,
+    "decision_brier": _decision_partition_scores,
 }
 
 
@@ -454,9 +538,18 @@ def evaluate_participant(
     *,
     cpu_seconds: int = 0,
     hardware: HardwareClass | None = None,
+    escalations: Mapping[str, Any] | None = None,
 ) -> Evaluation:
     hardware = hardware or get_class(participant.competition[1])
     artifact = materialise(context, participant)
+
+    if participant.system.full:
+        from microtensor.harness.package import package_reason
+
+        reason = package_reason(artifact, participant.system)
+        if reason:
+            log.info("%s rejected: %s", participant.hotkey, reason)
+            return _evaluation(participant, tasks)
 
     measured, failure = profile(context, participant, artifact, hardware, tasks.seed)
     if measured is None:
@@ -472,6 +565,19 @@ def evaluate_participant(
     if not gate.admitted:
         log.info("%s inadmissible: %s", participant.hotkey, gate.reason)
         return _evaluation(participant, tasks, gate=gate, measured=measured)
+
+    if participant.system.full:
+        return _evaluate_full(
+            context,
+            participant,
+            artifact,
+            hardware,
+            tasks,
+            gate,
+            measured,
+            dict(escalations or {}),
+            _cpu_budget(context, cpu_seconds),
+        )
 
     cascade: CascadeResult | None = None
     front_only_score = 0.0
@@ -505,6 +611,11 @@ def evaluate_participant(
         rotating, fixed, novel, n_rotating, n_fixed, n_novel = dataset_scorer(tasks, by_ref)
     else:
         rotating, fixed, novel, n_rotating, n_fixed, n_novel = partition_scores(outcomes)
+    calibration = (
+        _calibration(tasks, by_ref)
+        if get_track(tasks.track).answer_mode == DECIDE
+        else _generation_calibration(outcomes, by_ref)
+    )
     return _evaluation(
         participant,
         tasks,
@@ -518,6 +629,168 @@ def evaluate_participant(
         n_novel=n_novel,
         cascade=cascade,
         front_only=front_only_score,
+        calibration=calibration,
+    )
+
+
+LIVE_ROWS = 500
+
+
+def _evaluate_full(
+    context: ValidatorContext,
+    participant: Participant,
+    artifact: Path,
+    hardware: HardwareClass,
+    tasks: RoundTasks,
+    gate: GateResult,
+    measured: MeasuredEnvelope,
+    escalations: dict[str, Any],
+    cpu_seconds: int,
+) -> Evaluation:
+    from microtensor.scoring.metrics import score_task
+    from microtensor.scoring.system import COST_UNITS_PER_USD, score_system
+    from microtensor.validator.live import GatewaySystemClient, chain_verifier, run_live
+    from microtensor.validator.verify_system import jailed_verify
+
+    config = context.config
+    system = participant.system
+    if not config.gateway_url or not config.gateway_secret or system.endpoint is None:
+        raise Abstain(
+            "full systems are tested live through the gateway; "
+            "set MT_GATEWAY_URL and MT_GATEWAY_SECRET"
+        )
+    client = GatewaySystemClient(
+        config.gateway_url, config.gateway_secret, participant.hotkey, system.endpoint.worker
+    )
+    live = run_live(
+        client,
+        system,
+        hotkey=participant.hotkey,
+        round_index=tasks.round_index,
+        tasks=tasks.all,
+        verify=chain_verifier(),
+    )
+    for ref, reason in live.failures[:5]:
+        log.info("%s %s: %s", participant.hotkey, ref, reason)
+    if not live.traces:
+        log.info("%s scored zero: no task produced a verified trace", participant.hotkey)
+        return _evaluation(participant, tasks, measured=measured)
+
+    track = get_track(tasks.track)
+    result = run_jailed(
+        jailed_verify,
+        str(artifact),
+        system.body(),
+        str(artifact),
+        participant.manifest.load.to_dict(),
+        [trace.to_dict() for trace in live.traces],
+        {task.ref: (task.prompt, dict(task.inputs)) for task in tasks.all},
+        tasks.seed,
+        [model.to_dict() for model in escalations.values()],
+        track.chat,
+        limits=_limits(hardware, cpu_seconds),
+        allow_unsandboxed=config.allow_unsandboxed,
+    )
+    if not result.ok:
+        if result.fault is Fault.INFRASTRUCTURE:
+            raise Abstain(
+                f"{participant.hotkey}: verification infrastructure failed: {result.error}"
+            )
+        log.info("%s not certified: verification failed: %s", participant.hotkey, result.error)
+        return _evaluation(participant, tasks, measured=measured)
+    verdict = dict(result.value)
+    if not verdict.get("certified"):
+        log.info("%s not certified: %s", participant.hotkey, "; ".join(verdict.get("reasons", [])))
+        return _evaluation(participant, tasks, measured=measured)
+
+    score = score_system(
+        live.traces,
+        {task.ref: task.gold for task in tasks.all},
+        track.metric,
+        escalations,
+        small_ms=_expected_ms(None, measured),
+        profiles={task.ref: task.profile for task in tasks.all},
+    )
+    answered = live.answered
+    triggers = dict(verdict.get("triggers") or {})
+    rows = []
+    for task in tasks.all[:LIVE_ROWS]:
+        trace = answered.get(task.ref)
+        if trace is None:
+            rows.append({"task_ref": task.ref, "answered": False, "profile": task.profile})
+            continue
+        price = (
+            escalations.get(f"{trace.escalation.model}@{trace.escalation.revision}")
+            if trace.escalation is not None
+            else None
+        )
+        rows.append(
+            {
+                "task_ref": task.ref,
+                "answered": True,
+                "profile": task.profile,
+                "escalated": trace.escalated,
+                "decided_at_ms": round(trace.router.at_ms, 1),
+                "total_ms": round(trace.total_ms, 1),
+                "trigger": triggers.get(task.ref, ""),
+                "features": {k: round(v, 4) for k, v in trace.router.features.items()},
+                "confidence": round(trace.small.confidence, 4),
+                "small_usd": score.small_usd,
+                "escalation_tokens": (
+                    trace.escalation.prompt_tokens + trace.escalation.completion_tokens
+                    if trace.escalation is not None
+                    else 0
+                ),
+                "escalation_usd": round(
+                    price.cost_usd(
+                        trace.escalation.prompt_tokens, trace.escalation.completion_tokens
+                    )
+                    if price is not None and trace.escalation is not None
+                    else 0.0,
+                    9,
+                ),
+                "score": round(score_task(track.metric, trace.final, task.gold), 4),
+                "small_score": round(score_task(track.metric, trace.small.output, task.gold), 4),
+            }
+        )
+    outcomes = tuple(
+        TaskOutcome(
+            task_ref=task.ref,
+            score=score_task(track.metric, answered[task.ref].final, task.gold)
+            if task.ref in answered
+            else 0.0,
+            completed=task.ref in answered,
+            partition=partition_of(tasks, task.ref),
+            latency_ms=answered[task.ref].total_ms if task.ref in answered else 0.0,
+        )
+        for task in tasks.all
+    )
+    rotating, fixed, novel, n_rotating, n_fixed, n_novel = partition_scores(outcomes)
+    log.info(
+        "%s full system: quality %.4f, small alone %.4f, escalated %.1f%%, waste %.1f%%, "
+        "misses %.1f%%, cost $%.6f per task",
+        participant.hotkey,
+        score.quality,
+        score.small_quality,
+        score.escalation_rate * 100,
+        score.waste * 100,
+        score.misses * 100,
+        score.cost_usd,
+    )
+    return _evaluation(
+        participant,
+        tasks,
+        gate=gate,
+        measured=measured,
+        rotating=rotating,
+        fixed=fixed,
+        novel=novel,
+        n_rotating=n_rotating,
+        n_fixed=n_fixed,
+        n_novel=n_novel,
+        front_only=score.small_quality,
+        calibration={**score.to_dict(), "live": rows},
+        expected_ms=score.cost_usd * COST_UNITS_PER_USD,
     )
 
 
@@ -535,6 +808,7 @@ def evaluate_competition(
     cpu_seconds: int = 0,
     hardware: HardwareClass | None = None,
     on_evaluated: Callable[[Evaluation, Participant], None] | None = None,
+    escalations: Mapping[str, Any] | None = None,
 ) -> CompetitionResult:
     evaluations: list[Evaluation] = []
 
@@ -544,7 +818,12 @@ def evaluate_competition(
             attempt += 1
             try:
                 evaluation = evaluate_participant(
-                    context, participant, tasks, cpu_seconds=cpu_seconds, hardware=hardware
+                    context,
+                    participant,
+                    tasks,
+                    cpu_seconds=cpu_seconds,
+                    hardware=hardware,
+                    escalations=escalations,
                 )
                 break
             except ArtifactMismatch as exc:

@@ -245,3 +245,49 @@ def judge(found: Statistic, calibration: Calibration) -> Judgement:
         reason="",
         statistic=found,
     )
+
+
+DECISION_QUANTILE: Final[float] = 0.99
+
+
+def decision_gap(served: Any, recomputed: Any) -> float:
+    theirs = (served or {}).get("answers") if isinstance(served, dict) else None
+    ours = (recomputed or {}).get("answers") if isinstance(recomputed, dict) else None
+    if not isinstance(theirs, dict) or not isinstance(ours, dict):
+        raise VerificationError("a decision answer is missing its answers")
+    if set(theirs) != set(ours):
+        return math.inf
+    worst = 0.0
+    for name, answer in ours.items():
+        expected = answer.get("probabilities") or {}
+        found = (theirs.get(name) or {}).get("probabilities") or {}
+        if set(expected) != set(found):
+            return math.inf
+        for label, share in expected.items():
+            worst = max(worst, abs(float(found[label]) - float(share)))
+    return worst
+
+
+def decision_tolerance(honest_gaps: Sequence[float]) -> float:
+    return _quantile(sorted(float(gap) for gap in honest_gaps), DECISION_QUANTILE)
+
+
+def judge_decision(served: Any, recomputed: Any, tolerance: float) -> Judgement:
+    try:
+        gap = decision_gap(served, recomputed)
+    except VerificationError as exc:
+        return Judgement(verdict=UNPROVEN, score=0.0, threshold=tolerance, reason=str(exc))
+    if not math.isfinite(tolerance) or tolerance < 0.0:
+        return Judgement(
+            verdict=UNPROVEN, score=gap, threshold=tolerance, reason="no calibrated tolerance"
+        )
+    if gap <= tolerance:
+        return Judgement(
+            verdict=PASS, score=gap, threshold=tolerance, reason="within honest spread"
+        )
+    return Judgement(
+        verdict=CHEAT,
+        score=gap,
+        threshold=tolerance,
+        reason="the answer probabilities are not what the certified artifact produces",
+    )

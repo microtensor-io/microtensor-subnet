@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any
 
+from microtensor.core.hashing import canonical_json
 from microtensor.core.protocol import Fault
 
 REPORT_VERSION = 2
@@ -16,6 +17,10 @@ def canonical(body: dict[str, Any]) -> bytes:
 
 def body_hash(body: dict[str, Any]) -> str:
     return f"sha256:{sha256(canonical(body)).hexdigest()}"
+
+
+def _calibration(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +93,7 @@ class Report:
     environment_digest: str = ""
     fault: Fault | None = None
     fault_reason: str = ""
+    calibration: dict[str, Any] | None = None
     signature: str = ""
 
     def body(self) -> dict[str, Any]:
@@ -111,7 +117,11 @@ class Report:
             "environment_digest": self.environment_digest,
             "fault": self.fault.value if self.fault else None,
             "fault_reason": self.fault_reason,
+            **({"calibration": self.calibration} if self.calibration is not None else {}),
         }
+
+    def signed_message(self) -> bytes:
+        return canonical_json(self.body())
 
     def digest(self) -> str:
         return body_hash(self.body())
@@ -135,6 +145,7 @@ class Report:
             environment_digest=self.environment_digest,
             fault=self.fault,
             fault_reason=self.fault_reason,
+            calibration=self.calibration,
             signature=signature,
         )
 
@@ -159,5 +170,6 @@ class Report:
             environment_digest=str(raw.get("environment_digest", "")),
             fault=Fault(fault) if fault else None,
             fault_reason=str(raw.get("fault_reason", "")),
+            calibration=_calibration(raw.get("calibration")),
             signature=str(raw.get("signature", "")),
         )

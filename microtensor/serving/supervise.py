@@ -285,6 +285,20 @@ class Bench:
 
         return self.clients.get(url, HttpEngine)(url)
 
+    def deciders(self) -> dict[str, Any]:
+        from microtensor.serving.decide import DecideError, decider_for
+
+        found: dict[str, Any] = {}
+        for model, engine in self.engines.items():
+            try:
+                chosen = decider_for(engine.artifact, self.build(engine.url))
+            except (DecideError, OSError, ImportError) as exc:
+                log.info("%s will not serve decisions: %s", model, exc)
+                continue
+            if chosen is not None:
+                found[model] = chosen
+        return found
+
     def serves(self) -> tuple[Served, ...]:
         if self.last is None:
             return ()
@@ -509,7 +523,10 @@ async def supervise(
 
         log.info("serving %s", ", ".join(f"{h.model} at {h.concurrency}" for h in held.hold))
         serving: asyncio.Task[None] = asyncio.create_task(
-            serve(bench.settings(), Pool(bench.serves(), build=bench.build))
+            serve(
+                bench.settings(),
+                Pool(bench.serves(), build=bench.build, deciders=bench.deciders()),
+            )
         )
         try:
             await _until_stale(bench, serving, stop, review_seconds)

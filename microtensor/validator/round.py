@@ -371,6 +371,7 @@ def _measure_batch(
             cpu_seconds=arena.cpu_seconds_per_artifact if arena else 0,
             hardware=hardware,
             on_evaluated=publish,
+            escalations=plan.escalations.get((track, hardware_class), {}),
         )
     except Abstain as exc:
         if leasing and holding:
@@ -714,7 +715,9 @@ def _run_round(
 
     try:
         require_engines()
-        roster = discover(context, snapshot, round_, plan.allowlists)
+        roster = discover(
+            context, snapshot, round_, plan.allowlists, escalations=plan.escalations
+        )
     except Abstain as exc:
         return abstain(str(exc))
     except ProvenanceUnavailable as exc:

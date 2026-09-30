@@ -14,6 +14,10 @@ FIXED: Final[str] = "fixed"
 TRAIN: Final[str] = "train"
 NOVEL: Final[str] = "novel"
 PARTITIONS: Final[frozenset[str]] = frozenset({ROTATING, FIXED, TRAIN, NOVEL})
+ROUTINE: Final[str] = "routine"
+UNUSUAL: Final[str] = "unusual"
+PROFILES: Final[frozenset[str]] = frozenset({ROUTINE, UNUSUAL})
+MIN_UNUSUAL_SHARE: Final[float] = 0.2
 SCORED: Final[frozenset[str]] = frozenset({ROTATING, FIXED, NOVEL})
 
 
@@ -29,8 +33,14 @@ class Task:
     partition: str
     inputs: dict[str, Any] = field(default_factory=dict)
     max_output_tokens: int = 512
+    profile: str = ""
 
     def __post_init__(self) -> None:
+        if self.profile and self.profile not in PROFILES:
+            raise CorpusError(
+                f"task {self.ref!r} has profile {self.profile!r}; "
+                f"expected one of {sorted(PROFILES)}"
+            )
         if not self.ref:
             raise CorpusError("every task needs a stable reference")
         if not self.prompt:
@@ -89,6 +99,7 @@ class Corpus:
                         "gold": task.gold,
                         "partition": task.partition,
                         "max_output_tokens": task.max_output_tokens,
+                        **({"profile": task.profile} if task.profile else {}),
                     }
                     for task in self.tasks
                 ],
@@ -140,6 +151,7 @@ def _parse(line: str, number: int, path: Path) -> Task:
             partition=str(payload.get("partition", ROTATING)),
             inputs=dict(payload.get("inputs", {})),
             max_output_tokens=int(payload.get("max_output_tokens", 512)),
+            profile=str(payload.get("profile", "")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise CorpusError(f"{path}:{number} is malformed: {exc}") from exc
@@ -263,6 +275,25 @@ def unresolved_databases(corpus: Corpus) -> list[str]:
                 missing.append(task.ref)
                 break
     return missing
+
+
+def profile_problems(corpus: Corpus, min_unusual: float = MIN_UNUSUAL_SHARE) -> list[str]:
+    scored = [t for t in corpus.tasks if t.partition != TRAIN]
+    if not scored:
+        return []
+    unlabelled = [t.ref for t in scored if not t.profile]
+    if unlabelled:
+        return [
+            f"{len(unlabelled)} scored task(s) carry no routine or unusual profile, "
+            f"for example {unlabelled[0]}"
+        ]
+    unusual = sum(1 for t in scored if t.profile == UNUSUAL) / len(scored)
+    if unusual < min_unusual or unusual >= 1.0:
+        return [
+            f"unusual inputs are {unusual:.0%} of scored tasks; a full system arena needs "
+            f"both kinds, at least {min_unusual:.0%} unusual"
+        ]
+    return []
 
 
 def corpus_digest(corpora: dict[str, Corpus]) -> str:

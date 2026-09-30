@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from microtensor.core.constants import (
     FIXED_FRACTION,
@@ -11,8 +12,10 @@ from microtensor.core.constants import (
     TASKS_PER_ROUND,
 )
 from microtensor.core.hashing import round_seed, select_deterministic, task_nonce
-from microtensor.core.tracks import get_track
+from microtensor.core.outputs import grammar_for
+from microtensor.core.tracks import DECIDE, get_track
 from microtensor.harness.contract import Request
+from microtensor.harness.decision_prompt import shuffle_options
 from microtensor.tasks.corpus import (
     FIXED,
     NOVEL,
@@ -112,16 +115,25 @@ def to_requests(
         Request(
             task_ref=task.ref,
             prompt=task.prompt,
-            inputs=dict(task.inputs),
+            inputs=_inputs_for(task, seed, track_.answer_mode),
             max_output_tokens=task.max_output_tokens,
             decoding=decoding,
             chat=track_.chat,
             mode=track_.answer_mode,
+            grammar=grammar_for(track_),
+            confidence_output=track_.confidence_output,
             seed=int(task_nonce(seed, task.ref)[:8], 16) if decoding.value == "seeded" else 0,
             nonce=task_nonce(seed, task.ref, artifact_digest),
         )
         for task in tasks
     ]
+
+
+def _inputs_for(task: Task, seed: str, answer_mode: str) -> dict[str, Any]:
+    inputs = dict(task.inputs)
+    if answer_mode == DECIDE and "decision" in inputs:
+        inputs["decision"] = shuffle_options(inputs["decision"], task_nonce(seed, task.ref))
+    return inputs
 
 
 def partition_of(tasks: RoundTasks, ref: str) -> str:

@@ -20,6 +20,8 @@ from microtensor.core.constants import (
     SUBMISSION_CLOSES_BEFORE_BLOCKS,
     TASKS_PER_ROUND,
 )
+from microtensor.core.inputs import input_format
+from microtensor.core.outputs import published
 from microtensor.core.tracks import (
     CLASSES,
     DECIDE,
@@ -86,6 +88,11 @@ def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
     environment = value.get("environment_digest")
     if environment:
         block["environment_digest"] = str(environment)
+    escalation = [dict(e) for e in value.get("escalation_models") or [] if isinstance(e, dict)]
+    if escalation:
+        block["escalation_models"] = sorted(
+            escalation, key=lambda e: (str(e.get("model")), str(e.get("revision")))
+        )
     return block
 
 
@@ -147,6 +154,10 @@ def _track_block(track: Track) -> dict[str, Any]:
     block: dict[str, Any] = {"metric": track.metric, "emission_share": track.emission_share}
     if track.answer_mode != GENERATE:
         block["answer_mode"] = track.answer_mode
+    if track.output_type:
+        block["output"] = published(track)
+    if track.input_format:
+        block["input"] = input_format(track.input_format)
     return block
 
 

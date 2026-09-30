@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from microtensor.core.constants import (
     ALLOWED_ROUTER_FEATURES,
@@ -46,7 +47,30 @@ class Clause:
         return bool(OPS[self.op](features[self.feature], self.value))
 
 
+GRAM: Final[int] = 4
+MAX_TYPICAL: Final[int] = 200_000
+
+
+def grams(text: str) -> set[int]:
+    folded = " ".join(text.lower().split())
+    return {
+        int.from_bytes(
+            hashlib.blake2b(folded[i : i + GRAM].encode(), digest_size=8).digest(), "big"
+        )
+        for i in range(max(0, len(folded) - GRAM + 1))
+    }
+
+
+def typicality(text: str, reference: frozenset[int]) -> float:
+    found = grams(text)
+    if not found or not reference:
+        return 0.0
+    return len(found & reference) / len(found)
+
+
 class Router:
+    typical: frozenset[int] = frozenset()
+
     """Interpreted routing policy. Participants supply data, never code."""
 
     features: tuple[str, ...]
@@ -111,7 +135,14 @@ def load_threshold(payload: dict[str, Any]) -> ThresholdRouter:
         default = Decision(str(payload.get("default", Decision.RESOLVE.value)))
     except ValueError as exc:
         raise RouterError(f"unknown default decision: {exc}") from exc
-    return ThresholdRouter([_clause(c, i) for i, c in enumerate(raw_clauses)], default)
+    router = ThresholdRouter([_clause(c, i) for i, c in enumerate(raw_clauses)], default)
+    typical = payload.get("typical") or []
+    if not isinstance(typical, list) or len(typical) > MAX_TYPICAL:
+        raise RouterError(f"a router carries at most {MAX_TYPICAL} typical input grams")
+    if any(isinstance(g, bool) or not isinstance(g, int) or g < 0 for g in typical):
+        raise RouterError("typical input grams must be non negative integers")
+    router.typical = frozenset(typical)
+    return router
 
 
 def _check_graph(model: Any) -> None:
@@ -197,6 +228,9 @@ def load_router(path: Path, declared_features: Sequence[str]) -> Router:
     raise RouterError(f"unrecognised router artifact {path.name!r}; expected .json or .onnx")
 
 
+ANSWER_FEATURE_DIGITS: Final[int] = 6
+
+
 def features_from(
     response: Response,
     *,
@@ -219,7 +253,42 @@ def features_from(
         "max_entropy": max(entropies) if entropies else 0.0,
         "schema_valid": 1.0 if schema_valid else 0.0,
         "input_tokens": float(prompt_tokens),
+        **answer_features(response.output),
     }
+
+
+def answer_features(output: Any) -> dict[str, float]:
+    answers = output.get("answers") if isinstance(output, dict) else None
+    tops: list[float] = []
+    margins: list[float] = []
+    spreads: list[float] = []
+    for answer in (answers or {}).values():
+        shares = answer.get("probabilities") if isinstance(answer, dict) else None
+        if not isinstance(shares, dict) or len(shares) < 2:
+            continue
+        ranked = sorted((float(v) for v in shares.values()), reverse=True)
+        tops.append(ranked[0])
+        margins.append(ranked[0] - ranked[1])
+        entropy = -math.fsum(p * math.log(p) for p in ranked if p > 0.0)
+        spreads.append(entropy / math.log(len(ranked)))
+    if not tops:
+        return {"answer_prob": 0.0, "answer_margin": 0.0, "answer_entropy": 0.0}
+    return {
+        "answer_prob": round(min(tops), ANSWER_FEATURE_DIGITS),
+        "answer_margin": round(min(margins), ANSWER_FEATURE_DIGITS),
+        "answer_entropy": round(max(spreads), ANSWER_FEATURE_DIGITS),
+    }
+
+
+def explain(router: Router | None, features: Mapping[str, float]) -> str:
+    if router is None:
+        return "no router"
+    if isinstance(router, ThresholdRouter):
+        for clause in router.clauses:
+            if clause.holds(features):
+                return f"{clause.feature} {clause.op} {clause.value:g}"
+        return f"default {router.default.value}"
+    return "linear model"
 
 
 def decide(router: Router | None, features: Mapping[str, float]) -> Decision:

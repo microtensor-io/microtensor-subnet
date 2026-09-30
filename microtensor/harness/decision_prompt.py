@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -14,6 +15,8 @@ QUESTION_TYPES: Final[frozenset[str]] = frozenset({CHOICE, NOUL, SCORE})
 LETTERS: Final[str] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 BOOLEANS: Final[tuple[str, str]] = ("false", "true")
 ANSWER_STRINGS: Final[tuple[str, ...]] = (*LETTERS, *BOOLEANS)
+MAX_OPTIONS: Final[int] = len(LETTERS) * len(LETTERS)
+GROUP_INSTRUCTION: Final[str] = "First choose the group that contains the best option."
 GRID: Final[int] = 1_000_000
 
 SYSTEM: Final[str] = (
@@ -73,15 +76,51 @@ def _question(name: str, body: Any) -> Question:
         descriptions = tuple(str(meaning) for meaning in criteria)
         labels = tuple(str(level) for level in range(len(descriptions)))
 
-    if not 2 <= len(labels) <= len(LETTERS):
+    limit = MAX_OPTIONS if kind == CHOICE else len(LETTERS)
+    if not 2 <= len(labels) <= limit:
         raise DecisionError(
-            f"question {name!r} has {len(labels)} options; a decision takes 2 to {len(LETTERS)}"
+            f"question {name!r} has {len(labels)} options; a decision takes 2 to {limit}"
         )
     if len(set(labels)) != len(labels):
         raise DecisionError(f"question {name!r} repeats an option label")
     return Question(
         name=name, kind=kind, instructions=instructions, labels=labels, descriptions=descriptions
     )
+
+
+def stages(question: Question) -> tuple[Question, tuple[Question, ...]] | None:
+    if len(question.labels) <= len(LETTERS):
+        return None
+    groups = math.ceil(len(question.labels) / len(LETTERS))
+    size = math.ceil(len(question.labels) / groups)
+    spans = [
+        range(start, min(start + size, len(question.labels)))
+        for start in range(0, len(question.labels), size)
+    ]
+    second = tuple(
+        Question(
+            name=question.name,
+            kind=CHOICE,
+            instructions=question.instructions,
+            labels=tuple(question.labels[i] for i in span),
+            descriptions=tuple(question.descriptions[i] for i in span),
+        )
+        for span in spans
+    )
+    first = Question(
+        name=question.name,
+        kind=CHOICE,
+        instructions=f"{question.instructions}\n{GROUP_INSTRUCTION}",
+        labels=tuple(f"group {index + 1}" for index in range(len(second))),
+        descriptions=tuple(", ".join(stage.labels) for stage in second),
+    )
+    return first, second
+
+
+def combine(first: Sequence[float], second: Sequence[Sequence[float]]) -> list[float]:
+    if len(first) != len(second):
+        raise DecisionError("a two stage decision needs one second stage per group")
+    return [group * share for group, shares in zip(first, second, strict=True) for share in shares]
 
 
 def parse(spec: Any) -> tuple[str, tuple[Question, ...]]:
@@ -179,3 +218,31 @@ def build_answer(question: Question, micros: Sequence[int]) -> dict[str, Any]:
     else:
         answer[SCORE] = sum(level * share for level, share in enumerate(micros)) / GRID
     return answer
+
+
+def shuffle_options(spec: Any, nonce: str) -> Any:
+    if not isinstance(spec, Mapping):
+        return spec
+    questions = spec.get("questions")
+    if not isinstance(questions, Mapping):
+        return spec
+    shuffled: dict[str, Any] = {}
+    order = sorted(
+        questions, key=lambda name: hashlib.sha256(f"{nonce}::{name}".encode()).hexdigest()
+    )
+    for name in order:
+        body = questions[name]
+        criteria = body.get("criteria") if isinstance(body, Mapping) else None
+        if (
+            not isinstance(body, Mapping)
+            or body.get("type") != CHOICE
+            or not isinstance(criteria, Mapping)
+        ):
+            shuffled[name] = body
+            continue
+        order = sorted(
+            criteria,
+            key=lambda label: hashlib.sha256(f"{nonce}:{name}:{label}".encode()).hexdigest(),
+        )
+        shuffled[name] = {**body, "criteria": {label: criteria[label] for label in order}}
+    return {**spec, "questions": shuffled}
