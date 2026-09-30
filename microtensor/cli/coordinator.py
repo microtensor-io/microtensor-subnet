@@ -157,6 +157,24 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     anchor.set_defaults(handler=_anchor)
 
+    floor = inner.add_parser(
+        "floor", help="measure the untrained base model and set it as the arena's quality floor"
+    )
+    add_common_arguments(floor)
+    _add_server_arguments(floor)
+    floor.add_argument("--track", required=True)
+    floor.add_argument("--class", dest="hardware_class", required=True)
+    floor.add_argument("--artifact", required=True, type=Path, help="the base model file")
+    floor.add_argument("--corpus", required=True, type=Path, help="the corpus directory")
+    floor.add_argument("--max-input-tokens", type=int, default=4096)
+    floor.add_argument("--limit", type=int, default=0, help="tasks to run, 0 for all")
+    floor.add_argument("--arena-id", type=int, help="the server arena to set the floor on")
+    floor.add_argument(
+        "--apply", action="store_true", help="set the floor on the server arena after measuring"
+    )
+    floor.add_argument("--allow-unsandboxed", action="store_true")
+    floor.set_defaults(handler=_floor)
+
     cfg = inner.add_parser("config", help="print the served config and its hash")
     add_common_arguments(cfg)
     cfg.set_defaults(handler=_config)
@@ -544,6 +562,59 @@ def _open(args: argparse.Namespace) -> int:
     print(f"  {_config_hash_for(source, server)}")
     print(f"  mt coordinator anchor --round {round_.index}")
     print("Until that lands, workers refuse the round rather than measure against it.")
+    return 0
+
+
+def _floor(args: argparse.Namespace) -> int:
+    from microtensor.core.constants import CORPUS_VERSION
+    from microtensor.core.protocol import ArtifactFormat, LoadManifest
+    from microtensor.core.system import SystemManifest
+    from microtensor.miner.simulate import SimulationError, simulate
+    from microtensor.scoring import execution
+    from microtensor.tasks.corpus import load_all
+
+    artifact = Path(args.artifact)
+    if not artifact.is_file():
+        return fail(f"no base model at {artifact}")
+    corpus = load_all(args.corpus, CORPUS_VERSION).get(args.track)
+    if corpus is None:
+        return fail(f"no corpus for {args.track} under {args.corpus}")
+    execution.configure(allow_unsandboxed=bool(args.allow_unsandboxed))
+    load = LoadManifest(
+        format=ArtifactFormat.GGUF,
+        quantization="",
+        entrypoint=artifact.name,
+        max_input={"tokens": int(args.max_input_tokens)},
+    )
+    try:
+        result = simulate(
+            artifact.parent,
+            load,
+            SystemManifest.single("sha256:base", args.hardware_class),
+            corpus.fixed,
+            args.hardware_class,
+            metric=corpus.metric,
+            track=args.track,
+            limit=args.limit,
+            seed="base-model-floor",
+        )
+    except SimulationError as exc:
+        return fail(str(exc))
+
+    measured = round(min(max(result.end_to_end, 0.0), 0.9999), 4)
+    print(f"arena   {args.track}/{args.hardware_class}")
+    print(f"tasks   {result.tasks} from the fixed partition")
+    print(f"floor   {measured}  (the untrained base model under the harness)")
+    if not args.apply:
+        print("dry run: pass --apply --arena-id N to set it; it takes effect at the next round")
+        return 0
+    if args.arena_id is None:
+        return fail("--apply needs --arena-id")
+    server = _server(args)
+    if server is None:
+        return fail("no server is configured, so the floor cannot be set")
+    server.set_quality_floor(int(args.arena_id), measured)
+    print(f"set: arena {args.arena_id} floor is {measured} from the next round")
     return 0
 
 

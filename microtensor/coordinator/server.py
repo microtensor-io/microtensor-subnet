@@ -230,6 +230,12 @@ class ServerClient:
             body["uids"] = {str(k): int(v) for k, v in uids.items()}
         return self._call("POST", "/v1/ingest/catalogue", body) or {}
 
+    def set_quality_floor(self, arena_id: int, floor: float) -> dict[str, Any]:
+        return (
+            self._call("PATCH", f"/v1/operator/arenas/{int(arena_id)}", {"quality_floor": floor})
+            or {}
+        )
+
     def directives(self) -> list[dict[str, Any]]:
         found = self._call("GET", "/v1/control/directives") or []
         return [dict(d) for d in found] if isinstance(found, list) else []
