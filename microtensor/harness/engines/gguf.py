@@ -10,7 +10,7 @@ from typing import Any, Final
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
 from microtensor.core.tracks import DECISION_PROMPT_VERSION, Decoding
-from microtensor.harness import decision_prompt
+from microtensor.harness import chat_template, decision_prompt
 from microtensor.harness.contract import (
     EngineError,
     EngineInfo,
@@ -612,33 +612,8 @@ class GgufEngine:
             yield piece
 
     def _render_chat(self, messages: list[dict[str, str]]) -> str | None:
-        """The model's own chat template, rendered with thinking off."""
         template = (getattr(self._model, "metadata", None) or {}).get("tokenizer.chat_template")
-        if not template:
-            return None
-        try:
-            import json as _json
-
-            import jinja2
-
-            environment = jinja2.Environment(  # noqa: S701 - prompt text, not HTML
-                trim_blocks=True, lstrip_blocks=True
-            )
-            environment.filters["tojson"] = _json.dumps
-
-            def _raise(message: str) -> str:
-                raise ValueError(message)
-
-            environment.globals["raise_exception"] = _raise
-            return str(
-                environment.from_string(template).render(
-                    messages=messages,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
-            )
-        except Exception:
-            return None
+        return chat_template.render(str(template or ""), messages)
 
     def _grammar(self, request: Request) -> Any:
         if not request.grammar:

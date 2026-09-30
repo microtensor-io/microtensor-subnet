@@ -60,6 +60,8 @@ validator = [
 serving = [
     "websockets>=12.0",
     "httpx>=0.27",
+    "jinja2>=3.1",
+    "tokenizers>=0.19",
 ]
 gguf = [
     "llama-cpp-python==0.3.35",
@@ -110,6 +112,7 @@ ignore = [
 "microtensor/serving/probe.py" = ["S310"]
 "microtensor/serving/supervise.py" = ["S310", "S603"]
 "microtensor/serving/audit.py" = ["S310"]
+"microtensor/harness/chat_template.py" = ["S701"]
 "scripts/train_decider.py" = ["S311"]
 "tests/*" = ["S", "PLR2004"]
 "scripts/optimise_harness.py" = ["S311"]

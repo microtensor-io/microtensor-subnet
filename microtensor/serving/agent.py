@@ -362,7 +362,13 @@ class HttpEngine(Engine):
 
 
 class Pool:
-    def __init__(self, serves: Sequence[Served], build: Callable[[str], Engine] = HttpEngine):
+    def __init__(
+        self,
+        serves: Sequence[Served],
+        build: Callable[[str], Engine] = HttpEngine,
+        deciders: Mapping[str, Any] | None = None,
+    ):
+        self._deciders: dict[str, Any] = dict(deciders or {})
         self._engines: dict[str, list[Engine]] = {
             entry.model: [build(url) for url in entry.engines] for entry in serves
         }
@@ -375,6 +381,9 @@ class Pool:
             entry.model: entry.router for entry in serves if entry.router is not None
         }
         self._running: dict[int, int] = {}
+
+    def decider(self, model: str) -> Any:
+        return self._deciders.get(model)
 
     def router(self, model: str) -> Any:
         return self._routers.get(model)
@@ -499,6 +508,9 @@ async def serve_taken(
     model = str(frame.get("model", ""))
     engine: Engine | None = None
     specialist: Engine | None = None
+    asked = frame.get("request", {})
+    if isinstance(asked, Mapping) and "decision" in asked:
+        return await _serve_decision(pool, correlation, model, asked["decision"], state)
     try:
         found, engine, specialist = await run_system(
             pool, model, frame.get("request", {}), on_delta
@@ -529,6 +541,28 @@ async def serve_taken(
             pool.release(engine)
         if specialist is not None:
             pool.release(specialist)
+
+
+async def _serve_decision(
+    pool: Pool, correlation: str, model: str, spec: Any, state: Capacity
+) -> dict[str, Any]:
+    decider = pool.decider(model)
+    if decider is None:
+        state.release(model, ok=False)
+        return response(correlation, model=model, error=f"{model} does not serve decisions here")
+    try:
+        output, counted = await decider(spec)
+    except asyncio.CancelledError:
+        state.release(model, ok=False)
+        raise
+    except Exception as exc:
+        state.release(model, ok=False)
+        return response(correlation, model=model, error=f"{type(exc).__name__}: {exc}")
+    answer = response(correlation, model=model)
+    answer["decision"] = output
+    answer["input_tokens"] = int(counted)
+    state.release(model, ok=True)
+    return answer
 
 
 def _drop(running: dict[str, asyncio.Task[None]], key: str, _: asyncio.Task[None]) -> None:
