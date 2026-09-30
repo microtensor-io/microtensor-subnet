@@ -20,6 +20,7 @@ from microtensor.core.constants import (
     SUBMISSION_CLOSES_BEFORE_BLOCKS,
     TASKS_PER_ROUND,
 )
+from microtensor.core.inputs import input_format
 from microtensor.core.outputs import published
 from microtensor.core.tracks import (
     CLASSES,
@@ -155,6 +156,8 @@ def _track_block(track: Track) -> dict[str, Any]:
         block["answer_mode"] = track.answer_mode
     if track.output_type:
         block["output"] = published(track)
+    if track.input_format:
+        block["input"] = input_format(track.input_format)
     return block
 
 
