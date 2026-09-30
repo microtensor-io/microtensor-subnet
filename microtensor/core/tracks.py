@@ -19,6 +19,12 @@ class Decoding(str, Enum):
     SEEDED = "seeded"
 
 
+GENERATE: Final[str] = "generate"
+DECIDE: Final[str] = "decide"
+ANSWER_MODES: Final[frozenset[str]] = frozenset({GENERATE, DECIDE})
+DECISION_PROMPT_VERSION: Final[str] = "d1"
+
+
 @dataclass(frozen=True, slots=True)
 class Track:
     id: str
@@ -31,8 +37,16 @@ class Track:
     classes: tuple[str, ...] = ()
     metric_display: str = ""
     chat: bool = False
+    answer_mode: str = GENERATE
 
     def __post_init__(self) -> None:
+        if self.answer_mode not in ANSWER_MODES:
+            raise ValueError(
+                f"track {self.id!r} answers in mode {self.answer_mode!r}; "
+                f"expected one of {sorted(ANSWER_MODES)}"
+            )
+        if self.answer_mode == DECIDE and not self.chat:
+            raise ValueError(f"track {self.id!r} decides, which needs the chat template")
         if self.enabled and self.emission_share <= 0.0:
             raise ValueError(f"track {self.id!r} is enabled but earns nothing")
         if not self.enabled and self.emission_share != 0.0:

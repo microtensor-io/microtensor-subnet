@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any, Final
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
-from microtensor.core.tracks import Decoding
+from microtensor.core.tracks import DECISION_PROMPT_VERSION, Decoding
+from microtensor.harness import decision_prompt
 from microtensor.harness.contract import (
+    EngineError,
     EngineInfo,
     EngineLoadError,
     Request,
@@ -219,6 +221,8 @@ class GgufEngine:
         self._validate = validate
         self._model: Any = None
         self._manifest: LoadManifest | None = None
+        self._answer_ids: dict[str, int] = {}
+        self._answer_fault = ""
 
     def load(self, artifact: Path, manifest: LoadManifest) -> None:
         weights = artifact / manifest.entrypoint if artifact.is_dir() else artifact
@@ -249,6 +253,130 @@ class GgufEngine:
             raise EngineLoadError(f"model could not be loaded: {exc}") from exc
 
         self._manifest = manifest
+        self._answer_ids, self._answer_fault = self._read_answer_ids()
+
+    def _read_answer_ids(self) -> tuple[dict[str, int], str]:
+        try:
+            return self._answer_token_ids()
+        except Exception as exc:
+            return {}, f"the answer tokens could not be read from this model: {exc}"
+
+    def _answer_token_ids(self) -> tuple[dict[str, int], str]:
+        found: dict[str, int] = {}
+        for text in decision_prompt.ANSWER_STRINGS:
+            ids = self._model.tokenize(text.encode("utf-8"), add_bos=False, special=False)
+            if len(ids) != 1:
+                return {}, (
+                    f"this model splits the answer {text!r} into {len(ids)} tokens; "
+                    "a decision needs every answer letter and true or false to be one token"
+                )
+            found[text] = int(ids[0])
+        if len(set(found.values())) != len(found):
+            return {}, "this model maps two different answers to the same token"
+        return found, ""
+
+    def _decision_tokens(self, context: str, question: decision_prompt.Question) -> list[int]:
+        rendered = self._render_chat(decision_prompt.messages(context, question))
+        if rendered is None:
+            raise EngineError("this model ships no chat template, which a decision needs")
+        return list(self._model.tokenize(rendered.encode("utf-8"), add_bos=True, special=True))
+
+    def _partial_rollback_ok(self) -> bool:
+        llama_cpp = _llama()
+        handle = self._model._model.model
+        return not (
+            llama_cpp.llama_model_is_hybrid(handle) or llama_cpp.llama_model_is_recurrent(handle)
+        )
+
+    def _save_sequence(self) -> bytes:
+        llama_cpp = _llama()
+        ctx = self._model._ctx.ctx
+        size = int(llama_cpp.llama_state_seq_get_size(ctx, 0))
+        buffer = (llama_cpp.ctypes.c_uint8 * size)()
+        written = int(llama_cpp.llama_state_seq_get_data(ctx, buffer, size, 0))
+        if written <= 0 or written > size:
+            raise EngineError("the shared document could not be saved")
+        return bytes(buffer[:written])
+
+    def _restore_sequence(self, saved: bytes, shared: int) -> None:
+        llama_cpp = _llama()
+        if not llama_cpp.llama_memory_seq_rm(self._model._ctx.memory, 0, -1, -1):
+            raise EngineError("the cache could not be cleared before restoring the document")
+        buffer = (llama_cpp.ctypes.c_uint8 * len(saved)).from_buffer_copy(saved)
+        restored = llama_cpp.llama_state_seq_set_data(self._model._ctx.ctx, buffer, len(saved), 0)
+        if int(restored) <= 0:
+            raise EngineError("the shared document could not be restored")
+        self._model.n_tokens = shared
+
+    def _rewind(self, shared: int) -> None:
+        if not self._model._ctx.kv_cache_seq_rm(-1, shared, -1):
+            raise EngineError("cache rollback refused")
+        self._model.n_tokens = shared
+
+    def _answer_scores(self, question: decision_prompt.Question) -> list[float]:
+        logits = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
+        return [float(logits[self._answer_ids[text]]) for text in question.answers]
+
+    def decide(self, request: Request) -> Response:
+        if self._model is None:
+            return Response.failed(request.task_ref, "engine was asked to decide before load")
+        if self._answer_fault:
+            return Response.failed(request.task_ref, self._answer_fault)
+
+        started = time.perf_counter()
+        try:
+            context, questions = decision_prompt.parse(request.inputs.get("decision"))
+        except decision_prompt.DecisionError as exc:
+            return Response.failed(request.task_ref, str(exc))
+
+        try:
+            rows = [self._decision_tokens(context, question) for question in questions]
+            window = int(self._model.n_ctx())
+            longest = max(len(row) for row in rows)
+            if longest > window:
+                return Response.failed(
+                    request.task_ref,
+                    f"a decision prompt is {longest} tokens, over the declared {window}; "
+                    "nothing is truncated",
+                    (time.perf_counter() - started) * 1000.0,
+                )
+
+            cut = decision_prompt.common_prefix(rows)
+            self._model.reset()
+            self._model.eval(rows[0][:cut])
+            shared = int(self._model.n_tokens)
+            saved = None if self._partial_rollback_ok() else self._save_sequence()
+
+            answers: dict[str, Any] = {}
+            for question, row in zip(questions, rows, strict=True):
+                if saved is None:
+                    self._rewind(shared)
+                else:
+                    self._restore_sequence(saved, shared)
+                self._model.eval(row[cut:])
+                shares = decision_prompt.to_grid(
+                    decision_prompt.softmax(self._answer_scores(question))
+                )
+                answers[question.name] = decision_prompt.build_answer(question, shares)
+            finished = time.perf_counter()
+        except Exception as exc:
+            return Response.failed(
+                request.task_ref,
+                f"{type(exc).__name__}: {exc}",
+                (time.perf_counter() - started) * 1000.0,
+            )
+
+        elapsed = (finished - started) * 1000.0
+        return Response(
+            task_ref=request.task_ref,
+            output={
+                "answers": answers,
+                "prompt_format": DECISION_PROMPT_VERSION,
+            },
+            ttft_ms=elapsed,
+            total_ms=elapsed,
+            output_tokens=0,
+        )
 
     # Qwen3 and other hybrid models emit a reasoning block before the answer.
     # It consumes the output budget and is not the answer, so it is removed
@@ -411,6 +539,8 @@ class GgufEngine:
     def unload(self) -> None:
         self._model = None
         self._manifest = None
+        self._answer_ids = {}
+        self._answer_fault = ""
 
 
 def factory() -> Any:

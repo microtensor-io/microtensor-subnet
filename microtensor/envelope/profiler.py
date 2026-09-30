@@ -13,11 +13,12 @@ from microtensor.core.constants import (
 )
 from microtensor.core.hashing import tree_size_bytes
 from microtensor.core.protocol import ArtifactFormat, LoadManifest, MeasuredEnvelope
-from microtensor.core.tracks import HardwareClass, get_class
+from microtensor.core.tracks import DECIDE, GENERATE, HardwareClass, get_class, get_track
 from microtensor.envelope.device import DeviceProfile, conforms, detect
 from microtensor.envelope.latency import Distribution, summarise
+from microtensor.envelope.probe import max_input_decision, max_input_prompt
 from microtensor.envelope.sampler import ResidentSampler
-from microtensor.harness.contract import Engine, Request, Response
+from microtensor.harness.contract import Engine, Request, Response, answer
 from microtensor.harness.registry import engine_for, load_builtin
 
 
@@ -33,6 +34,8 @@ class ProfilePlan:
     max_requests: int = LATENCY_SAMPLE_COUNT
     sample_interval_ms: int = PROFILE_SAMPLE_INTERVAL_MS
     max_output_tokens: int = 256
+    mode: str = GENERATE
+    chat: bool = False
 
     def __post_init__(self) -> None:
         if not self.prompt:
@@ -68,7 +71,39 @@ def _request(plan: ProfilePlan, index: int) -> Request:
         inputs=dict(plan.max_input),
         max_output_tokens=plan.max_output_tokens,
         nonce=f"profile:{index}",
+        chat=plan.chat,
+        mode=plan.mode,
     )
+
+
+def _produced(response: Response, plan: ProfilePlan) -> bool:
+    if not response.ok:
+        return False
+    if plan.mode == DECIDE:
+        output = response.output
+        return isinstance(output, dict) and bool(output.get("answers"))
+    return response.output_tokens > 0
+
+
+def plan_for(seed: str, max_input: dict[str, Any], track: str = "", **options: Any) -> ProfilePlan:
+    prompt = max_input_prompt(seed, max_input)
+    if not track or get_track(track).answer_mode != DECIDE:
+        return ProfilePlan(prompt=prompt, max_input=dict(max_input), **options)
+    inputs = {**max_input, "decision": max_input_decision(seed, max_input)}
+    return ProfilePlan(prompt=prompt, max_input=inputs, mode=DECIDE, chat=True, **options)
+
+
+def plan_payload(plan: ProfilePlan) -> dict[str, Any]:
+    return {
+        "prompt": plan.prompt,
+        "max_input": plan.max_input,
+        "duration_seconds": plan.duration_seconds,
+        "max_requests": plan.max_requests,
+        "sample_interval_ms": plan.sample_interval_ms,
+        "max_output_tokens": plan.max_output_tokens,
+        "mode": plan.mode,
+        "chat": plan.chat,
+    }
 
 
 def _cold_start(
@@ -80,11 +115,11 @@ def _cold_start(
     except Exception as exc:
         raise ProfileError(f"artifact failed to load: {exc}") from exc
 
-    response = engine.generate(_request(plan, 0))
+    response = answer(engine, _request(plan, 0))
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     if not response.ok:
         raise ProfileError(f"artifact produced no output on a cold cache: {response.error}")
-    if response.output_tokens <= 0:
+    if not _produced(response, plan):
         raise ProfileError("artifact produced no output on a cold cache")
     return elapsed_ms, response
 
@@ -117,8 +152,8 @@ def profile(
 
         while issued < plan.max_requests and time.perf_counter() < deadline:
             issued += 1
-            response = engine.generate(_request(plan, issued))
-            if not response.ok or response.output_tokens <= 0:
+            response = answer(engine, _request(plan, issued))
+            if not _produced(response, plan):
                 failures += 1
                 continue
             ttfts.append(response.ttft_ms)

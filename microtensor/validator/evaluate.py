@@ -20,8 +20,7 @@ from microtensor.core.protocol import (
 )
 from microtensor.core.tracks import HardwareClass, get_class, get_track
 from microtensor.envelope.device import POLICY_ENV
-from microtensor.envelope.probe import max_input_prompt
-from microtensor.envelope.profiler import ProfilePlan, run_profile
+from microtensor.envelope.profiler import plan_for, plan_payload, run_profile
 from microtensor.harness.cascade import CascadeResult, Leg, run_cascade
 from microtensor.harness.contract import Response
 from microtensor.harness.execute import run_tasks
@@ -186,9 +185,10 @@ def profile(
         os.environ.pop(POLICY_ENV, None)
 
     max_input = dict(participant.manifest.load.max_input)
-    plan = ProfilePlan(
-        prompt=max_input_prompt(seed, max_input),
-        max_input=max_input,
+    plan = plan_for(
+        seed,
+        max_input,
+        participant.manifest.track,
         duration_seconds=context.config.profile_seconds,
     )
     result = run_jailed(
@@ -196,14 +196,7 @@ def profile(
         str(artifact),
         participant.manifest.load.to_dict(),
         hardware.id,
-        {
-            "prompt": plan.prompt,
-            "max_input": plan.max_input,
-            "duration_seconds": plan.duration_seconds,
-            "max_requests": plan.max_requests,
-            "sample_interval_ms": plan.sample_interval_ms,
-            "max_output_tokens": plan.max_output_tokens,
-        },
+        plan_payload(plan),
         limits=_limits(hardware, context.config.profile_seconds * 2),
         allow_unsandboxed=context.config.allow_unsandboxed,
     )

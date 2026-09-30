@@ -76,3 +76,62 @@ def max_input_prompt(
         stream = hashlib.sha256(f"probe:{seed}:{counter}".encode()).digest()
 
     return " ".join(parts)
+
+
+DECISION_QUESTION_TOKENS: Final[int] = 384
+
+PROBE_QUESTIONS: Final[dict[str, dict[str, Any]]] = {
+    "category": {
+        "type": "choice",
+        "instructions": "Which category fits the input text best?",
+        "criteria": {f"category_{index:02d}": f"Topic number {index}" for index in range(26)},
+    },
+    "team": {
+        "type": "choice",
+        "instructions": "Which team should handle this?",
+        "criteria": {
+            "billing": "Payments and charges",
+            "shipping": "Deliveries and parcels",
+            "returns": "Returns and exchanges",
+            "support": "Anything else",
+        },
+    },
+    "tone": {
+        "type": "choice",
+        "instructions": "What is the tone of the text?",
+        "criteria": {
+            "neutral": "Plain and factual",
+            "positive": "Pleased or grateful",
+            "negative": "Unhappy or frustrated",
+            "urgent": "Needs action now",
+        },
+    },
+    "language": {
+        "type": "choice",
+        "instructions": "Which language is the text written in?",
+        "criteria": {
+            "english": "English",
+            "french": "French",
+            "spanish": "Spanish",
+            "other": "Another language",
+        },
+    },
+    "refund": {"type": "noul", "instructions": "Does the text ask for a refund?"},
+    "personal": {"type": "noul", "instructions": "Does the text contain personal data?"},
+    "severity": {
+        "type": "score",
+        "instructions": "How severe is the problem described?",
+        "criteria": ["None", "Minor", "Moderate", "Serious", "Critical"],
+    },
+    "effort": {
+        "type": "score",
+        "instructions": "How much effort would a reply take?",
+        "criteria": ["None", "A line", "A paragraph", "Research", "Escalation"],
+    },
+}
+
+
+def max_input_decision(seed: str, max_input: Mapping[str, Any]) -> dict[str, Any]:
+    room = max(1, declared_tokens(max_input) - DECISION_QUESTION_TOKENS)
+    context = max_input_prompt(seed, {"tokens": room})
+    return {"context": context, "questions": PROBE_QUESTIONS}

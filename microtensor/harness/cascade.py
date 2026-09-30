@@ -7,7 +7,7 @@ from typing import Any
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
 from microtensor.harness import progress
-from microtensor.harness.contract import Request, Response
+from microtensor.harness.contract import Request, Response, answer
 from microtensor.harness.engines.router import Decision, Router, decide, features_from, load_router
 from microtensor.harness.execute import rebuild_manifest
 from microtensor.harness.registry import engine_for, load_builtin
@@ -106,7 +106,7 @@ def run_cascade(
     try:
         for request in requests:
             try:
-                response = front.generate(request)
+                response = answer(front, request)
             except Exception as exc:
                 response = Response.failed(request.task_ref, str(exc))
 
@@ -140,7 +140,7 @@ def run_cascade(
                 specialist, _ = _load(Path(specialist_path), specialist_manifest)
 
             try:
-                escalated = specialist.generate(request)
+                escalated = answer(specialist, request)
             except Exception as exc:
                 escalated = Response.failed(request.task_ref, str(exc))
 

@@ -18,6 +18,9 @@ class ArtifactFormat(str, Enum):
     GGUF = "gguf"
 
 
+DECIDE_FORMATS: frozenset[ArtifactFormat] = frozenset({ArtifactFormat.GGUF})
+
+
 class Role(str, Enum):
     FRONT = "front"
     ROUTER = "router"

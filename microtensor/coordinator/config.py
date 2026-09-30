@@ -20,7 +20,15 @@ from microtensor.core.constants import (
     SUBMISSION_CLOSES_BEFORE_BLOCKS,
     TASKS_PER_ROUND,
 )
-from microtensor.core.tracks import CLASSES, competitions, enabled_tracks
+from microtensor.core.tracks import (
+    CLASSES,
+    DECIDE,
+    DECISION_PROMPT_VERSION,
+    GENERATE,
+    Track,
+    competitions,
+    enabled_tracks,
+)
 
 CONFIG_VERSION = 1
 
@@ -115,9 +123,7 @@ def served_config(
         "reference_cost_ms": int(REFERENCE_COST_MS),
         "min_rounds_observed": int(MIN_ROUNDS_OBSERVED),
         "competitions": [list(c) for c in competitions()],
-        "tracks": {
-            t.id: {"metric": t.metric, "emission_share": t.emission_share} for t in enabled_tracks()
-        },
+        "tracks": {t.id: _track_block(t) for t in enabled_tracks()},
         "class_weights": dict(sorted(CLASS_WEIGHTS.items())),
         "classes": {
             c.id: {
@@ -132,7 +138,16 @@ def served_config(
     }
     if submission_fee:
         document["submission_fee"] = dict(submission_fee)
+    if any(t.answer_mode == DECIDE for t in enabled_tracks()):
+        document["decision_prompt"] = DECISION_PROMPT_VERSION
     return document
+
+
+def _track_block(track: Track) -> dict[str, Any]:
+    block: dict[str, Any] = {"metric": track.metric, "emission_share": track.emission_share}
+    if track.answer_mode != GENERATE:
+        block["answer_mode"] = track.answer_mode
+    return block
 
 
 def canonical(config: dict[str, Any]) -> bytes:

@@ -15,8 +15,9 @@ from microtensor.core.constants import (
     REQUIRE_SEALED_SUBMISSIONS,
     REVEAL_WINDOW_BLOCKS,
 )
-from microtensor.core.protocol import Role
+from microtensor.core.protocol import DECIDE_FORMATS, Role
 from microtensor.core.system import SystemManifest
+from microtensor.core.tracks import DECIDE, get_track
 from microtensor.provenance.record import ProvenanceUnavailable, Verdict
 from microtensor.provenance.record import best_verdict as provenance_check
 from microtensor.registry.fetch import ArtifactMismatch, FetchError, fetch_manifest
@@ -490,4 +491,20 @@ def _manifest_reason(manifest: ArtifactManifest, hotkey: str, verify: bool = Tru
     if not fits:
         return reason
 
+    reason = _answer_mode_reason(manifest)
+    if reason:
+        return reason
+
     return _system_reason(manifest, manifest.hardware_class)
+
+
+def _answer_mode_reason(manifest: ArtifactManifest) -> str:
+    if get_track(manifest.track).answer_mode != DECIDE:
+        return ""
+    if manifest.load.format in DECIDE_FORMATS:
+        return ""
+    return (
+        f"{manifest.track} is a decision track, which reads answer probabilities; "
+        f"a {manifest.load.format.value} artifact cannot produce them. "
+        f"Submit one of: {sorted(f.value for f in DECIDE_FORMATS)}"
+    )
