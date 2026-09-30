@@ -675,6 +675,15 @@ def _evaluate_full(
     if not live.traces:
         log.info("%s scored zero: no task produced a verified trace", participant.hotkey)
         return _evaluation(participant, tasks, measured=measured)
+    p95 = live.p95_ms()
+    if hardware.max_p95_ms and p95 > hardware.max_p95_ms:
+        log.info(
+            "%s scored zero: end to end p95 %.0f ms is over the %d ms ceiling",
+            participant.hotkey,
+            p95,
+            hardware.max_p95_ms,
+        )
+        return _evaluation(participant, tasks, measured=measured)
 
     track = get_track(tasks.track)
     result = run_jailed(
@@ -731,6 +740,7 @@ def _evaluate_full(
                 "profile": task.profile,
                 "escalated": trace.escalated,
                 "decided_at_ms": round(trace.router.at_ms, 1),
+                "measured_ms": round(live.latency_ms.get(task.ref, 0.0), 1),
                 "total_ms": round(trace.total_ms, 1),
                 "trigger": triggers.get(task.ref, ""),
                 "features": {k: round(v, 4) for k, v in trace.router.features.items()},
@@ -789,7 +799,7 @@ def _evaluate_full(
         n_fixed=n_fixed,
         n_novel=n_novel,
         front_only=score.small_quality,
-        calibration={**score.to_dict(), "live": rows},
+        calibration={**score.to_dict(), "p95_ms": round(p95, 1), "live": rows},
         expected_ms=score.cost_usd * COST_UNITS_PER_USD,
     )
 

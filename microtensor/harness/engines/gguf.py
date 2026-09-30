@@ -239,9 +239,12 @@ class _Confidence:
 class GgufEngine:
     format = ArtifactFormat.GGUF
 
-    def __init__(self, *, threads: int = THREADS, validate: bool = True) -> None:
+    def __init__(
+        self, *, threads: int = THREADS, validate: bool = True, gpu_layers: int = GPU_LAYERS
+    ) -> None:
         self._threads = threads
         self._validate = validate
+        self._gpu_layers = gpu_layers
         self._model: Any = None
         self._manifest: LoadManifest | None = None
         self._answer_ids: dict[str, int] = {}
@@ -267,7 +270,7 @@ class GgufEngine:
                 n_ctx=context,
                 n_threads=self._threads,
                 n_threads_batch=self._threads,
-                n_gpu_layers=GPU_LAYERS,
+                n_gpu_layers=self._gpu_layers,
                 seed=SEED,
                 logits_all=False,
                 embedding=False,

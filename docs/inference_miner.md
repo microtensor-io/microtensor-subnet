@@ -373,6 +373,33 @@ up. Reconnect is exponential to a 60 second ceiling.
 
 ---
 
+## 7a · Serving full systems
+
+A certified model can be a full system: a small specialist, its harness, a
+router and an escalation model. You serve it exactly like a model, under its
+catalogue name, and every request runs the whole system on your machine.
+
+```bash
+mt operator run \
+  --serve mt/invoice-4g=sha256:<system digest>@system:/srv/systems/invoice-4g \
+  --escalation-url http://127.0.0.1:18090 \
+  --gpu-layers -1
+```
+
+- `system:<path>` points at the certified system, either an archive record or an
+  artifact directory with its `manifest.json`. It is checked against the
+  manifest before it serves anything.
+- `--escalation-url` is an OpenAI compatible server holding our mirror of the
+  system's escalation model (the name is `microtensor-archive/<model>`). Run it
+  on the same card with SGLang, or on another card in the same box.
+- `--gpu-layers -1` puts the small model on the GPU. Validators replay it on CPU;
+  the tolerance covers the difference.
+
+Each response carries the answer, the usage including escalation tokens, and a
+trace signed by your hotkey: the small model's answer, confidence and tokens,
+the router's features and decision, harness steps, and the escalation answer if
+there was one. Clients see a single answer.
+
 ## 8 · How you are verified
 
 You send tokens. You build no proof and compute no commitment. The validator
@@ -397,6 +424,20 @@ sampled statistics that disagree. It is counted and never gates.
 
 Admission is a sequential test, not a fixed count. A clean miner is usually
 admitted in well under a hundred probes. One validator rejecting keeps you out.
+
+**Full systems are judged on the trace.** The validator checks that the trace is
+signed by you and names the certified system, that the answer you returned is
+the traced final answer, and then:
+
+| check | how |
+|---|---|
+| small model | the traced tokens are replayed on the certified archive on CPU; a token more than 0.5 logits below the model's own choice, or a confidence off by more than 0.02, is a cheat |
+| router | its features are recomputed from the replayed small model and its declared rule must give the same decision |
+| escalation | only the system's declared model |
+| harness | the certified harness is rerun on the same request and must return the same answer |
+
+Serving other weights under a certified system's name fails the first check at
+once: a swapped small model shows margins of tens of logits.
 
 ```bash
 mt operator status

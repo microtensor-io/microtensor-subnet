@@ -24,6 +24,7 @@ The router is what turns confidence into money. It sends only the requests the s
 6. **Calibrate and quantise.** Fold temperature into the file (`scripts/fold_temperature.py`) so the confidence validators recompute is already calibrated. Quantise with the output layer kept at Q8 (`--output-tensor-type q8_0`, or `--token-embedding-type q8_0` for tied embeddings).
 7. **Simulate the whole system.** `mt miner simulate --escalation-url URL` runs the small model, harness, router and escalation locally over the train split and prints every trace with the scores validators will compute: end to end quality, the small model alone, escalation rate, waste, misses, calibration and cost.
 8. **Package and host.** Write `system.json` at schema version 2 (model, harness with its runtime, router with its features, escalation model pinned to a revision, endpoint), then serve it through the dial out agent. No public IP is needed.
+9. **Serve it to customers.** Once certified, inference miners serve your system under the arena's catalogue name on GPUs (`inference_miner.md`, section 7a), and we can serve it from the archive after you stop.
 
 ## What validators check
 
@@ -32,6 +33,7 @@ The router is what turns confidence into money. It sends only the requests the s
 - **Your escalation is honest.** Only your declared, allowlisted model, charged at its published price.
 - **The archive reproduces the live run.** Your archived harness, router and small model are rerun on sampled tasks; prompts, tokens, decisions and final answers must match.
 - **Your harness stays inside its package.** No URLs, no network or process modules, no `eval`.
+- **Your system is fast enough.** Validators time every request themselves; a system whose end to end p95 is over the arena's latency ceiling earns nothing that round.
 
 A system that fails any check is not certified and earns nothing that round.
 

@@ -527,6 +527,10 @@ async def serve_taken(
         answer["answered_by"] = str(found.get("answered_by", "front"))
         if found.get("router_features"):
             answer["router_features"] = dict(found["router_features"])
+        if found.get("trace"):
+            answer["trace"] = dict(found["trace"])
+        if found.get("usage"):
+            answer["usage"] = dict(found["usage"])
         state.release(model, ok=True)
         return answer
     except asyncio.CancelledError:

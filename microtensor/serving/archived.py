@@ -12,6 +12,7 @@ from microtensor.core.tracks import get_track
 from microtensor.harness.engines.router import load_router
 from microtensor.harness.sdk import EscalationModel, Runtime, engine_small
 from microtensor.registry.manifest import ArtifactManifest, verify_tree
+from microtensor.serving.agent import Engine
 
 INTAKE = "intake.json"
 
@@ -65,13 +66,80 @@ def restore(record: Path, workdir: Path) -> Restored:
     return Restored(root=target, manifest=manifest, record=intake)
 
 
-def runtime_for(restored: Restored, escalate: EscalationModel, *, hotkey: str) -> Runtime:
+def open_system(path: Path, workdir: Path) -> Restored:
+    if (path / INTAKE).is_file():
+        return restore(path, workdir)
+    manifest = ArtifactManifest.from_json((path / "manifest.json").read_bytes())
+    ok, reason = verify_tree(path, manifest)
+    if not ok:
+        raise ArchiveError(f"the system files do not match their manifest: {reason}")
+    if manifest.system is None or not manifest.system.full:
+        raise ArchiveError(f"{path} is not a full system")
+    return Restored(root=path, manifest=manifest, record={})
+
+
+def prompt_of(request: Mapping[str, Any]) -> str:
+    prompt = str(request.get("prompt", ""))
+    if prompt:
+        return prompt
+    for message in reversed(list(request.get("messages") or [])):
+        if isinstance(message, Mapping) and message.get("role") == "user":
+            return str(message.get("content", ""))
+    raise ArchiveError("the request carries no prompt")
+
+
+class SystemEngine(Engine):
+    def __init__(
+        self, runtime: Runtime, sign: Callable[[Mapping[str, Any]], str], url: str = "system:"
+    ) -> None:
+        super().__init__(url)
+        self.runtime = runtime
+        self.sign = sign
+
+    async def generate(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        import asyncio
+
+        trace = await asyncio.to_thread(
+            self.runtime.run,
+            0,
+            str(request.get("request_id") or "request"),
+            prompt_of(request),
+            dict(request.get("inputs") or {}),
+        )
+        signed = trace.signed_with(self.sign(trace.body()))
+        escalation = trace.escalation
+        return {
+            "text": str(trace.final),
+            "prompt_tokens": [],
+            "completion_tokens": list(trace.small.tokens),
+            "finish_reason": "stop",
+            "escalated": trace.escalated,
+            "answered_by": "escalation" if trace.escalated else "small",
+            "router_features": dict(trace.router.features),
+            "trace": signed.to_dict(),
+            "usage": {
+                "prompt_tokens": trace.small.prompt_tokens
+                + (escalation.prompt_tokens if escalation else 0),
+                "completion_tokens": len(trace.small.tokens)
+                + (escalation.completion_tokens if escalation else 0),
+            },
+        }
+
+    async def stream(self, request: Mapping[str, Any], on_delta: Any) -> dict[str, Any]:
+        found = await self.generate(request)
+        await on_delta(found["text"])
+        return found
+
+
+def runtime_for(
+    restored: Restored, escalate: EscalationModel, *, hotkey: str, gpu_layers: int = 0
+) -> Runtime:
     from microtensor.harness.engines.gguf import GgufEngine
 
     system = restored.manifest.system
     if system is None or system.harness is None or system.escalation is None:
         raise ArchiveError("the archived submission is not a full system")
-    engine = GgufEngine()
+    engine = GgufEngine(gpu_layers=gpu_layers)
     engine.load(restored.root, restored.manifest.load)
     return Runtime(
         restored.root / system.harness.path,
