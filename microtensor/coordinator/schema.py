@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 10
+SCHEMA_VERSION: Final[int] = 11
 
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (
@@ -335,5 +335,9 @@ MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
             )
             """,
         ),
+    ),
+    (
+        11,
+        ("ALTER TABLE reports ADD COLUMN signed_body TEXT NOT NULL DEFAULT ''",),
     ),
 )
