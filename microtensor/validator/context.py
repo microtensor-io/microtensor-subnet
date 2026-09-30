@@ -48,6 +48,8 @@ class ValidatorConfig:
     # deployment leaves this empty and takes the arena's list from the config
     # the chain anchored.
     allowlists: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    gateway_url: str = ""
+    gateway_secret: str = ""
     verify_signatures: bool = True
     # Defaults to the constant and is not exposed on the command line. Only
     # the synthetic modes turn it off, the same way they turn off signature

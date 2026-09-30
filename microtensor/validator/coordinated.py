@@ -63,7 +63,7 @@ class Plan:
     config_hash: str = ""
     reason: str = ""
     allowlists: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
-    escalations: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    escalations: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     budgets: dict[tuple[str, str], RoundBudget] = field(default_factory=dict)
     leasing: bool = False
 
@@ -77,15 +77,15 @@ class Plan:
         return self.mode is Mode.COORDINATED
 
 
-def escalations_from(config: Mapping[str, Any]) -> dict[tuple[str, str], frozenset[str]]:
+def escalations_from(config: Mapping[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
     from microtensor.core.escalation import allowlist
 
-    out: dict[tuple[str, str], frozenset[str]] = {}
+    out: dict[tuple[str, str], dict[str, Any]] = {}
     for key, value in dict(config.get("arenas", {})).items():
         track, _, hardware_class = str(key).partition("/")
         if track and hardware_class:
             entries = dict(value).get("escalation_models") or []
-            out[(track, hardware_class)] = frozenset(allowlist(entries))
+            out[(track, hardware_class)] = dict(allowlist(entries))
     return out
 
 

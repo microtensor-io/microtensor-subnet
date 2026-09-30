@@ -118,6 +118,7 @@ def _evaluation(
     cascade: CascadeResult | None = None,
     front_only: float = 0.0,
     calibration: dict[str, Any] | None = None,
+    expected_ms: float | None = None,
 ) -> Evaluation:
     track, hardware_class = participant.competition
     return Evaluation(
@@ -140,7 +141,7 @@ def _evaluation(
         n_novel=n_novel,
         corpus_version=tasks.corpus_version,
         resolve_rate=cascade.resolve_rate if cascade else 1.0,
-        expected_ms=_expected_ms(cascade, measured),
+        expected_ms=_expected_ms(cascade, measured) if expected_ms is None else expected_ms,
         front_only_score=front_only,
         system_digest=participant.manifest.system_digest,
         calibration=dict(calibration or {}),
@@ -496,6 +497,7 @@ def evaluate_participant(
     *,
     cpu_seconds: int = 0,
     hardware: HardwareClass | None = None,
+    escalations: Mapping[str, Any] | None = None,
 ) -> Evaluation:
     hardware = hardware or get_class(participant.competition[1])
     artifact = materialise(context, participant)
@@ -522,6 +524,19 @@ def evaluate_participant(
     if not gate.admitted:
         log.info("%s inadmissible: %s", participant.hotkey, gate.reason)
         return _evaluation(participant, tasks, gate=gate, measured=measured)
+
+    if participant.system.full:
+        return _evaluate_full(
+            context,
+            participant,
+            artifact,
+            hardware,
+            tasks,
+            gate,
+            measured,
+            dict(escalations or {}),
+            _cpu_budget(context, cpu_seconds),
+        )
 
     cascade: CascadeResult | None = None
     front_only_score = 0.0
@@ -575,6 +590,124 @@ def evaluate_participant(
     )
 
 
+def _evaluate_full(
+    context: ValidatorContext,
+    participant: Participant,
+    artifact: Path,
+    hardware: HardwareClass,
+    tasks: RoundTasks,
+    gate: GateResult,
+    measured: MeasuredEnvelope,
+    escalations: dict[str, Any],
+    cpu_seconds: int,
+) -> Evaluation:
+    from microtensor.core.protocol import Role
+    from microtensor.scoring.metrics import score_task
+    from microtensor.scoring.system import COST_UNITS_PER_USD, score_system
+    from microtensor.validator.live import GatewaySystemClient, chain_verifier, run_live
+    from microtensor.validator.verify_system import jailed_verify
+
+    config = context.config
+    system = participant.system
+    if not config.gateway_url or not config.gateway_secret or system.endpoint is None:
+        raise Abstain(
+            "full systems are tested live through the gateway; "
+            "set MT_GATEWAY_URL and MT_GATEWAY_SECRET"
+        )
+    client = GatewaySystemClient(
+        config.gateway_url, config.gateway_secret, participant.hotkey, system.endpoint.worker
+    )
+    live = run_live(
+        client,
+        system,
+        hotkey=participant.hotkey,
+        round_index=tasks.round_index,
+        tasks=tasks.all,
+        verify=chain_verifier(),
+    )
+    for ref, reason in live.failures[:5]:
+        log.info("%s %s: %s", participant.hotkey, ref, reason)
+    if not live.traces:
+        log.info("%s scored zero: no task produced a verified trace", participant.hotkey)
+        return _evaluation(participant, tasks, measured=measured)
+
+    track = get_track(tasks.track)
+    result = run_jailed(
+        jailed_verify,
+        str(artifact),
+        system.body(),
+        str(artifact / system.locate(Role.FRONT)),
+        participant.manifest.load.to_dict(),
+        [trace.to_dict() for trace in live.traces],
+        {task.ref: (task.prompt, dict(task.inputs)) for task in tasks.all},
+        tasks.seed,
+        [model.to_dict() for model in escalations.values()],
+        track.chat,
+        limits=_limits(hardware, cpu_seconds),
+        allow_unsandboxed=config.allow_unsandboxed,
+    )
+    if not result.ok:
+        if result.fault is Fault.INFRASTRUCTURE:
+            raise Abstain(
+                f"{participant.hotkey}: verification infrastructure failed: {result.error}"
+            )
+        log.info("%s not certified: verification failed: %s", participant.hotkey, result.error)
+        return _evaluation(participant, tasks, measured=measured)
+    verdict = dict(result.value)
+    if not verdict.get("certified"):
+        log.info("%s not certified: %s", participant.hotkey, "; ".join(verdict.get("reasons", [])))
+        return _evaluation(participant, tasks, measured=measured)
+
+    score = score_system(
+        live.traces,
+        {task.ref: task.gold for task in tasks.all},
+        track.metric,
+        escalations,
+        small_ms=_expected_ms(None, measured),
+        profiles={task.ref: task.profile for task in tasks.all},
+    )
+    answered = live.answered
+    outcomes = tuple(
+        TaskOutcome(
+            task_ref=task.ref,
+            score=score_task(track.metric, answered[task.ref].final, task.gold)
+            if task.ref in answered
+            else 0.0,
+            completed=task.ref in answered,
+            partition=partition_of(tasks, task.ref),
+            latency_ms=answered[task.ref].total_ms if task.ref in answered else 0.0,
+        )
+        for task in tasks.all
+    )
+    rotating, fixed, novel, n_rotating, n_fixed, n_novel = partition_scores(outcomes)
+    log.info(
+        "%s full system: quality %.4f, small alone %.4f, escalated %.1f%%, waste %.1f%%, "
+        "misses %.1f%%, cost $%.6f per task",
+        participant.hotkey,
+        score.quality,
+        score.small_quality,
+        score.escalation_rate * 100,
+        score.waste * 100,
+        score.misses * 100,
+        score.cost_usd,
+    )
+    return _evaluation(
+        participant,
+        tasks,
+        gate=gate,
+        measured=measured,
+        rotating=rotating,
+        fixed=fixed,
+        novel=novel,
+        n_rotating=n_rotating,
+        n_fixed=n_fixed,
+        n_novel=n_novel,
+        front_only=score.small_quality,
+        calibration=score.to_dict(),
+        expected_ms=score.cost_usd * COST_UNITS_PER_USD,
+    )
+
+
 def require_engines() -> None:
     load_builtin()
     if not available():
@@ -589,6 +722,7 @@ def evaluate_competition(
     cpu_seconds: int = 0,
     hardware: HardwareClass | None = None,
     on_evaluated: Callable[[Evaluation, Participant], None] | None = None,
+    escalations: Mapping[str, Any] | None = None,
 ) -> CompetitionResult:
     evaluations: list[Evaluation] = []
 
@@ -598,7 +732,12 @@ def evaluate_competition(
             attempt += 1
             try:
                 evaluation = evaluate_participant(
-                    context, participant, tasks, cpu_seconds=cpu_seconds, hardware=hardware
+                    context,
+                    participant,
+                    tasks,
+                    cpu_seconds=cpu_seconds,
+                    hardware=hardware,
+                    escalations=escalations,
                 )
                 break
             except ArtifactMismatch as exc:

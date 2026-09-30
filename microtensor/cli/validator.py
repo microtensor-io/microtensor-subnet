@@ -256,6 +256,8 @@ def _build(args: argparse.Namespace, *, probe: bool = False) -> ValidatorContext
         dry_run=args.dry_run,
         degraded=degraded,
         coordinator_url=args.coordinator,
+        gateway_url=os.environ.get("MT_GATEWAY_URL", "").strip(),
+        gateway_secret=os.environ.get("MT_GATEWAY_SECRET", "").strip(),
     )
 
     log.info(
