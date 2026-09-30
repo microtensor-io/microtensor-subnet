@@ -30,7 +30,11 @@ from microtensor.harness.limits import Limits
 from microtensor.harness.registry import EngineUnavailable, available, load_builtin
 from microtensor.registry.fetch import ArtifactMismatch, Unfetchable
 from microtensor.registry.fetch import materialise as fetch_artifact
-from microtensor.scoring.calibration import partition_report
+from microtensor.scoring.calibration import (
+    generation_summary,
+    partition_report,
+    sequence_confidence,
+)
 from microtensor.scoring.execution import (
     ExecutionUnavailable,
     execute_module_rate,
@@ -159,6 +163,21 @@ def _calibration(tasks: RoundTasks, by_ref: Mapping[str, Response]) -> dict[str,
     return partition_report(
         {ROTATING: pairs(tasks.rotating), FIXED: pairs(tasks.fixed), NOVEL: pairs(tasks.novel)},
         NOVEL,
+    )
+
+
+def _generation_calibration(
+    outcomes: Sequence[TaskOutcome], by_ref: Mapping[str, Response]
+) -> dict[str, Any] | None:
+    responses = [by_ref.get(outcome.task_ref) for outcome in outcomes]
+    if not any(response is not None and response.logprobs for response in responses):
+        return None
+    return generation_summary(
+        (
+            sequence_confidence(response.logprobs) if response is not None and response.ok else 0.0,
+            outcome.score,
+        )
+        for outcome, response in zip(outcomes, responses, strict=True)
     )
 
 
@@ -556,7 +575,9 @@ def evaluate_participant(
     else:
         rotating, fixed, novel, n_rotating, n_fixed, n_novel = partition_scores(outcomes)
     calibration = (
-        _calibration(tasks, by_ref) if get_track(tasks.track).answer_mode == DECIDE else None
+        _calibration(tasks, by_ref)
+        if get_track(tasks.track).answer_mode == DECIDE
+        else _generation_calibration(outcomes, by_ref)
     )
     return _evaluation(
         participant,

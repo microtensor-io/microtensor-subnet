@@ -163,7 +163,7 @@ def _calibration_fields(evaluation: Evaluation) -> dict[str, Any]:
         "ece_novel": found.get("ece_novel", 0.0),
         "level_mae": found.get("level_mae"),
         "reliability": found.get("reliability", []),
-        "prompt_format": DECISION_PROMPT_VERSION,
+        "prompt_format": found.get("prompt_format", DECISION_PROMPT_VERSION),
     }
 
 

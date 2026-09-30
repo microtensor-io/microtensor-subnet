@@ -11,7 +11,7 @@ from microtensor.core.system import SystemManifest
 from microtensor.core.tracks import DECIDE, get_track
 from microtensor.harness.cascade import CascadeResult, run_cascade
 from microtensor.harness.engines.router import RouterError, load_router
-from microtensor.scoring.calibration import summarise
+from microtensor.scoring.calibration import generation_summary, sequence_confidence, summarise
 from microtensor.scoring.frontier import quantise_point
 from microtensor.scoring.metrics import score_task
 from microtensor.tasks.corpus import Task
@@ -180,6 +180,24 @@ def simulate(
         )
         system_calibration = summarise(
             (leg.response.output if leg and leg.response.ok else None, task.gold)
+            for task, leg in answered
+        )
+    else:
+        answered = [(task, by_ref.get(task.ref)) for task in tasks]
+        front_calibration = generation_summary(
+            (
+                sequence_confidence(leg.front_response.logprobs) if leg else 0.0,
+                scored(leg.front_response.output, task.gold)
+                if leg and leg.front_response.ok
+                else 0.0,
+            )
+            for task, leg in answered
+        )
+        system_calibration = generation_summary(
+            (
+                sequence_confidence(leg.response.logprobs) if leg else 0.0,
+                scored(leg.response.output, task.gold) if leg and leg.response.ok else 0.0,
+            )
             for task, leg in answered
         )
     return Simulation(
