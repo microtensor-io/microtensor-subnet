@@ -9,6 +9,7 @@ from microtensor.scoring.metrics import (
     decision_brier,
     decision_judgements,
     decision_level_errors,
+    decision_skill,
 )
 
 BINS: Final[int] = 10
@@ -76,19 +77,20 @@ def summarise(pairs: Iterable[tuple[Any, Any]]) -> dict[str, Any]:
 
 
 def partition_report(
-    partitions: Mapping[str, Iterable[tuple[Any, Any]]], novel: str
+    partitions: Mapping[str, Iterable[tuple[Any, Any, Any]]], novel: str
 ) -> dict[str, Any]:
-    everything: list[tuple[Any, Any]] = []
-    held_out: list[tuple[Any, Any]] = []
-    for name, pairs in partitions.items():
-        materialised = list(pairs)
+    everything: list[tuple[Any, Any, Any]] = []
+    held_out: list[tuple[Any, Any, Any]] = []
+    for name, entries in partitions.items():
+        materialised = list(entries)
         everything.extend(materialised)
         if name == novel:
             held_out.extend(materialised)
-    overall = summarise(everything)
-    withheld = summarise(held_out)
+    overall = summarise((output, gold) for output, gold, _ in everything)
+    withheld = summarise((output, gold) for output, gold, _ in held_out)
     return {
         **overall,
+        "brier_skill": round(decision_skill(everything), ACCURACY_DECIMALS),
         "ece_novel": withheld["ece"],
         "accuracy_novel": withheld["accuracy"],
         "questions_novel": withheld["questions"],

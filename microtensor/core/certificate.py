@@ -158,6 +158,7 @@ def _calibration_fields(evaluation: Evaluation) -> dict[str, Any]:
     return {
         "accuracy": found.get("accuracy", 0.0),
         "brier_quality": found.get("brier_quality", 0.0),
+        "brier_skill": found.get("brier_skill", 0.0),
         "ece": found.get("ece", 0.0),
         "ece_novel": found.get("ece_novel", 0.0),
         "level_mae": found.get("level_mae"),

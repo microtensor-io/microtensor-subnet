@@ -148,11 +148,12 @@ def _evaluation(
 
 
 def _calibration(tasks: RoundTasks, by_ref: Mapping[str, Response]) -> dict[str, Any]:
-    def pairs(bucket: Sequence[Task]) -> list[tuple[Any, Any]]:
-        found: list[tuple[Any, Any]] = []
+    def pairs(bucket: Sequence[Task]) -> list[tuple[Any, Any, Any]]:
+        found: list[tuple[Any, Any, Any]] = []
         for task in bucket:
             response = by_ref.get(task.ref)
-            found.append((response.output if response and response.ok else None, task.gold))
+            output = response.output if response and response.ok else None
+            found.append((output, task.gold, task.inputs.get("decision")))
         return found
 
     return partition_report(
@@ -457,11 +458,34 @@ def _extraction_partition_scores(
     )
 
 
+
+def _decision_partition_scores(
+    tasks: RoundTasks, by_ref: dict[str, Response]
+) -> tuple[float, float, float, int, int, int]:
+    from microtensor.scoring.metrics import decision_skill
+
+    buckets: dict[str, list[tuple[Any, Any, Any]]] = {ROTATING: [], FIXED: [], NOVEL: []}
+    for task in tasks.all:
+        response = by_ref.get(task.ref)
+        output = response.output if response and response.ok else None
+        spec = task.inputs.get("decision")
+        buckets[partition_of(tasks, task.ref)].append((output, task.gold, spec))
+    return (
+        decision_skill(buckets[ROTATING]),
+        decision_skill(buckets[FIXED]),
+        decision_skill(buckets[NOVEL]),
+        len(buckets[ROTATING]),
+        len(buckets[FIXED]),
+        len(buckets[NOVEL]),
+    )
+
+
 # Metrics whose ranked quality is aggregated over the whole document set rather
 # than averaged per task. Registering here keeps the dispatch in one place.
 _DATASET_METRICS = {
     "map_at_iou": _detection_partition_scores,
     "entity_micro_f1": _extraction_partition_scores,
+    "decision_brier": _decision_partition_scores,
 }
 
 

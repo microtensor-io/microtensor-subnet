@@ -613,3 +613,55 @@ def decision_level_errors(output: Any, gold: Any) -> list[float]:
             continue
         errors.append(abs(level - target))
     return errors
+
+
+def _question_labels(body: Any) -> tuple[str, list[str]]:
+    if not isinstance(body, dict):
+        return "", []
+    kind = str(body.get("type", ""))
+    criteria = body.get("criteria")
+    if kind == "noul":
+        return kind, ["false", "true"]
+    if kind == "choice" and isinstance(criteria, dict):
+        return kind, [_normalise_text(label) for label in criteria]
+    if kind == "score" and isinstance(criteria, list | tuple):
+        return kind, [str(level) for level in range(len(criteria))]
+    return "", []
+
+
+def decision_skill(entries: Sequence[tuple[Any, Any, Any]]) -> float:
+    if not entries:
+        return 0.0
+    counts: dict[str, dict[str, int]] = {}
+    for _, gold, spec in entries:
+        questions = (spec or {}).get("questions") if isinstance(spec, dict) else None
+        for name, value in _expected_answers(gold).items():
+            kind, _ = _question_labels((questions or {}).get(name))
+            if kind:
+                label = _gold_label(kind, value)
+                counts.setdefault(name, {})
+                counts[name][label] = counts[name].get(label, 0) + 1
+
+    model_total = 0.0
+    prior_total = 0.0
+    for output, gold, spec in entries:
+        model_total += decision_brier(output, gold)
+        questions = (spec or {}).get("questions") if isinstance(spec, dict) else None
+        answers: dict[str, Any] = {}
+        for name in _expected_answers(gold):
+            kind, labels = _question_labels((questions or {}).get(name))
+            if not kind or not labels:
+                continue
+            seen = counts.get(name, {})
+            mass = [float(seen.get(label, 0)) for label in labels]
+            total = math.fsum(mass)
+            shares = [m / total for m in mass] if total > 0 else [1.0 / len(labels)] * len(labels)
+            answers[name] = {"type": kind, "probabilities": dict(zip(labels, shares, strict=True))}
+        prior_total += decision_brier({"answers": answers}, gold)
+
+    model = model_total / len(entries)
+    prior = prior_total / len(entries)
+    room = 1.0 - prior
+    if room <= 1e-9:
+        return 1.0 if model >= 1.0 - 1e-9 else 0.0
+    return max(0.0, min(1.0, (model - prior) / room))
