@@ -19,7 +19,7 @@ from microtensor.core.protocol import (
     TaskOutcome,
     evaluate_gate,
 )
-from microtensor.core.tracks import DECIDE, HardwareClass, get_class, get_track
+from microtensor.core.tracks import DECIDE, HardwareClass, Track, get_class, get_track
 from microtensor.envelope.device import POLICY_ENV
 from microtensor.envelope.profiler import plan_for, plan_payload, run_profile
 from microtensor.harness.cascade import CascadeResult, Leg, run_cascade
@@ -27,6 +27,7 @@ from microtensor.harness.contract import Response
 from microtensor.harness.execute import run_tasks
 from microtensor.harness.jail import run_jailed
 from microtensor.harness.limits import Limits
+from microtensor.harness.output import check as check_output
 from microtensor.harness.registry import EngineUnavailable, available, load_builtin
 from microtensor.registry.fetch import ArtifactMismatch, Unfetchable
 from microtensor.registry.fetch import materialise as fetch_artifact
@@ -227,7 +228,13 @@ def profile(
     return None, f"profiling failed: {result.error}"
 
 
-def _outcome(task: Task, response: Response | None, metric: str, partition: str) -> TaskOutcome:
+def _outcome(
+    task: Task,
+    response: Response | None,
+    metric: str,
+    partition: str,
+    track: Track | None = None,
+) -> TaskOutcome:
     if response is None or not response.ok:
         return TaskOutcome(
             task_ref=task.ref,
@@ -248,6 +255,16 @@ def _outcome(task: Task, response: Response | None, metric: str, partition: str)
                 error=f"solution screened: {reason}",
                 fault=Fault.ARTIFACT,
             )
+    invalid = check_output(track, response) if track is not None else ""
+    if invalid:
+        return TaskOutcome(
+            task_ref=task.ref,
+            score=0.0,
+            completed=True,
+            partition=partition,
+            error=f"invalid output: {invalid}",
+            latency_ms=response.total_ms,
+        )
     if has_module_tests(task.gold):
         value = execute_module_rate(str(response.output), task.gold["tests"])
     else:
@@ -323,15 +340,18 @@ def outcomes_from(
     that decides emission is the quality of what the system finally answered.
     """
     by_ref = {leg.task_ref: leg for leg in legs}
+    track = get_track(tasks.track)
 
     end_to_end: list[TaskOutcome] = []
     front_only: list[TaskOutcome] = []
     for task in tasks.all:
         leg = by_ref.get(task.ref)
         partition = partition_of(tasks, task.ref)
-        end_to_end.append(_outcome(task, leg.response if leg else None, metric, partition))
+        end_to_end.append(
+            _outcome(task, leg.response if leg else None, metric, partition, track)
+        )
         front_only.append(
-            _outcome(task, leg.front_response if leg else None, metric, partition)
+            _outcome(task, leg.front_response if leg else None, metric, partition, track)
         )
     return tuple(end_to_end), tuple(front_only)
 
@@ -345,7 +365,8 @@ def score(
     *,
     cpu_seconds: int = 0,
 ) -> tuple[tuple[TaskOutcome, ...], dict[str, Response], str]:
-    metric = get_track(tasks.track).metric
+    track = get_track(tasks.track)
+    metric = track.metric
     requests = to_requests(
         tasks.all, tasks.seed, tasks.track, participant.manifest.artifact_digest
     )
@@ -382,6 +403,7 @@ def score(
                 by_ref.get(task.ref),
                 metric,
                 partition_of(tasks, task.ref),
+                track,
             )
             for task in tasks.all
         )

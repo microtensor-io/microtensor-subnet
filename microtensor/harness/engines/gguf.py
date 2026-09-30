@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import struct
 import time
@@ -243,6 +244,7 @@ class GgufEngine:
         self._model: Any = None
         self._manifest: LoadManifest | None = None
         self._answer_ids: dict[str, int] = {}
+        self._grammars: dict[str, Any] = {}
         self._answer_fault = ""
 
     def load(self, artifact: Path, manifest: LoadManifest) -> None:
@@ -471,6 +473,9 @@ class GgufEngine:
                 "stream": True,
                 "stopping_criteria": confidence,
             }
+            grammar = self._grammar(request)
+            if grammar is not None:
+                sampler["grammar"] = grammar
 
             # Instruction tasks go through the model's chat template so an
             # instruct model follows the prompt instead of continuing it.
@@ -575,6 +580,20 @@ class GgufEngine:
             )
         except Exception:
             return None
+
+    def _grammar(self, request: Request) -> Any:
+        if not request.grammar:
+            return None
+        key = json.dumps(request.grammar, sort_keys=True)
+        if key not in self._grammars:
+            from llama_cpp import LlamaGrammar
+
+            if "json_schema" in request.grammar:
+                built = LlamaGrammar.from_json_schema(request.grammar["json_schema"], verbose=False)
+            else:
+                built = LlamaGrammar.from_string(request.grammar["gbnf"], verbose=False)
+            self._grammars[key] = built
+        return self._grammars[key]
 
     def unload(self) -> None:
         self._model = None
