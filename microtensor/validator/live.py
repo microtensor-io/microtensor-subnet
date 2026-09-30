@@ -41,6 +41,35 @@ class HttpSystemClient:
         return dict(payload["trace"])
 
 
+class GatewaySystemClient:
+    def __init__(
+        self, gateway: str, credential: str, hotkey: str, worker: str = "", timeout: float = 900.0
+    ) -> None:
+        if not gateway.startswith(("http://", "https://")):
+            raise LiveError(f"the gateway {gateway!r} is not http or https")
+        self.gateway = gateway.rstrip("/")
+        self.credential = credential
+        self.hotkey = hotkey
+        self.worker = worker
+        self.timeout = timeout
+
+    def task(self, name: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        body = json.dumps(
+            {**dict(request), "hotkey": self.hotkey, "worker": self.worker, "system": name}
+        ).encode()
+        answer = urllib.request.Request(  # noqa: S310
+            f"{self.gateway}/v1/operators/task",
+            data=body,
+            headers={"content-type": "application/json", "x-mt-credential": self.credential},
+            method="POST",
+        )
+        with urllib.request.urlopen(answer, timeout=self.timeout) as found:  # noqa: S310
+            payload = json.loads(found.read().decode("utf-8"))
+        if "trace" not in payload:
+            raise LiveError(str(payload.get("error", "the gateway returned no trace")))
+        return dict(payload["trace"])
+
+
 @dataclass(frozen=True, slots=True)
 class LiveRun:
     traces: tuple[Trace, ...]
