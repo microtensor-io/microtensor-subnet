@@ -37,10 +37,15 @@ def _teacher(path: Path | None) -> dict[str, dict[str, dict[str, float]]]:
     return found
 
 
-def _target(question: decision_prompt.Question, gold: Any, soft: dict[str, float] | None) -> list[float]:
+def _target(
+    question: decision_prompt.Question, gold: Any, soft: dict[str, float] | None
+) -> list[float]:
     labels = [_normalise(label) for label in question.labels]
     if soft:
-        shares = [float(soft.get(label, soft.get(original, 0.0))) for label, original in zip(labels, question.labels, strict=True)]
+        shares = [
+            float(soft.get(label, soft.get(original, 0.0)))
+            for label, original in zip(labels, question.labels, strict=True)
+        ]
         total = math.fsum(shares)
         if total > 0.0:
             return [share / total for share in shares]
@@ -64,7 +69,9 @@ def examples(corpus: Path, track: str, teacher: Path | None, seed: int) -> list[
         for question in questions:
             if question.name not in expected:
                 continue
-            target = _target(question, expected[question.name], soft.get(task.ref, {}).get(question.name))
+            target = _target(
+                question, expected[question.name], soft.get(task.ref, {}).get(question.name)
+            )
             if target:
                 found.append(Example(context=context, question=question, target=target))
     return found
@@ -75,7 +82,9 @@ def answer_ids(tokenizer: Any) -> dict[str, int]:
     for text in decision_prompt.ANSWER_STRINGS:
         ids = tokenizer.encode(text, add_special_tokens=False)
         if len(ids) != 1:
-            raise SystemExit(f"the tokenizer splits {text!r}; this base cannot enter a decision track")
+            raise SystemExit(
+                f"the tokenizer splits {text!r}; this base cannot enter a decision track"
+            )
         found[text] = ids[0]
     if len(set(found.values())) != len(found):
         raise SystemExit("the tokenizer maps two answers to one token")
@@ -93,7 +102,9 @@ def render(tokenizer: Any, example: Example) -> str:
     )
 
 
-def batch_loss(model: Any, tokenizer: Any, batch: Sequence[Example], ids: dict[str, int], brier: float) -> Any:
+def batch_loss(
+    model: Any, tokenizer: Any, batch: Sequence[Example], ids: dict[str, int], brier: float
+) -> Any:
     import torch
     import torch.nn.functional as functional
 
@@ -106,7 +117,9 @@ def batch_loss(model: Any, tokenizer: Any, batch: Sequence[Example], ids: dict[s
 
     total = torch.zeros((), device=logits.device)
     for index, example in enumerate(batch):
-        chosen = torch.tensor([ids[text] for text in example.question.answers], device=logits.device)
+        chosen = torch.tensor(
+            [ids[text] for text in example.question.answers], device=logits.device
+        )
         log_probs = functional.log_softmax(rows[index, chosen].float(), dim=-1)
         target = torch.tensor(example.target, device=logits.device)
         kl = functional.kl_div(log_probs, target, reduction="sum")
@@ -116,17 +129,27 @@ def batch_loss(model: Any, tokenizer: Any, batch: Sequence[Example], ids: dict[s
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Train a calibrated decider on the public train split.")
+    parser = argparse.ArgumentParser(
+        description="Train a calibrated decider on the public train split."
+    )
     parser.add_argument("--base", required=True, help="Hugging Face base model id")
-    parser.add_argument("--revision", required=True, help="pinned base revision, as the allowlist records it")
-    parser.add_argument("--corpus", type=Path, required=True, help="train split JSONL with decision tasks")
+    parser.add_argument(
+        "--revision", required=True, help="pinned base revision, as the allowlist records it"
+    )
+    parser.add_argument(
+        "--corpus", type=Path, required=True, help="train split JSONL with decision tasks"
+    )
     parser.add_argument("--track", default="classify")
-    parser.add_argument("--teacher", type=Path, help="JSONL of {ref, answers: {question: {label: p}}}")
+    parser.add_argument(
+        "--teacher", type=Path, help="JSONL of {ref, answers: {question: {label: p}}}"
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-4)
-    parser.add_argument("--brier", type=float, default=1.0, help="weight of the Brier term; 0 is pure KL")
+    parser.add_argument(
+        "--brier", type=float, default=1.0, help="weight of the Brier term; 0 is pure KL"
+    )
     parser.add_argument("--full", action="store_true", help="full fine tune instead of LoRA")
     parser.add_argument("--rank", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
@@ -143,7 +166,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ids = answer_ids(tokenizer)
 
     model = AutoModelForCausalLM.from_pretrained(
-        args.base, revision=args.revision, torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        args.base,
+        revision=args.revision,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
     )
     if torch.cuda.is_available():
         model = model.cuda()
@@ -152,7 +177,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         model = get_peft_model(
             model,
-            LoraConfig(r=args.rank, lora_alpha=args.rank * 2, lora_dropout=0.05, target_modules="all-linear", task_type="CAUSAL_LM"),
+            LoraConfig(
+                r=args.rank,
+                lora_alpha=args.rank * 2,
+                lora_dropout=0.05,
+                target_modules="all-linear",
+                task_type="CAUSAL_LM",
+            ),
         )
 
     optimiser = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.lr)
@@ -184,7 +215,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("export:")
     print(f"  python convert_hf_to_gguf.py {args.out} --outfile decider-f16.gguf --outtype f16")
     print(f"  llama-quantize {keep} decider-f16.gguf decider.gguf Q4_K_M")
-    print("then calibrate: python scripts/fold_temperature.py --model decider.gguf --corpus <train> --out decider-cal.gguf")
+    print(
+        "then calibrate: python scripts/fold_temperature.py --model decider.gguf "
+        "--corpus <train> --out decider-cal.gguf"
+    )
     return 0
 
 
