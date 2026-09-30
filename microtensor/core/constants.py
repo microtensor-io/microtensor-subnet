@@ -105,6 +105,8 @@ ALLOWED_ROUTER_FEATURES: Final[frozenset[str]] = frozenset(
         "answer_prob",
         "answer_margin",
         "answer_entropy",
+        "input_typicality",
+        "harness_errors",
     }
 )
 ROUTER_MAX_BYTES: Final[int] = 4 * 1024**2

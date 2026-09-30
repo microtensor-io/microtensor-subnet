@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="layers to offload to the GPU; -1 offloads all, 0 keeps it on the CPU",
     )
     serve.add_argument("--review-seconds", type=float, default=supervise.REVIEW_SECONDS)
+    serve.add_argument(
+        "--archived",
+        action="append",
+        type=Path,
+        default=[],
+        help="an archived full system record to host; repeat for each",
+    )
+    serve.add_argument(
+        "--escalation-url", default="", help="where the mirrored escalation models are served"
+    )
+    serve.add_argument("--mirror-org", default="microtensor-archive")
+    serve.add_argument("--restore-dir", type=Path, default=Path("archived-systems"))
     _shared(serve)
     serve.set_defaults(handler=_run)
 
@@ -227,11 +240,13 @@ def _run(args: argparse.Namespace) -> int:
     try:
         serves = load_serves(args.serves_file) if args.serves_file else []
         serves += [parse_serve(entry, args.concurrency) for entry in args.serve]
+        systems = _archived(args, wallet) if args.archived else {}
         settings = Settings(
             gateway=args.gateway,
             hotkey=hotkey_address(wallet),
             serves=tuple(serves),
             worker=args.worker,
+            systems=tuple(sorted(systems)),
         )
     except AgentError as exc:
         return fail(str(exc))
@@ -240,7 +255,7 @@ def _run(args: argparse.Namespace) -> int:
 
     pool = Pool(settings.serves)
     try:
-        asyncio.run(_serve(settings, pool))
+        asyncio.run(_serve(settings, pool, systems))
     except KeyboardInterrupt:
         print("stopped")
     except AgentError as exc:
@@ -248,13 +263,41 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _serve(settings: Settings, pool: Pool) -> None:
+def _archived(args: argparse.Namespace, wallet: Any) -> dict[str, Any]:
+    from microtensor.harness.sdk import openai_escalation
+    from microtensor.miner.host import wallet_signer
+    from microtensor.serving.archived import ArchiveError, archived_handlers
+
+    if not args.escalation_url:
+        raise AgentError("archived systems escalate to our mirrors; pass --escalation-url")
+
+    def escalation_for(model: str, revision: str) -> Any:
+        mirrored = f"{args.mirror_org}/{model.split('/', 1)[-1]}"
+        return openai_escalation(args.escalation_url, mirrored)
+
+    try:
+        return archived_handlers(
+            list(args.archived),
+            Path(args.restore_dir),
+            escalation_for,
+            wallet_signer(wallet),
+            hotkey=hotkey_address(wallet),
+        )
+    except ArchiveError as exc:
+        raise AgentError(str(exc)) from exc
+
+
+async def _serve(
+    settings: Settings, pool: Pool, systems: Mapping[str, Any] | None = None
+) -> None:
     missing = await pool.unready()
     if missing:
         raise AgentError(f"no engine answering for {'; '.join(missing)}; start them first")
     for entry in settings.serves:
         log.info("%s ready on %s at %d", entry.model, ", ".join(entry.engines), entry.concurrency)
-    await run(settings, pool)
+    for name in sorted(systems or {}):
+        log.info("archived system %s ready", name)
+    await run(settings, pool, systems=systems)
 
 
 def _verify(args: argparse.Namespace) -> int:

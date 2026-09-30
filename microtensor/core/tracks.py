@@ -24,6 +24,12 @@ DECIDE: Final[str] = "decide"
 ANSWER_MODES: Final[frozenset[str]] = frozenset({GENERATE, DECIDE})
 DECISION_PROMPT_VERSION: Final[str] = "d1"
 
+CHOICE: Final[str] = "choice"
+STRUCTURED: Final[str] = "structured"
+TEXT: Final[str] = "text"
+MEDIA: Final[str] = "media"
+OUTPUT_TYPES: Final[frozenset[str]] = frozenset({CHOICE, STRUCTURED, TEXT, MEDIA})
+
 
 @dataclass(frozen=True, slots=True)
 class Track:
@@ -39,8 +45,31 @@ class Track:
     chat: bool = False
     answer_mode: str = GENERATE
     full_system: bool = False
+    output_type: str = ""
+    output_schema: str = ""
+    confidence_output: str = ""
+    input_format: str = ""
 
     def __post_init__(self) -> None:
+        if self.input_format:
+            from microtensor.core.inputs import INPUT_FORMATS
+
+            if self.input_format not in INPUT_FORMATS:
+                raise ValueError(f"track {self.id!r} names unpublished input {self.input_format!r}")
+            template = INPUT_FORMATS[self.input_format].get("template")
+            if template is not None and (template == "chat") != self.chat:
+                raise ValueError(f"track {self.id!r}: its input format and chat flag disagree")
+        if self.output_type and self.output_type not in OUTPUT_TYPES:
+            raise ValueError(
+                f"track {self.id!r} declares output type {self.output_type!r}; "
+                f"expected one of {sorted(OUTPUT_TYPES)}"
+            )
+        if (self.output_type == CHOICE) != (self.answer_mode == DECIDE) and self.output_type:
+            raise ValueError(
+                f"track {self.id!r}: choices are built from decide mode and only there"
+            )
+        if self.output_type == STRUCTURED and not self.output_schema:
+            raise ValueError(f"track {self.id!r} returns structured output but names no schema")
         if self.answer_mode not in ANSWER_MODES:
             raise ValueError(
                 f"track {self.id!r} answers in mode {self.answer_mode!r}; "
@@ -113,6 +142,8 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="generated_tokens",
             classes=("mt-3g",),
+            output_type=TEXT,
+            input_format="raw-t1",
         ),
         Track(
             id="classify",
@@ -123,6 +154,7 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="generated_tokens",
             classes=("mt-3g",),
+            input_format="raw-t1",
         ),
         Track(
             id="guard",
@@ -134,6 +166,9 @@ TRACKS: Final[dict[str, Track]] = {
             work_unit="generated_tokens",
             classes=("mt-4g",),
             chat=True,
+            output_type=STRUCTURED,
+            output_schema="spans",
+            input_format="chat-t1",
         ),
         Track(
             id="extract",
@@ -145,6 +180,9 @@ TRACKS: Final[dict[str, Track]] = {
             work_unit="generated_tokens",
             classes=("mt-3g",),
             chat=True,
+            output_type=STRUCTURED,
+            output_schema="entities",
+            input_format="chat-t1",
         ),
         Track(
             id="analytics",
@@ -154,6 +192,8 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="generated_tokens",
             chat=True,
+            output_type=TEXT,
+            input_format="chat-t1",
         ),
         Track(
             id="support",
@@ -165,6 +205,9 @@ TRACKS: Final[dict[str, Track]] = {
             work_unit="generated_tokens",
             classes=("mt-3g",),
             chat=True,
+            output_type=STRUCTURED,
+            output_schema="tool_calls",
+            input_format="chat-t1",
         ),
         Track(
             id="invoice",
@@ -198,6 +241,10 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="images",
             chat=True,
+            output_type=STRUCTURED,
+            output_schema="boxes",
+            confidence_output="scores",
+            input_format="image-i1",
         ),
         Track(
             id="vqa",
@@ -207,6 +254,8 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="images",
             chat=True,
+            output_type=TEXT,
+            input_format="image-i1",
         ),
         Track(
             id="speech",
@@ -216,6 +265,9 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="audio_seconds",
             chat=True,
+            output_type=TEXT,
+            confidence_output="logits",
+            input_format="audio-a1",
         ),
         Track(
             id="video",
@@ -224,6 +276,10 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.ARGMAX,
             emission_share=0.0,
             work_unit="frames",
+            output_type=STRUCTURED,
+            output_schema="segments",
+            confidence_output="scores",
+            input_format="video-v1",
         ),
         Track(
             id="image-synth",
@@ -232,6 +288,7 @@ TRACKS: Final[dict[str, Track]] = {
             decoding=Decoding.SEEDED,
             emission_share=0.0,
             work_unit="sampling_steps",
+            output_type=MEDIA,
         ),
     )
 }

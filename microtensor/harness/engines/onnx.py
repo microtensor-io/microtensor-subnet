@@ -19,6 +19,8 @@ MAX_OPSET: Final[int] = 21
 ALLOWED_DOMAINS: Final[frozenset[str]] = frozenset({"", "ai.onnx", "ai.onnx.ml"})
 LOGITS_OUTPUT: Final[str] = "logits"
 INTRA_OP_THREADS: Final[int] = 1
+CONFIDENCE_DIGITS: Final[int] = 6
+CONFIDENCE_VALUES: Final[int] = 4096
 
 INFO = EngineInfo(
     format=ArtifactFormat.ONNX,
@@ -178,6 +180,16 @@ class OnnxEngine:
         numpy = _numpy()
         started = time.perf_counter()
         first_token_at = 0.0
+        names = [o.name for o in self._session.get_outputs()]
+        if request.confidence_output and request.confidence_output not in names:
+            return Response.failed(
+                request.task_ref,
+                f"the arena reads confidence from output {request.confidence_output!r}, "
+                "which this graph does not produce",
+            )
+        logprobs: list[float] = []
+        entropies: list[float] = []
+        reported: tuple[float, ...] = ()
 
         try:
             tokens = list(self._tokenizer.encode(request.prompt).ids)
@@ -208,6 +220,19 @@ class OnnxEngine:
                 outputs = self._session.run(None, feed)
                 logits = outputs[0]
                 next_id = int(numpy.argmax(logits[0, -1]))
+                row = numpy.asarray(logits[0, -1], dtype=numpy.float64)
+                shifted = row - row.max()
+                log_p = shifted - numpy.log(numpy.exp(shifted).sum())
+                logprobs.append(round(float(log_p[next_id]), CONFIDENCE_DIGITS))
+                entropies.append(
+                    round(float(-(numpy.exp(log_p) * log_p).sum()), CONFIDENCE_DIGITS)
+                )
+                if request.confidence_output:
+                    values = numpy.asarray(outputs[names.index(request.confidence_output)])
+                    reported = tuple(
+                        round(float(v), CONFIDENCE_DIGITS)
+                        for v in values.ravel()[:CONFIDENCE_VALUES]
+                    )
 
                 if step == 0:
                     first_token_at = time.perf_counter()
@@ -234,6 +259,9 @@ class OnnxEngine:
             ttft_ms=(first_token_at - started) * 1000.0 if first_token_at else 0.0,
             total_ms=(total - started) * 1000.0,
             output_tokens=len(produced),
+            logprobs=tuple(logprobs),
+            entropies=tuple(entropies),
+            confidence=reported,
         )
 
     def _carry_past(self, outputs: list[Any]) -> dict[str, Any]:

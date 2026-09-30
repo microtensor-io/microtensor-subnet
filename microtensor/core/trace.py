@@ -47,6 +47,7 @@ def _count(value: Any, what: str) -> int:
 
 @dataclass(frozen=True, slots=True)
 class SmallAnswer:
+    prompt: str
     output: Any
     confidence: float
     tokens: tuple[int, ...]
@@ -55,6 +56,7 @@ class SmallAnswer:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "prompt": self.prompt,
             "output": self.output,
             "confidence": self.confidence,
             "tokens": list(self.tokens),
@@ -67,16 +69,17 @@ class SmallAnswer:
         body = _fields(
             raw,
             "the small model answer",
-            frozenset({"output", "confidence", "tokens", "prompt_tokens", "ms"}),
+            frozenset({"prompt", "output", "confidence", "tokens", "prompt_tokens", "ms"}),
             frozenset(),
         )
         confidence = float(body["confidence"])
         if not 0.0 <= confidence <= 1.0:
             raise TraceError("the small model confidence must lie in [0, 1]")
         tokens = body["tokens"]
-        if not isinstance(tokens, list) or not tokens:
-            raise TraceError("the small model answer lists no tokens")
+        if not isinstance(tokens, list):
+            raise TraceError("the small model tokens must be a list")
         return cls(
+            prompt=str(body["prompt"]),
             output=body["output"],
             confidence=confidence,
             tokens=tuple(_count(t, "a small model token") for t in tokens),

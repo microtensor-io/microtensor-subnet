@@ -224,6 +224,40 @@ class SGLangEngine(Engine):
             payload = payload[0] if payload else {}
         return self._answer(payload)
 
+    @staticmethod
+    def _decide_body(texts: Sequence[str], answer_ids: Sequence[Sequence[int]]) -> dict[str, Any]:
+        return {
+            "text": list(texts),
+            "sampling_params": {"max_new_tokens": 1, "temperature": 0.0},
+            "return_logprob": True,
+            "token_ids_logprob": [list(ids) for ids in answer_ids],
+            "stream": False,
+        }
+
+    @staticmethod
+    def _scores(payload: Mapping[str, Any]) -> dict[int, float]:
+        meta = dict(payload.get("meta_info") or {})
+        rows = meta.get("output_token_ids_logprobs") or []
+        first = rows[0] if rows else []
+        found: dict[int, float] = {}
+        for row in first or ():
+            if isinstance(row, Sequence) and len(row) >= 2 and isinstance(row[1], int):
+                found[int(row[1])] = float(row[0])
+        return found
+
+    async def decide(
+        self, texts: Sequence[str], answer_ids: Sequence[Sequence[int]]
+    ) -> list[dict[int, float]]:
+        httpx = _httpx()
+        async with httpx.AsyncClient(base_url=self.url, timeout=self.timeout) as client:
+            found = await client.post("/generate", json=self._decide_body(texts, answer_ids))
+            found.raise_for_status()
+            payload = found.json()
+        rows = payload if isinstance(payload, list) else [payload]
+        if len(rows) != len(texts):
+            raise EngineError("sglang answered a different number of questions than it was asked")
+        return [self._scores(row) for row in rows]
+
     async def stream(
         self, request: Mapping[str, Any], on_delta: Callable[[str], Awaitable[None]]
     ) -> dict[str, Any]:
