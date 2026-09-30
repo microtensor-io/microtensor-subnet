@@ -111,6 +111,7 @@ ignore = [
 "microtensor/serving/supervise.py" = ["S310", "S603"]
 "microtensor/serving/audit.py" = ["S310"]
 "tests/*" = ["S", "PLR2004"]
+"scripts/optimise_harness.py" = ["S311"]
 "microtensor/rigs/**" = ["N", "A", "C4", "RUF", "S", "B", "SIM", "UP", "E501", "W"]
 
 [tool.mypy]

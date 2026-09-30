@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from microtensor.core.constants import REFERENCE_COST_MS
 from microtensor.core.protocol import LoadManifest, Role
@@ -49,6 +50,94 @@ class Simulation:
                 "escalates would score the same and cost less"
             )
         return "\n".join(lines)
+
+
+def simulate_full(
+    artifact: Path,
+    load: LoadManifest,
+    system: SystemManifest,
+    tasks: Sequence[Task],
+    *,
+    metric: str,
+    track: str,
+    escalation_url: str,
+    usd_per_mtok_in: float = 0.0,
+    usd_per_mtok_out: float = 0.0,
+    limit: int = 0,
+) -> tuple[list[Any], Any]:
+    from microtensor.core.escalation import EscalationModel
+    from microtensor.core.tracks import get_track
+    from microtensor.harness.engines.gguf import GgufEngine
+    from microtensor.harness.engines.router import load_router
+    from microtensor.harness.package import package_reason
+    from microtensor.harness.sdk import Runtime, engine_small, openai_escalation
+    from microtensor.scoring.system import score_system
+
+    if system.harness is None or system.escalation is None:
+        raise SimulationError("a full system declares a harness and an escalation model")
+    reason = package_reason(artifact, system)
+    if reason:
+        raise SimulationError(reason)
+    if not escalation_url:
+        raise SimulationError("pass --escalation-url for the escalation model this system declares")
+    if limit > 0:
+        tasks = tasks[:limit]
+    chat = get_track(track).chat
+    engine = GgufEngine()
+    engine.load(artifact / system.locate(Role.FRONT), load)
+    router = load_router(artifact / system.locate(Role.ROUTER), system.router_features)
+    escalate = openai_escalation(escalation_url, system.escalation.model)
+    traces = []
+    try:
+        for task in tasks:
+            runtime = Runtime(
+                artifact / system.harness.path,
+                router,
+                system.router_features,
+                engine_small(engine, chat=chat, max_output_tokens=task.max_output_tokens),
+                escalate,
+                escalation=system.escalation,
+                system_digest=system.digest(),
+                hotkey="local",
+            )
+            traces.append(runtime.run(0, task.ref, task.prompt, task.inputs))
+    finally:
+        engine.unload()
+    price = EscalationModel(
+        model=system.escalation.model,
+        revision=system.escalation.revision,
+        usd_per_mtok_in=usd_per_mtok_in,
+        usd_per_mtok_out=usd_per_mtok_out,
+    )
+    score = score_system(traces, {t.ref: t.gold for t in tasks}, metric, {price.key: price})
+    return traces, score
+
+
+def full_report(traces: Sequence[Any], score: Any, gold: dict[str, Any], metric: str) -> str:
+    from microtensor.scoring.metrics import score_task
+
+    lines = [f"{'task':<24}{'conf':>6}{'router':>10}{'final':>8}  answer"]
+    for trace in traces:
+        correct = score_task(metric, trace.final, gold.get(trace.task_ref))
+        lines.append(
+            f"{trace.task_ref[:23]:<24}{trace.small.confidence:>6.2f}"
+            f"{'escalate' if trace.escalated else 'resolve':>10}{correct:>8.2f}  "
+            f"{str(trace.final).strip()[:60]!r}"
+        )
+    s = score
+    lines += [
+        "",
+        f"tasks              {s.tasks}",
+        f"end to end quality {s.quality:.4f}",
+        f"small model alone  {s.small_quality:.4f}",
+        f"escalation rate    {s.escalation_rate:.1%}",
+        f"waste              {s.waste:.1%}  escalated when the small model was right",
+        f"misses             {s.misses:.1%}  kept an answer the small model got wrong",
+        f"calibration error  {s.calibration.get('ece', 0.0):.4f}",
+        f"cost per 1k tasks  ${s.cost_usd * 1000:.4f}  "
+        f"(small ${s.small_usd * 1000:.4f}, escalation ${s.escalation_usd * 1000:.4f})",
+    ]
+    return "\n".join(lines)
 
 
 def check_system(system: SystemManifest, artifact: Path, hardware_class: str) -> None:

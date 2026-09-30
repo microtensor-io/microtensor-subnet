@@ -12,7 +12,14 @@ from microtensor.core.protocol import Role
 from microtensor.core.system import SystemManifest
 from microtensor.core.trace import Trace
 from microtensor.harness.contract import Response
-from microtensor.harness.engines.router import Decision, Router, decide, features_from, load_router
+from microtensor.harness.engines.router import (
+    Decision,
+    Router,
+    decide,
+    features_from,
+    load_router,
+    typicality,
+)
 from microtensor.harness.sdk import EscalationCall, Runtime, confidence_of, engine_small
 
 MARGIN_TOLERANCE: Final[float] = 0.5
@@ -82,6 +89,8 @@ def check_router(
         entropies=tuple(entropies),
     )
     found = features_from(response, prompt_tokens=trace.small.prompt_tokens)
+    found["input_typicality"] = typicality(trace.small.prompt, router.typical)
+    found["harness_errors"] = float(trace.router.features.get("harness_errors", 0.0))
     features = {name: float(found.get(name, 0.0)) for name in declared}
     for name, value in features.items():
         claimed = trace.router.features.get(name)
