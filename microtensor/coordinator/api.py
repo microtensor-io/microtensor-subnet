@@ -199,7 +199,7 @@ class Coordinator:
             except Exception as exc:
                 log.warning("the submission fee could not be refreshed: %s", exc)
             else:
-                if fee != self.submission_fee:
+                if fee != self.submission_fee and not self._holds(self.arenas, fee):
                     self.submission_fee = fee
                     log.info("submission fee refreshed: %s", fee or "none")
         if self.arena_source is None:
@@ -209,7 +209,7 @@ class Coordinator:
         except Exception as exc:
             log.warning("the arena list could not be refreshed: %s", exc)
             return
-        if found != self.arenas:
+        if found != self.arenas and not self._holds(found, self.submission_fee):
             self.arenas = found
             log.info("arena list refreshed: %s", sorted(found) or "none")
             if self.corpora_source is not None:
@@ -217,6 +217,25 @@ class Coordinator:
                     self.corpora = self.corpora_source() or {}
                 except Exception as exc:
                     log.warning("the corpus could not be refreshed: %s", exc)
+
+    def _holds(self, arenas: Any, fee: Any) -> bool:
+        row = self.store.latest_round()
+        if row is None or not row.get("anchored_at"):
+            return False
+        index = int(row["round_index"])
+        if self.store.settlement(index) is not None:
+            return False
+        stored = str(row.get("config_hash") or "")
+        candidate = config_hash(served_config(self.corpus_version or "", arenas, fee))
+        if not stored or candidate == stored:
+            return False
+        log.warning(
+            "round %d is anchored under %s; the config change to %s waits until it settles",
+            index,
+            stored,
+            candidate,
+        )
+        return True
 
     def current_round(self) -> dict[str, Any]:
         self._maybe_refresh()

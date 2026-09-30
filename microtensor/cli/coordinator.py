@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +75,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_chain_arguments(opened)
     opened.add_argument("--replication", type=int, default=COORDINATOR_REPLICATION)
     _add_server_arguments(opened)
-    opened.set_defaults(handler=_open)
+    opened.set_defaults(handler=_refusing(_open))
 
     subs = inner.add_parser(
         "open-submissions",
@@ -84,7 +84,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_common_arguments(subs)
     add_chain_arguments(subs)
     _add_server_arguments(subs)
-    subs.set_defaults(handler=_open_submissions)
+    subs.set_defaults(handler=_refusing(_open_submissions))
 
     frz = inner.add_parser(
         "freeze",
@@ -322,6 +322,18 @@ def _config(args: argparse.Namespace) -> int:
     print()
     print(f"hash  {config_hash(config)}")
     return 0
+
+
+def _refusing(handler: Callable[[argparse.Namespace], int]) -> Callable[[argparse.Namespace], int]:
+    def run(args: argparse.Namespace) -> int:
+        from microtensor.coordinator.store import ConfigLocked
+
+        try:
+            return handler(args)
+        except ConfigLocked as exc:
+            return fail(str(exc))
+
+    return run
 
 
 def _open_submissions(args: argparse.Namespace) -> int:
