@@ -28,6 +28,10 @@ OUTBOX_BACKOFF_SECONDS = 30.0
 OUTBOX_BACKOFF_CAP_SECONDS = 600.0
 
 
+class ConfigLocked(RuntimeError):
+    pass
+
+
 class CoordinatorStore:
     """Rounds, assignments, reports, settlements.
 
@@ -57,6 +61,7 @@ class CoordinatorStore:
         block_hash: str = "",
         config_hash: str = "",
     ) -> None:
+        self._guard_config(round_index, config_hash)
         self.db.execute(
             """
             INSERT INTO rounds (round_index, seed_block, block_hash, close_block,
@@ -105,6 +110,7 @@ class CoordinatorStore:
         offsets from it. The seed is the close block's hash, unknown until the
         window ends, so it is left blank and filled when the round is frozen.
         """
+        self._guard_config(round_index, config_hash)
         self.db.execute(
             """
             INSERT INTO rounds (round_index, seed_block, block_hash, close_block,
@@ -140,6 +146,17 @@ class CoordinatorStore:
             "UPDATE rounds SET anchored_at = ? WHERE round_index = ?",
             (time.time(), round_index),
         )
+
+    def _guard_config(self, round_index: int, config_hash: str) -> None:
+        row = self.round(round_index)
+        if row is None or not row["anchored_at"]:
+            return
+        stored = str(row["config_hash"] or "")
+        if stored and config_hash != stored and self.settlement(round_index) is None:
+            raise ConfigLocked(
+                f"round {round_index} is anchored under {stored}; its config cannot change "
+                "until it settles, so the change waits for the next round"
+            )
 
     def round(self, round_index: int) -> dict[str, Any] | None:
         row = self.db.one("SELECT * FROM rounds WHERE round_index = ?", (round_index,))
