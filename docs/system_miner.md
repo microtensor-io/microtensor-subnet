@@ -783,7 +783,7 @@ you can see where your front actually landed.
 
 A decision track does not score generated text. The validator shows your model a document and one question, reads the probability your model gives each allowed answer, and builds the answer itself. Nothing is decoded, so the output is always valid, and the document is read once however many questions are asked about it. The exact prompt is in [decision_prompt.md](decision_prompt.md).
 
-You are ranked on **calibrated quality**, `1 − Brier/2`, averaged over the task's questions. Brier is a proper scoring rule: your expected score is highest when the probability you state equals your real chance of being right. A model that is right 70% of the time scores more by saying 0.7 than by claiming certainty, so overconfidence costs you directly. Accuracy and calibration error are published on your certificate, overall and on the withheld partition, but they do not rank you.
+You are ranked on **Brier skill**: how much better your calibrated quality, `1 − Brier/2`, is than simply stating how often each label occurs in the scored set. Stating those frequencies without reading the input scores 0, and a perfect model scores 1. Without this, a model that ignores the input can outscore a real one whenever the labels are skewed. Brier is a proper scoring rule: your expected score is highest when the probability you state equals your real chance of being right. A model that is right 70% of the time scores more by saying 0.7 than by claiming certainty, so overconfidence costs you directly. Accuracy and calibration error are published on your certificate, overall and on the withheld partition, but they do not rank you.
 
 What your artifact must be: a GGUF with a chat template, whose tokenizer makes each of `A` to `Z`, `true` and `false` a single distinct token. Qwen, Llama, Gemma and Phi all qualify.
 
@@ -817,7 +817,7 @@ Use `--token-embedding-type` on models with tied embeddings, such as the small Q
 python scripts/fold_temperature.py --model decider.gguf --corpus train.jsonl --out decider-cal.gguf
 ```
 
-This fits one temperature on your train split and folds it into the GGUF by scaling `output_norm.weight`. Every logit scales by the same factor, so your top answer never changes; only your stated confidence moves towards the truth. It refuses architectures where that does not hold: anything with an output bias or a logit soft cap.
+This fits one temperature on your train split and folds it into the GGUF by scaling `output_norm.weight`. Every logit scales by the same factor, so your top answer never changes; only your stated confidence moves towards the truth. It is confirmed exact on Qwen2, Qwen3 and Llama, and refuses everything else, including anything with an output bias or a logit soft cap. **Qwen3.5 is refused**: measured, folding a temperature of 2 moved its probabilities by up to 0.025 against the true scaled values, where Qwen3 stays within one millionth. On Qwen3.5, calibrate through training instead, with the Brier term in `train_decider.py`.
 
 ### Check before you submit
 
