@@ -46,6 +46,96 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     cards.add_argument("--dry-run", action="store_true")
     cards.set_defaults(handler=_cards)
 
+    intake = inner.add_parser(
+        "intake", help="copy every submission into the private archive as it is committed"
+    )
+    intake.add_argument("--db", required=True, help="the coordinator's sqlite state")
+    intake.add_argument("--round", type=int, default=None, help="defaults to the latest round")
+    intake.add_argument("--store-dir", default="", help="archive into this directory")
+    intake.add_argument("--org", default="", help="archive into private repos of this org")
+    intake.add_argument("--staging", default="~/.microtensor/intake-staging")
+    intake.add_argument("--watch", type=int, default=0, help="rescan every N seconds")
+    intake.add_argument("--reveals", action="store_true", help="also record reveal keys")
+    intake.add_argument("--network", default=os.environ.get("MT_NETWORK", DEFAULT_NETWORK))
+    intake.add_argument("--netuid", type=int, default=DEFAULT_NETUID)
+    intake.add_argument("--endpoint", default=os.environ.get("MT_ENDPOINT", ""))
+    intake.set_defaults(handler=_intake)
+
+    mirror = inner.add_parser(
+        "mirror", help="mirror an allowlisted escalation model revision into our org"
+    )
+    mirror.add_argument("--model", required=True)
+    mirror.add_argument("--revision", required=True)
+    mirror.add_argument("--org", default="microtensor-archive")
+    mirror.set_defaults(handler=_mirror)
+
+
+def _intake_store(args: argparse.Namespace) -> object:
+    from microtensor.archive.intake import HubStore, LocalStore
+
+    if args.store_dir:
+        return LocalStore(Path(args.store_dir).expanduser())
+    token = os.environ.get("MT_HF_ARCHIVE_TOKEN", "").strip()
+    if not args.org or not token:
+        raise SystemExit("pass --store-dir, or --org with MT_HF_ARCHIVE_TOKEN set")
+    return HubStore(args.org, token)
+
+
+def _intake_once(args: argparse.Namespace, store: object) -> int:
+    import time
+
+    from microtensor.archive.intake import Submission, intake, record_reveal
+    from microtensor.coordinator.store import CoordinatorStore
+
+    with CoordinatorStore(Path(args.db).expanduser()) as coordinator:
+        latest = coordinator.latest_round()
+        round_index = args.round if args.round is not None else int((latest or {})["round_index"])
+        found = coordinator.recorded_submissions(round_index)
+    submissions = [
+        Submission(round_index, hotkey, track, cls, digest, source, sealed)
+        for hotkey, (track, cls, digest, source, sealed) in sorted(found.items())
+        if source
+    ]
+    staging = Path(args.staging).expanduser()
+    staging.mkdir(parents=True, exist_ok=True)
+    archived = 0
+    for submission in submissions:
+        reason = intake(submission, store, staging)  # type: ignore[arg-type]
+        if reason and reason != "already archived":
+            log.warning("%s: %s", submission.key, reason)
+        elif not reason:
+            archived += 1
+            log.info("%s archived at %d", submission.key, int(time.time()))
+    if args.reveals and submissions:
+        keys = _reveal_keys(args, round_index, [s.hotkey for s in submissions])
+        for submission in submissions:
+            if submission.hotkey in keys:
+                record_reveal(store, submission, keys[submission.hotkey])  # type: ignore[arg-type]
+    print(f"round {round_index}: {archived} new of {len(submissions)} submissions archived")
+    return 0
+
+
+def _intake(args: argparse.Namespace) -> int:
+    import time
+
+    store = _intake_store(args)
+    while True:
+        _intake_once(args, store)
+        if args.watch <= 0:
+            return 0
+        time.sleep(args.watch)
+
+
+def _mirror(args: argparse.Namespace) -> int:
+    from microtensor.archive.intake import mirror
+
+    token = os.environ.get("MT_HF_ARCHIVE_TOKEN", "").strip()
+    if not token:
+        print("MT_HF_ARCHIVE_TOKEN is unset")
+        return 1
+    print(mirror(args.model, args.revision, args.org, token))
+    return 0
+
 
 def _round(args: argparse.Namespace) -> int:
     from microtensor.archive.push import run
