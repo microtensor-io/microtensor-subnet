@@ -292,6 +292,9 @@ class ServerClient:
                     and isinstance(v, int)
                     and v > 0
                 }
+            escalation = arena.get("escalation_models")
+            if isinstance(escalation, list) and escalation:
+                block["escalation_models"] = [dict(e) for e in escalation if isinstance(e, dict)]
             baselines = arena.get("role_baselines")
             if isinstance(baselines, dict) and baselines:
                 block["role_baselines"] = {str(k): str(v) for k, v in baselines.items()}

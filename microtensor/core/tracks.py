@@ -38,6 +38,7 @@ class Track:
     metric_display: str = ""
     chat: bool = False
     answer_mode: str = GENERATE
+    full_system: bool = False
 
     def __post_init__(self) -> None:
         if self.answer_mode not in ANSWER_MODES:

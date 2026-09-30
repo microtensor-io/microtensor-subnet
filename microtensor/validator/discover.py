@@ -238,6 +238,8 @@ def discover(
     snapshot: MetagraphSnapshot,
     round_: Round,
     allowlists: Mapping[tuple[str, str], frozenset[str]] | None = None,
+    *,
+    escalations: Mapping[tuple[str, str], frozenset[str]] | None = None,
 ) -> Roster:
     raw = context.client.commitments(list(snapshot.hotkeys))
     commitments = dict(decode_all(raw))
@@ -291,6 +293,15 @@ def discover(
                         )
                     ),
                 )
+                if not reason:
+                    reason = _full_system_reason(
+                        manifest,
+                        frozenset(
+                            (escalations or {}).get(
+                                (commitment.track, commitment.hardware_class), frozenset()
+                            )
+                        ),
+                    )
                 if not reason:
                     reason, verdict = _provenance_reason(
                         context, hotkey, system, commitment, commit_block
@@ -475,6 +486,27 @@ def _system_reason(manifest: ArtifactManifest, hardware_class: str) -> str:
         return reason
     if system.specialist is not None and system.specialist.placement != HOST_PROFILE:
         return "specialist placement is not the host profile"
+    return ""
+
+
+def _full_system_reason(manifest: ArtifactManifest, escalations: frozenset[str]) -> str:
+    required = get_track(manifest.track).full_system
+    system = manifest.system
+    if system is None or not system.full:
+        if required:
+            return (
+                f"{manifest.track} takes full systems: a small model, its harness, a router "
+                "and an escalation model, served from a dial out endpoint"
+            )
+        return ""
+    if not required:
+        return f"{manifest.track} does not take full systems yet"
+    if system.escalation is None or system.escalation.key not in escalations:
+        return (
+            "the escalation model is not on this arena's allowlist"
+            if escalations
+            else "this arena allows no escalation model yet"
+        )
     return ""
 
 

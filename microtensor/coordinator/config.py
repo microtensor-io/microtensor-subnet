@@ -86,6 +86,11 @@ def _arena_block(value: Mapping[str, Any]) -> dict[str, Any]:
     environment = value.get("environment_digest")
     if environment:
         block["environment_digest"] = str(environment)
+    escalation = [dict(e) for e in value.get("escalation_models") or [] if isinstance(e, dict)]
+    if escalation:
+        block["escalation_models"] = sorted(
+            escalation, key=lambda e: (str(e.get("model")), str(e.get("revision")))
+        )
     return block
 
 
