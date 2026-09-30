@@ -48,8 +48,17 @@ class Track:
     output_type: str = ""
     output_schema: str = ""
     confidence_output: str = ""
+    input_format: str = ""
 
     def __post_init__(self) -> None:
+        if self.input_format:
+            from microtensor.core.inputs import INPUT_FORMATS
+
+            if self.input_format not in INPUT_FORMATS:
+                raise ValueError(f"track {self.id!r} names unpublished input {self.input_format!r}")
+            template = INPUT_FORMATS[self.input_format].get("template")
+            if template is not None and (template == "chat") != self.chat:
+                raise ValueError(f"track {self.id!r}: its input format and chat flag disagree")
         if self.output_type and self.output_type not in OUTPUT_TYPES:
             raise ValueError(
                 f"track {self.id!r} declares output type {self.output_type!r}; "
@@ -134,6 +143,7 @@ TRACKS: Final[dict[str, Track]] = {
             work_unit="generated_tokens",
             classes=("mt-3g",),
             output_type=TEXT,
+            input_format="raw-t1",
         ),
         Track(
             id="classify",
@@ -144,6 +154,7 @@ TRACKS: Final[dict[str, Track]] = {
             emission_share=0.0,
             work_unit="generated_tokens",
             classes=("mt-3g",),
+            input_format="raw-t1",
         ),
         Track(
             id="guard",
@@ -157,6 +168,7 @@ TRACKS: Final[dict[str, Track]] = {
             chat=True,
             output_type=STRUCTURED,
             output_schema="spans",
+            input_format="chat-t1",
         ),
         Track(
             id="extract",
@@ -170,6 +182,7 @@ TRACKS: Final[dict[str, Track]] = {
             chat=True,
             output_type=STRUCTURED,
             output_schema="entities",
+            input_format="chat-t1",
         ),
         Track(
             id="analytics",
@@ -180,6 +193,7 @@ TRACKS: Final[dict[str, Track]] = {
             work_unit="generated_tokens",
             chat=True,
             output_type=TEXT,
+            input_format="chat-t1",
         ),
         Track(
             id="support",
@@ -193,6 +207,7 @@ TRACKS: Final[dict[str, Track]] = {
             chat=True,
             output_type=STRUCTURED,
             output_schema="tool_calls",
+            input_format="chat-t1",
         ),
         Track(
             id="invoice",
@@ -229,6 +244,7 @@ TRACKS: Final[dict[str, Track]] = {
             output_type=STRUCTURED,
             output_schema="boxes",
             confidence_output="scores",
+            input_format="image-i1",
         ),
         Track(
             id="vqa",
@@ -239,6 +255,7 @@ TRACKS: Final[dict[str, Track]] = {
             work_unit="images",
             chat=True,
             output_type=TEXT,
+            input_format="image-i1",
         ),
         Track(
             id="speech",
@@ -250,6 +267,7 @@ TRACKS: Final[dict[str, Track]] = {
             chat=True,
             output_type=TEXT,
             confidence_output="logits",
+            input_format="audio-a1",
         ),
         Track(
             id="video",
@@ -261,6 +279,7 @@ TRACKS: Final[dict[str, Track]] = {
             output_type=STRUCTURED,
             output_schema="segments",
             confidence_output="scores",
+            input_format="video-v1",
         ),
         Track(
             id="image-synth",
