@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
-from microtensor.core.tracks import Decoding
+from microtensor.core.tracks import DECISION_PROMPT_VERSION, Decoding
 from microtensor.harness import decision_prompt
 from microtensor.harness.contract import (
     EngineError,
@@ -371,7 +371,7 @@ class GgufEngine:
             task_ref=request.task_ref,
             output={
                 "answers": answers,
-                "prompt_format": decision_prompt.DECISION_PROMPT_VERSION,
+                "prompt_format": DECISION_PROMPT_VERSION,
             },
             ttft_ms=elapsed,
             total_ms=elapsed,
