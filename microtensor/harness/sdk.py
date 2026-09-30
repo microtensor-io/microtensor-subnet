@@ -176,6 +176,7 @@ class Runtime:
             system_digest=self.system_digest,
             hotkey=self.hotkey,
             small=SmallAnswer(
+                prompt=rendered,
                 output=small.output,
                 confidence=confidence_of(small.logprobs),
                 tokens=small.tokens,
@@ -209,12 +210,13 @@ def engine_small(engine: Any, *, chat: bool, max_output_tokens: int = 512) -> Sm
         if not response.ok:
             raise HarnessRuntimeError(f"the small model failed: {response.error}")
         text = str(response.output)
+        tokens = tuple(engine.tokenize(text))
         return SmallCall(
             output=text,
-            tokens=tuple(engine.tokenize(text)),
-            logprobs=tuple(response.logprobs),
-            entropies=tuple(response.entropies),
-            prompt_tokens=len(engine.tokenize(prompt)),
+            tokens=tokens,
+            logprobs=tuple(response.logprobs[: len(tokens)]),
+            entropies=tuple(response.entropies[: len(tokens)]),
+            prompt_tokens=len(engine.prompt_tokens(prompt, chat)),
             ms=(time.perf_counter() - started) * 1000.0,
         )
 

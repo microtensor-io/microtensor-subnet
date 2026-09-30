@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import struct
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -353,6 +354,43 @@ class GgufEngine:
         if self._model is None:
             return []
         return list(self._model.tokenize(text.encode("utf-8"), add_bos=False, special=False))
+
+    def prompt_tokens(self, prompt: str, chat: bool) -> list[int]:
+        if self._model is None:
+            return []
+        rendered = self._render_chat([{"role": "user", "content": prompt}]) if chat else None
+        text = rendered if rendered is not None else prompt
+        return list(self._model.tokenize(text.encode("utf-8"), add_bos=True, special=chat))
+
+    def replay(
+        self, prompt: str, tokens: Sequence[int], chat: bool
+    ) -> tuple[list[float], list[float], list[float]]:
+        import numpy as np
+
+        if self._model is None:
+            raise EngineError("engine was asked to replay before load")
+        vocab = int(self._model.n_vocab())
+        margins: list[float] = []
+        logprobs: list[float] = []
+        entropies: list[float] = []
+        self._model.reset()
+        self._model.eval(self.prompt_tokens(prompt, chat))
+        for token in tokens:
+            if not 0 <= int(token) < vocab:
+                raise EngineError(f"token {token} is outside a vocabulary of {vocab}")
+            row = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
+            logits = np.ctypeslib.as_array(row, shape=(vocab,)).astype(np.float64)
+            top = float(logits.max())
+            shifted = logits - top
+            weights = np.exp(shifted)
+            total = float(weights.sum())
+            log_total = float(np.log(total))
+            margins.append(max(0.0, top - float(logits[int(token)])))
+            logprobs.append(round(float(shifted[int(token)]) - log_total, CONFIDENCE_DIGITS))
+            entropy = log_total - float((weights / total * shifted).sum())
+            entropies.append(round(max(0.0, entropy), CONFIDENCE_DIGITS))
+            self._model.eval([int(token)])
+        return margins, logprobs, entropies
 
     def _answer_scores(self, question: decision_prompt.Question) -> list[float]:
         logits = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
