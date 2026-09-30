@@ -790,7 +790,7 @@ What your artifact must be: a GGUF with a chat template, whose tokenizer makes e
 ### Train
 
 ```bash
-python scripts/train_decider.py \
+python scripts/train_specialist.py \
   --base Qwen/Qwen3-1.7B --revision <pinned revision> \
   --corpus train.jsonl --out decider/ \
   --teacher teacher.jsonl
@@ -817,7 +817,7 @@ Use `--token-embedding-type` on models with tied embeddings, such as the small Q
 python scripts/fold_temperature.py --model decider.gguf --corpus train.jsonl --out decider-cal.gguf
 ```
 
-This fits one temperature on your train split and folds it into the GGUF by scaling `output_norm.weight`. Every logit scales by the same factor, so your top answer never changes; only your stated confidence moves towards the truth. It is confirmed exact on Qwen2, Qwen3 and Llama, and refuses everything else, including anything with an output bias or a logit soft cap. **Qwen3.5 is refused**: measured, folding a temperature of 2 moved its probabilities by up to 0.025 against the true scaled values, where Qwen3 stays within one millionth. On Qwen3.5, calibrate through training instead, with the Brier term in `train_decider.py`.
+This fits one temperature on your train split and folds it into the GGUF by scaling `output_norm.weight`. Every logit scales by the same factor, so your top answer never changes; only your stated confidence moves towards the truth. It is confirmed exact on Qwen2, Qwen3 and Llama, and refuses everything else, including anything with an output bias or a logit soft cap. **Qwen3.5 is refused**: measured, folding a temperature of 2 moved its probabilities by up to 0.025 against the true scaled values, where Qwen3 stays within one millionth. On Qwen3.5, calibrate through training instead, with the Brier term in `train_specialist.py`.
 
 ### Check before you submit
 

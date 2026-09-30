@@ -11,7 +11,7 @@ from typing import Any
 
 from microtensor.core.tracks import DECIDE, get_track
 from microtensor.harness import decision_prompt
-from microtensor.scoring.metrics import expected_answers, gold_label
+from microtensor.scoring.metrics import expected_answers, gold_label, score_task
 from microtensor.tasks.corpus import load_corpus
 
 
@@ -189,6 +189,62 @@ def generation_loss(model: Any, tokenizer: Any, batch: Sequence[Generation], cha
     return total / len(batch)
 
 
+def rlcr_reward(score: float, confidence: float, weight: float) -> float:
+    correct = 1.0 if score >= 0.5 else 0.0
+    return score - weight * (confidence - correct) ** 2
+
+
+def rlcr_step(
+    model: Any,
+    tokenizer: Any,
+    tasks: Sequence[Any],
+    metric: str,
+    chat: bool,
+    samples: int,
+    temperature: float,
+    weight: float,
+) -> tuple[Any, float]:
+    import torch
+
+    total = torch.zeros((), device=model.device)
+    rewards_seen: list[float] = []
+    for task in tasks:
+        head = tokenizer(prompt_text(tokenizer, task.prompt, chat), add_special_tokens=False)
+        prompt_ids = torch.tensor([head["input_ids"]], device=model.device)
+        with torch.no_grad():
+            drawn = model.generate(
+                prompt_ids,
+                do_sample=True,
+                temperature=temperature,
+                max_new_tokens=task.max_output_tokens,
+                num_return_sequences=samples,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        completions = drawn[:, prompt_ids.shape[1] :]
+        log_means = []
+        rewards = []
+        for row in completions:
+            kept = row[row != tokenizer.pad_token_id] if tokenizer.pad_token_id is not None else row
+            if kept.numel() == 0:
+                continue
+            ids = torch.cat([prompt_ids[0], kept]).unsqueeze(0)
+            logits = model(input_ids=ids).logits[0, prompt_ids.shape[1] - 1 : -1].float()
+            chosen = torch.log_softmax(logits, dim=-1).gather(1, kept.unsqueeze(1)).squeeze(1)
+            mean = chosen.mean()
+            text = tokenizer.decode(kept, skip_special_tokens=True)
+            score = float(score_task(metric, text, task.gold))
+            rewards.append(rlcr_reward(score, float(mean.detach().exp()), weight))
+            log_means.append(mean)
+        if len(rewards) < 2:
+            continue
+        values = torch.tensor(rewards, device=model.device)
+        advantage = (values - values.mean()) / (values.std() + 1e-6)
+        total = total - (advantage * torch.stack(log_means)).mean()
+        rewards_seen.extend(rewards)
+    count = max(1, len(tasks))
+    return total / count, (sum(rewards_seen) / len(rewards_seen) if rewards_seen else 0.0)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -217,6 +273,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--full", action="store_true", help="full fine tune instead of LoRA")
     parser.add_argument("--rank", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--rlcr-steps", type=int, default=0, help="RL steps rewarding right and honest answers"
+    )
+    parser.add_argument("--rlcr-samples", type=int, default=4, help="answers drawn per task")
+    parser.add_argument("--rlcr-temperature", type=float, default=0.8)
+    parser.add_argument(
+        "--rlcr-weight", type=float, default=1.0, help="weight of the calibration penalty"
+    )
+    parser.add_argument("--rlcr-batch", type=int, default=4)
     args = parser.parse_args(argv)
 
     import torch
@@ -277,6 +342,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             running += float(loss.detach())
         steps = max(1, math.ceil(len(data) / args.batch))
         print(f"epoch {epoch + 1}/{args.epochs}  examples {len(data)}  loss {running / steps:.4f}")
+
+    if args.rlcr_steps and not deciding:
+        pool = list(load_corpus(args.corpus, args.track).tasks)
+        rng = random.Random(args.seed)
+        for step in range(1, args.rlcr_steps + 1):
+            batch = rng.sample(pool, min(args.rlcr_batch, len(pool)))
+            loss, reward = rlcr_step(
+                model,
+                tokenizer,
+                batch,
+                track.metric,
+                track.chat,
+                args.rlcr_samples,
+                args.rlcr_temperature,
+                args.rlcr_weight,
+            )
+            if loss.requires_grad:
+                optimiser.zero_grad()
+                loss.backward()
+                optimiser.step()
+            print(f"rlcr {step}/{args.rlcr_steps}  mean reward {reward:.4f}")
+    elif args.rlcr_steps:
+        print("decision arenas already train on the Brier rule, which rewards honest confidence")
 
     if not args.full:
         model = model.merge_and_unload()
