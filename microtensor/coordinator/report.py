@@ -19,6 +19,10 @@ def body_hash(body: dict[str, Any]) -> str:
     return f"sha256:{sha256(canonical(body)).hexdigest()}"
 
 
+def _calibration(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
+
+
 @dataclass(frozen=True, slots=True)
 class QualityBlock:
     rotating: float
@@ -166,6 +170,6 @@ class Report:
             environment_digest=str(raw.get("environment_digest", "")),
             fault=Fault(fault) if fault else None,
             fault_reason=str(raw.get("fault_reason", "")),
-            calibration=dict(raw["calibration"]) if isinstance(raw.get("calibration"), dict) else None,
+            calibration=_calibration(raw.get("calibration")),
             signature=str(raw.get("signature", "")),
         )
