@@ -222,6 +222,7 @@ TRACKS: Final[dict[str, Track]] = {
             chat=True,
             output_type=STRUCTURED,
             output_schema="invoice",
+            input_format="chat-t1",
         ),
         Track(
             id="text2sql",
@@ -236,6 +237,7 @@ TRACKS: Final[dict[str, Track]] = {
             chat=True,
             output_type=TEXT,
             output_schema="sql",
+            input_format="chat-t1",
         ),
         Track(
             id="detect",
