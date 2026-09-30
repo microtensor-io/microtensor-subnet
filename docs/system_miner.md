@@ -1,21 +1,26 @@
 # Mining on Microtensor
 
-You compress a frontier model into a specialist that fits a hardware class, host
-the artifact somewhere validators can fetch it, and commit a 128-byte pointer on
-chain each round. That is the whole job.
+You build a complete AI system for one job, prove it on hidden tasks, and earn
+for the cost and quality ground it alone covers.
 
-**Your machine trains; the network runs.** Validators fetch your artifact and
-execute it on their own certified hardware, so your box is busy exactly while
-you are training and improving the model. Once per round you come online inside
-the submission window, send one extrinsic, and go back to work.
+In the **full system arenas** the system is four parts you put together and
+host: a specialist small model with calibrated confidence, the harness around
+it (prompts, tools, checks and output templates), a router that decides when
+the small model is sure enough to answer, and an escalation model from the
+arena's allowlist that takes the rest. You keep it online through the round,
+validators send it withheld tasks and verify every part, and it is ranked on end
+to end quality against total cost. Section 12 is the full build, from the
+artifact to what happens after the round.
 
-This guide is for **system miners**: you build inference systems and compete
-on the frontier. A system is what the network certifies, and it is a front
-model with an optional router and escalation specialist, so a single model is
-the simplest case rather than the only one. Two other kinds of miner have their own guides and their own
-emission, and [miner_setup.md](miner_setup.md) compares all three.
+In the **classic arenas** you submit a model, or a cascade of front, router and
+specialist, host the files somewhere validators can fetch them, and commit a
+pointer on chain each round. Validators run it on their own certified hardware.
 
-- To serve models other people built, read
+Either way you train, you commit once per round inside the submission window,
+and the network measures. Two other kinds of miner have their own guides and
+their own emission, and [miner_setup.md](miner_setup.md) compares all three.
+
+- To serve certified systems to customers on GPUs, read
   [inference_miner.md](inference_miner.md). That is the inference layer, paid
   from the serving pool for billed tokens rather than per round.
 - To rent out GPUs, read [compute_miner.md](compute_miner.md).
@@ -28,30 +33,30 @@ emission, and [miner_setup.md](miner_setup.md) compares all three.
 Two numbers decide everything, in this order:
 
 1. **Does it fit?** Size, peak resident memory at your declared maximum input,
-   and p95 time-to-first-token must all sit under your class ceiling. This is
-   binary. Over on any axis and your model does not exist for the round.
+   and p95 time per task must all sit under your class ceiling. This is
+   binary. Over on any axis and your model does not exist for the round. A full
+   system must also answer within the arena's end to end latency ceiling.
 2. **How accurate is it?** Only among models that fit.
 
 A more accurate model that misses the memory ceiling scores zero against a worse
 model that fits. Design for the envelope first.
 
-| track | class | size | peak RSS | p95 TTFT | emission |
+| track | class | size | peak RSS | p95 per task | emission |
 |---|---|---|---|---|---|
-| `code` | `mt-3g` | 1.5 GiB | 3 GiB | 180 ms | 100 % |
+| `invoice` | `mt-4g` | 3 GiB | 4 GiB | 250 s | 50 % |
+| `text2sql` | `mt-16g` | 8 GiB | 16 GiB | 400 s | 50 % |
 
 ```bash
 mt inspect tracks
 ```
 
-One live competition at launch, so every entrant is in the same contest rather
-than split across thin ones. **A class is a memory envelope, not a device.**
-`mt-3g` means 3 GiB peak resident memory at your declared maximum input, 1.5 GiB
-on disk, and 180 ms p95 first output; it says nothing about what hardware you
-train on. The competition pays its top 8 on a geometric curve, and rank 8 still
-earns about a third of rank 1, so the tail is worth competing for.
-
-`mt-4g` and `mt-16g` are live, for the `invoice` and `text2sql` tracks. `mt-1g` is
-registered and opens by governance once real submissions exist.
+**A class is a memory envelope, not a device.** It says nothing about what
+hardware you train on. Each arena pins its own ceilings, base models, task
+budget and, for full systems, its escalation allowlist and latency ceiling, and
+they can change between rounds. Read the live rules before you build: the
+Arenas page on the site, `GET /v1/arenas`, or `mt inspect tracks`. Each arena
+pays its frontier down a ladder of eight positions (30, 20, 14, 11, 9, 7, 5 and
+4 percent of its share), so the tail is worth competing for.
 
 ---
 
@@ -219,8 +224,8 @@ my-model/
 
 ### Training data
 
-Each corpus release publishes a train split — prompts and public examples
-only — from the read API:
+Each corpus release publishes a train split (prompts and public examples
+only) from the read API:
 
 ```bash
 curl https://api.microtensor.cloud/v1/corpora/<corpus-version>/public
@@ -703,57 +708,239 @@ you and why.
 
 ---
 
-## 12 · Submitting a system
+## 12 · Building a full system
 
-This is the live path. A system is three parts. A **front** bound to the class ceiling, running on every
-query. A **router** deciding which answers to keep. A **specialist** on the host
-profile, answering only what escalates. Declare them in `system.json` beside your
-artifact:
+In the full system arenas you do not submit a model. You submit a complete AI
+system for one job, you keep it online while the round tests it, and it is
+ranked on end to end quality against total cost. Four parts, all yours to
+build except the escalation model, which you choose:
+
+| Part | What you build | What the network checks |
+|---|---|---|
+| **Small model** | A GGUF specialist fine tuned for the task, on an allowlisted base, fitting the arena's hardware class | Its answers and its confidence are replayed from the archive |
+| **Harness** | The prompts, context, tools, checks and output templates around the small model | It stays inside its package and reproduces your live answers |
+| **Router** | A rule that reads the small model's confidence and decides whether to answer or escalate | Its decisions are recomputed from the rule you declared |
+| **Escalation model** | Nothing to build: you pick one from the arena's allowlist and run it | Only your declared model, charged at its published price |
+
+The small model answers what it is sure of. The router sends the rest up. The
+client gets one answer, near frontier quality, for a fraction of a frontier
+model's cost. [full_system_playbook.md](full_system_playbook.md) has the
+training order and the numbers behind it; this section is the build and the
+round.
+
+### The artifact
+
+```
+artifact/
+  front/model.gguf            the small model
+  harness/
+    harness.json              what the runtime loads
+    prompts/system.txt        optional system prompt
+    prompts/task.txt          the task prompt; {input} is where the request goes
+    tools/lookup.py           optional tools, each a run(argument) function
+    hooks/after.py            optional hooks, run(payload, tool)
+  router.json                 the routing rule
+  system.json                 the four parts, pinned
+  manifest.json               written by mt miner package
+```
+
+### system.json
+
+```json
+{
+  "schema_version": 2,
+  "front":  {"role": "front", "artifact_digest": "sha256:...", "placement": "mt-4g",
+             "path": "front", "base_model": "Qwen/Qwen3-1.7B@<revision>"},
+  "router": {"role": "router", "artifact_digest": "sha256:<digest of router.json>",
+             "placement": "mt-4g", "path": "router.json"},
+  "router_features": ["seq_logprob", "input_typicality"],
+  "harness":    {"package_digest": "sha256:<digest of harness/>", "runtime": "sdk:1.0.0"},
+  "escalation": {"model": "<org>/<model>", "revision": "<40 character commit>"},
+  "endpoint":   {"worker": "rig1", "name": "invoice-system"}
+}
+```
+
+A version 2 manifest missing any part does not parse, and discovery says which
+part is missing. There is no `specialist`: the escalation model replaces it.
+The digests are what validators check your files against:
+
+```bash
+python -c "from pathlib import Path; from microtensor.core.hashing import digest_tree, digest_file; \
+print(digest_tree(Path('harness'))); print(digest_file(Path('router.json')))"
+```
+
+### The harness
+
+`harness.json` declares the package, format `mt-harness/1`:
+
+```json
+{
+  "format": "mt-harness/1",
+  "prompts": {"system": "prompts/system.txt", "task": "prompts/task.txt"},
+  "context": ["context/policy.md"],
+  "tools": [{"name": "lookup", "path": "tools/lookup.py"}],
+  "hooks": {"before": "hooks/before.py", "after": "hooks/after.py"},
+  "templates": {"output": "templates/output.json"}
+}
+```
+
+- The `before` hook sees the request and can rewrite the prompt; the `after`
+  hook sees the answer and returns the final one. Both can call your tools.
+  Every tool call, hook and error is recorded in the trace.
+- **It must stay inside its package.** No URLs anywhere, no network or process
+  modules (`requests`, `httpx`, `socket`, `subprocess`, `openai`, `anthropic` and
+  the like), no `eval`, `exec` or `os.system`, text files only. A harness that
+  breaks this is refused at admission with the file and the reason.
+- The runtime is `sdk:1.0.0`, which ships with the subnet, or a pinned container
+  image (`image:<name>@sha256:<digest>`).
+
+`scripts/optimise_harness.py` searches your prompts for you: it runs your small
+model on the train split, shows its failures to a frontier model, and keeps the
+prompts that beat their parents.
+
+### The router
+
+A router is data, not code: a threshold table (or a small ONNX graph) over
+features the validator can recompute.
+
+```json
+{
+  "form": "threshold",
+  "clauses": [
+    {"feature": "seq_logprob", "op": "lt", "value": -0.99, "decision": "escalate"},
+    {"feature": "input_typicality", "op": "lt", "value": 0.2, "decision": "escalate"}
+  ],
+  "default": "resolve",
+  "typical": [ ... ]
+}
+```
+
+The first clause that holds decides; otherwise the default. Permitted features:
+`seq_logprob`, `seq_logprob_norm`, `mean_entropy`, `max_entropy`,
+`output_tokens`, `input_tokens`, `schema_valid`, `answer_prob`,
+`answer_margin`, `answer_entropy`, `input_typicality` (the share of the
+request's character grams found in the `typical` set your router carries) and
+`harness_errors`. The file is at most 4 MiB.
+
+`scripts/train_router.py` fits it for you. It runs your small model and harness
+over the train split, records every feature, computes typicality out of fold,
+and picks the short rule that best trades quality against escalations:
+
+```bash
+python scripts/train_router.py --model front/model.gguf --harness harness \
+  --corpus train.jsonl --track invoice --out router.json \
+  --escalation-url http://127.0.0.1:18090 --escalation-model <org>/<model>
+```
+
+### The escalation model
+
+Pick it from the arena's allowlist, which carries each model, its pinned
+revision and its price per million tokens:
+
+```bash
+curl -s https://api.microtensor.cloud/v1/arenas | jq '.arenas[] | {track, class, escalation_models}'
+```
+
+Declare exactly that model and revision. You run it yourself for the round,
+behind any OpenAI compatible server (SGLang or vLLM), because your hosted system
+calls it when the router escalates. Its tokens count toward your cost at the
+published price, so every escalation has to earn its keep.
+
+### Simulate, then ship
+
+```bash
+mt miner simulate --corpus ./corpus --escalation-url http://127.0.0.1:18090 \
+  --escalation-price-in 0.20 --escalation-price-out 0.60
+```
+
+runs the whole system over the public train split and prints every trace and
+the scores validators compute: end to end quality, the small model alone,
+escalation rate, waste, misses, calibration error and cost per thousand tasks.
+Then selfcheck, package and ship exactly as in sections 7 and 8; the manifest
+carries `system.json`.
+
+### Host it through the round
+
+```bash
+mt miner host --escalation-url http://127.0.0.1:18090 --gpu-layers -1
+```
+
+keeps your system online through the dial out agent under your hotkey. No
+inbound port and no public address. **Keep it running from your commit until
+the round settles.** During the round validators send it every withheld task,
+in the same format real traffic uses, and time each request themselves. Every
+answer goes back with a trace signed by your hotkey: the small model's answer,
+confidence and tokens, the router's features and decision, harness steps, the
+escalation answer if there was one, and the final answer. A task your system
+does not answer scores zero.
+
+### What validators check
+
+| Check | How | If it fails |
+|---|---|---|
+| Small model | Sampled traces are replayed on the archived GGUF on CPU | A token more than 0.5 logits below the model's own choice, or confidence off by more than 0.02: not certified |
+| Router | Its features are recomputed from the replayed small model and its rule reapplied | A different decision: not certified |
+| Escalation | Only the declared model from the allowlist | Anything else: not certified |
+| Archive | Your archived harness, router and small model rerun the task | A different prompt, token, decision or final answer: not certified |
+| Latency | End to end p95 of the validator's own timings | Over the arena ceiling: scores zero |
+
+A system that is not certified earns nothing for the round.
+
+### How it is ranked
+
+End to end quality on the hidden tasks, against total cost: your small model's
+CPU time at the reference price plus escalation tokens at the published price,
+in micro dollars per task. Emission follows the frontier exactly as in section
+11: a system nothing else beats on both quality and cost earns for the ground it
+alone covers, and landing beside a leader earns nothing. Your card also shows
+the small model's quality alone, the escalation rate, waste (escalating when the
+small model was right), misses (keeping an answer it got wrong), calibration,
+and how often unusual inputs were sent up. The live escalations view on the
+network page shows every request as it is decided.
+
+### After the round
+
+| When | What happens to your system |
+|---|---|
+| At commit | Copied into the private archive. A sealed submission stays sealed until you reveal |
+| During the round | Tested live on withheld tasks; every trace is kept |
+| At settlement | Certified systems on the frontier get a certificate and a rank by share |
+| After settlement | Every certified system is published to the public archive with a card naming its four parts, its rank and its licence. Rank 1 in each arena is marked **champion** and becomes that arena's served model, the one inference miners serve to customers |
+| Systems not certified | Stay in the private archive for audit and disputes, and are not published |
+| When you stop hosting | Nothing is lost: inference miners and the network serve the certified system from the archive |
+
+By submitting you license the network to archive, host and serve your system
+(the terms, "Systems you submit"). It keeps its base model's licence.
+
+### Classic arenas
+
+Arenas that are not full system arenas still take the version 1 cascade: a
+front on the class ceiling, an optional router, and a specialist on the host
+profile, with no harness, no escalation allowlist and no live hosting.
+Validators fetch and run it themselves.
 
 ```json
 {
   "schema_version": 1,
-  "front":      {"role": "front",      "artifact_digest": "sha256:...", "placement": "mt-3g",  "path": "front"},
-  "router":     {"role": "router",     "artifact_digest": "sha256:...", "placement": "mt-3g",  "path": "router.json"},
+  "front":      {"role": "front",      "artifact_digest": "sha256:...", "placement": "mt-4g", "path": "front"},
+  "router":     {"role": "router",     "artifact_digest": "sha256:...", "placement": "mt-4g", "path": "router.json"},
   "specialist": {"role": "specialist", "artifact_digest": "sha256:...", "placement": "mt-16g", "path": "specialist"},
   "router_features": ["seq_logprob_norm", "schema_valid"]
 }
 ```
 
-A router is data, not code. It is a threshold table or a small ONNX graph over
-the published feature list, and the validator interprets it. You cannot ship a
-routing function, and features you compute yourself never reach the decision:
-the validator derives all of them from what your front emitted.
+A front alone is a valid system there, and the cheapest place to start.
 
-Tune it locally before you submit:
+### Common misreadings
 
-```bash
-mt miner simulate --corpus ./corpus --limit 200
-```
-
-That runs the whole cascade over the public training split and reports resolve
-rate, expected cost per query, end-to-end quality, and the uplift escalation
-bought you. If the uplift is zero or negative, a router that never escalates
-would score the same for less, and the frontier will price it accordingly.
-
-Three things are worth knowing before you spend a week on this:
-
-**Calibration beats accuracy.** The router can only act on what the front
-exposes. A front that is accurate but confidently wrong gives the router nothing
-to separate, so its errors pass through and end-to-end quality collapses. A
-slightly less accurate front whose confidence orders its right and wrong answers
-well escalates close to exactly what it would have failed, and wins on both
-axes. Only the ordering matters, not the absolute value, since a monotone
-transformation is absorbed by the threshold.
-
-**Escalating everything is not a strategy.** The specialist's cost enters your
-expected cost weighted by how often you escalate. Route everything and you carry
-the specialist's full cost and sit at the expensive end of the frontier.
-
-**Cheaper at lower quality still earns.** Emission follows exclusive
-hypervolume, so a system that opens a genuinely new trade-off point is paid for
-what it uniquely adds, whether that is the best quality anyone reached or the
-cheapest anyone reached at usable quality.
+- **"Submit a specialist on mt-16g."** Not in full system arenas. You choose an
+  escalation model from the allowlist; you do not upload one.
+- **"Cost is memory."** Memory, size and latency are gates you must fit under.
+  Cost is money per task, and in classic arenas time per task.
+- **"Speed does not matter once you fit."** In full system arenas it does: over
+  the end to end latency ceiling scores zero.
+- **"Copy a leader and tweak it."** Landing beside a leader earns nothing, and a
+  near duplicate loses to the earlier commitment.
 
 ---
 

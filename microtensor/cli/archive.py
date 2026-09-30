@@ -61,6 +61,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     intake.add_argument("--endpoint", default=os.environ.get("MT_ENDPOINT", ""))
     intake.set_defaults(handler=_intake)
 
+    promote = inner.add_parser(
+        "promote",
+        help="publish a settled round's certified full systems from the private archive",
+    )
+    promote.add_argument("--round", type=int, required=True)
+    promote.add_argument("--records", required=True, help="directory of intake records")
+    promote.add_argument("--server", default="https://api.microtensor.cloud")
+    promote.add_argument("--org", default="microtensor-archive")
+    promote.add_argument("--staging", default="~/.microtensor/promote-staging")
+    promote.add_argument("--dry-run", action="store_true")
+    promote.set_defaults(handler=_promote)
+
     mirror = inner.add_parser(
         "mirror", help="mirror an allowlisted escalation model revision into our org"
     )
@@ -124,6 +136,32 @@ def _intake(args: argparse.Namespace) -> int:
         if args.watch <= 0:
             return 0
         time.sleep(args.watch)
+
+
+def _promote(args: argparse.Namespace) -> int:
+    from microtensor.archive.intake import promote
+    from microtensor.archive.push import _get
+
+    token = os.environ.get("MT_HF_ARCHIVE_TOKEN", "").strip()
+    if not token and not args.dry_run:
+        print("MT_HF_ARCHIVE_TOKEN is unset; set it or pass --dry-run")
+        return 1
+    found = _get(f"{args.server.rstrip('/')}/v1/certificates")
+    staging = Path(args.staging).expanduser()
+    staging.mkdir(parents=True, exist_ok=True)
+    done = promote(
+        args.round,
+        list(found.get("certificates", [])),
+        Path(args.records).expanduser(),
+        staging,
+        args.org,
+        token,
+        dry_run=args.dry_run,
+    )
+    for name in done:
+        print(f"published {name}")
+    print(f"round {args.round}: {len(done)} certified systems promoted")
+    return 0
 
 
 def _mirror(args: argparse.Namespace) -> int:

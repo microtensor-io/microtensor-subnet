@@ -194,3 +194,88 @@ def mirror(model: str, revision: str, org: str, token: str) -> str:
     )
     api.create_tag(repo_id=repo_id, tag=tag, revision=commit.oid, tag_message=revision)
     return f"mirrored {model}@{revision} to {repo_id} (tag {tag})"
+
+
+def _card(entry: dict[str, Any], manifest: Any, licence: str) -> str:
+    from microtensor.archive.push import _front_matter, _licence_section
+
+    system = manifest.system
+    champion = int(entry.get("rank", 0)) == 1
+    base = system.front.base_model if system is not None else manifest.load.base_model
+    tags = ["microtensor", "full-system", str(entry.get("track", "")), manifest.hardware_class]
+    if champion:
+        tags.append("champion")
+    lines = ["---", *_front_matter(licence, base), "tags:", *[f"- {t}" for t in tags], "---", ""]
+    title = f"{entry.get('track')} / {manifest.hardware_class}, round {entry.get('round_index')}"
+    lines += [f"# {title}", ""]
+    if champion:
+        lines += [
+            "**Champion.** Rank 1 in its arena this round: the system served as the arena's model.",
+            "",
+        ]
+    lines += [
+        f"Rank {entry.get('rank')} of the certified systems, "
+        f"quality {float(entry.get('quality', 0)):.4f}, "
+        f"share {float(entry.get('share', 0)):.4f}, miner `{entry.get('miner')}`.",
+        "",
+        "| Part | Pinned to |",
+        "|---|---|",
+        f"| Small model | `{base}` |",
+    ]
+    if system is not None and system.harness is not None:
+        lines.append(
+            f"| Harness | `{system.harness.runtime}`, package `{system.harness.package_digest}` |"
+        )
+    if system is not None and system.router is not None:
+        lines.append(f"| Router | features {', '.join(system.router_features)} |")
+    if system is not None and system.escalation is not None:
+        lines.append(f"| Escalation | `{system.escalation.key}` from the arena allowlist |")
+    lines += [
+        "",
+        f"System digest `{entry.get('system_id')}`.",
+        "",
+        *_licence_section(licence, base),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def promote(
+    round_index: int,
+    certificates: list[dict[str, Any]],
+    records: Path,
+    workdir: Path,
+    public_org: str,
+    token: str,
+    *,
+    dry_run: bool = False,
+) -> list[str]:
+    from microtensor.archive.push import licence_of, push, repo_name
+    from microtensor.serving.archived import ArchiveError, restore
+
+    done: list[str] = []
+    for entry in certificates:
+        if int(entry.get("round_index", -1)) != round_index:
+            continue
+        track = str(entry.get("track", ""))
+        hardware_class = str(entry.get("hardware_class", ""))
+        miner = str(entry.get("miner", ""))
+        key = Submission(round_index, miner, track, hardware_class, "", "", False).key
+        try:
+            restored = restore(records / key, workdir)
+        except (ArchiveError, OSError, ValueError) as exc:
+            log.warning("%s: not promoted: %s", key, exc)
+            continue
+        if restored.manifest.system_digest != entry.get("system_id"):
+            log.warning("%s: the archived system is not the certified one", key)
+            continue
+        target = workdir / repo_name(track, hardware_class, round_index, miner)
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(restored.root, target)
+        (target / "certificate.json").write_text(
+            json.dumps(entry, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+        )
+        base = restored.manifest.system.front.base_model if restored.manifest.system else ""
+        card = _card(entry, restored.manifest, licence_of(base, token))
+        (target / "README.md").write_text(card, encoding="utf-8")
+        done.append(target.name if dry_run else push(target, public_org, token))
+    return done
