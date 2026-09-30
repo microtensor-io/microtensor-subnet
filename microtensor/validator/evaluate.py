@@ -500,6 +500,14 @@ def evaluate_participant(
     hardware = hardware or get_class(participant.competition[1])
     artifact = materialise(context, participant)
 
+    if participant.system.full:
+        from microtensor.harness.package import package_reason
+
+        reason = package_reason(artifact, participant.system)
+        if reason:
+            log.info("%s rejected: %s", participant.hotkey, reason)
+            return _evaluation(participant, tasks)
+
     measured, failure = profile(context, participant, artifact, hardware, tasks.seed)
     if measured is None:
         log.info("%s scored zero: %s", participant.hotkey, failure)

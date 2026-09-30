@@ -714,7 +714,9 @@ def _run_round(
 
     try:
         require_engines()
-        roster = discover(context, snapshot, round_, plan.allowlists)
+        roster = discover(
+            context, snapshot, round_, plan.allowlists, escalations=plan.escalations
+        )
     except Abstain as exc:
         return abstain(str(exc))
     except ProvenanceUnavailable as exc:
