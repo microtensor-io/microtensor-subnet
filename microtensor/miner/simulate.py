@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from microtensor.core.constants import REFERENCE_COST_MS
 from microtensor.core.protocol import LoadManifest, Role
 from microtensor.core.system import SystemManifest
+from microtensor.core.tracks import DECIDE, get_track
 from microtensor.harness.cascade import CascadeResult, run_cascade
 from microtensor.harness.engines.router import RouterError, load_router
+from microtensor.scoring.calibration import summarise
 from microtensor.scoring.frontier import quantise_point
 from microtensor.scoring.metrics import score_task
 from microtensor.tasks.corpus import Task
@@ -27,6 +30,8 @@ class Simulation:
     end_to_end: float
     front_only: float
     quantised: tuple[int, int]
+    front_calibration: dict[str, Any] = field(default_factory=dict)
+    system_calibration: dict[str, Any] = field(default_factory=dict)
 
     @property
     def uplift(self) -> float:
@@ -48,7 +53,36 @@ class Simulation:
                 "the specialist is not earning its cost here; a router that never "
                 "escalates would score the same and cost less"
             )
+        if self.system_calibration:
+            lines.extend(self._calibration_lines())
         return "\n".join(lines)
+
+    def _calibration_lines(self) -> list[str]:
+        front, system = self.front_calibration, self.system_calibration
+        lines = [
+            "",
+            f"{'calibration':<20}{'front':>10}{'system':>10}",
+            f"{'  accuracy':<20}{front['accuracy']:>10.4f}{system['accuracy']:>10.4f}",
+            f"{'  brier quality':<20}{front['brier_quality']:>10.4f}"
+            f"{system['brier_quality']:>10.4f}",
+            f"{'  calibration error':<20}{front['ece']:>10.4f}{system['ece']:>10.4f}",
+        ]
+        if system.get("level_mae") is not None and front.get("level_mae") is not None:
+            lines.append(
+                f"{'  level error':<20}{front['level_mae']:>10.4f}{system['level_mae']:>10.4f}"
+            )
+        lines.append("")
+        lines.append("reliability (system)")
+        lines.append(f"  {'stated':<11}{'questions':>10}{'mean stated':>13}{'correct':>9}")
+        for row in system["reliability"]:
+            span = f"{row['lower']:.1f}-{row['upper']:.1f}"
+            if not row["count"]:
+                lines.append(f"  {span:<11}{0:>10}")
+                continue
+            lines.append(
+                f"  {span:<11}{row['count']:>10}{row['confidence']:>13.3f}{row['accuracy']:>9.3f}"
+            )
+        return lines
 
 
 def check_system(system: SystemManifest, artifact: Path, hardware_class: str) -> None:
@@ -136,6 +170,18 @@ def simulate(
 
     count = len(tasks)
     quality = end_to_end / count
+    front_calibration: dict[str, Any] = {}
+    system_calibration: dict[str, Any] = {}
+    if get_track(track).answer_mode == DECIDE:
+        answered = [(task, by_ref.get(task.ref)) for task in tasks]
+        front_calibration = summarise(
+            (leg.front_response.output if leg and leg.front_response.ok else None, task.gold)
+            for task, leg in answered
+        )
+        system_calibration = summarise(
+            (leg.response.output if leg and leg.response.ok else None, task.gold)
+            for task, leg in answered
+        )
     return Simulation(
         tasks=count,
         resolve_rate=result.resolve_rate,
@@ -143,4 +189,6 @@ def simulate(
         end_to_end=quality,
         front_only=front_only / count,
         quantised=quantise_point(quality, result.expected_ms, REFERENCE_COST_MS),
+        front_calibration=front_calibration,
+        system_calibration=system_calibration,
     )
