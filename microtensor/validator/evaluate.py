@@ -4,9 +4,9 @@ import json
 import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from microtensor.core.basemodels import size_floor_bytes
 from microtensor.core.protocol import (
@@ -30,6 +30,7 @@ from microtensor.harness.limits import Limits
 from microtensor.harness.registry import EngineUnavailable, available, load_builtin
 from microtensor.registry.fetch import ArtifactMismatch, Unfetchable
 from microtensor.registry.fetch import materialise as fetch_artifact
+from microtensor.scoring.calibration import partition_report
 from microtensor.scoring.execution import (
     ExecutionUnavailable,
     execute_module_rate,
@@ -37,7 +38,6 @@ from microtensor.scoring.execution import (
     has_module_tests,
     screen_solution,
 )
-from microtensor.scoring.calibration import partition_report
 from microtensor.scoring.metrics import combine_partitions, partition_scores, score_task
 from microtensor.tasks.corpus import FIXED, NOVEL, ROTATING, Task
 from microtensor.tasks.selection import RoundTasks, partition_of, to_requests
