@@ -341,6 +341,7 @@ def to_report(
         corpus_version=corpus_version,
         corpus_digest=corpus_digest,
         environment_digest=environment_digest,
+        calibration=dict(evaluation.calibration) if evaluation.calibration else None,
     )
 
 
