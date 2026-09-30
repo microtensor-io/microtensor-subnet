@@ -17,6 +17,8 @@ RESPONSE: Final[str] = "response"
 HEARTBEAT: Final[str] = "heartbeat"
 CANCEL: Final[str] = "cancel"
 CHUNK: Final[str] = "chunk"
+TASK: Final[str] = "task"
+TRACE: Final[str] = "trace"
 
 PROTOCOL_VERSION: Final[int] = 2
 MIN_CONCURRENCY: Final[int] = 1
@@ -85,14 +87,15 @@ class Settings:
     hotkey: str
     serves: tuple[Served, ...]
     worker: str = ""
+    systems: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.gateway:
             raise AgentError("no gateway to dial; there is no default")
         if not self.hotkey:
             raise AgentError("an operator serves under its own hotkey")
-        if not self.serves:
-            raise AgentError("an operator declares at least one model to serve")
+        if not self.serves and not self.systems:
+            raise AgentError("an operator declares at least one model or system to serve")
         names = [s.model for s in self.serves]
         if len(set(names)) != len(names):
             raise AgentError("a model is declared twice; one entry names one model")
@@ -189,6 +192,7 @@ def hello(settings: Settings) -> dict[str, Any]:
         "worker": settings.worker,
         "concurrency": settings.concurrency,
         "models": [s.to_dict() for s in settings.serves],
+        "systems": list(settings.systems),
     }
 
 
@@ -551,7 +555,25 @@ async def _answer(socket: Any, pool: Pool, frame: Mapping[str, Any], state: Capa
     await _send(socket, found)
 
 
-async def session(settings: Settings, pool: Pool) -> None:
+async def _trace(
+    socket: Any, handler: Callable[[Mapping[str, Any]], dict[str, Any]], frame: Mapping[str, Any]
+) -> None:
+    correlation = str(frame.get("correlation", ""))
+    try:
+        found = await asyncio.to_thread(handler, frame)
+        await _send(socket, {"type": TRACE, "correlation": correlation, "trace": found})
+    except Exception as exc:
+        await _send(
+            socket,
+            {"type": TRACE, "correlation": correlation, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+async def session(
+    settings: Settings,
+    pool: Pool,
+    systems: Mapping[str, Callable[[Mapping[str, Any]], dict[str, Any]]] | None = None,
+) -> None:
     websockets = _websockets()
     state = Capacity.of(settings.serves)
     running: dict[str, asyncio.Task[None]] = {}
@@ -591,6 +613,21 @@ async def session(settings: Settings, pool: Pool) -> None:
                     task = asyncio.create_task(_answer(socket, pool, frame, state))
                     running[correlation] = task
                     task.add_done_callback(partial(_drop, running, correlation))
+                elif kind == TASK:
+                    handler = (systems or {}).get(str(frame.get("system", "")))
+                    if handler is None:
+                        await _send(
+                            socket,
+                            {
+                                "type": TRACE,
+                                "correlation": correlation,
+                                "error": "this operator hosts no such system",
+                            },
+                        )
+                        continue
+                    task = asyncio.create_task(_trace(socket, handler, frame))
+                    running[correlation] = task
+                    task.add_done_callback(partial(_drop, running, correlation))
                 elif kind == CANCEL:
                     found = running.pop(correlation, None)
                     if found is not None:
@@ -605,11 +642,17 @@ async def session(settings: Settings, pool: Pool) -> None:
                 await asyncio.gather(*running.values(), return_exceptions=True)
 
 
-async def run(settings: Settings, pool: Pool, *, stop: asyncio.Event | None = None) -> None:
+async def run(
+    settings: Settings,
+    pool: Pool,
+    *,
+    stop: asyncio.Event | None = None,
+    systems: Mapping[str, Callable[[Mapping[str, Any]], dict[str, Any]]] | None = None,
+) -> None:
     attempt = 0
     while stop is None or not stop.is_set():
         try:
-            await session(settings, pool)
+            await session(settings, pool, systems)
             attempt = 0
         except asyncio.CancelledError:
             raise

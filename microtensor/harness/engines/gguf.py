@@ -349,6 +349,11 @@ class GgufEngine:
         entropy = log_total - float((probabilities * shifted).sum())
         return round(logprob, CONFIDENCE_DIGITS), round(max(0.0, entropy), CONFIDENCE_DIGITS)
 
+    def tokenize(self, text: str) -> list[int]:
+        if self._model is None:
+            return []
+        return list(self._model.tokenize(text.encode("utf-8"), add_bos=False, special=False))
+
     def _answer_scores(self, question: decision_prompt.Question) -> list[float]:
         logits = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
         return [float(logits[self._answer_ids[text]]) for text in question.answers]

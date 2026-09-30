@@ -74,8 +74,8 @@ class SmallAnswer:
         if not 0.0 <= confidence <= 1.0:
             raise TraceError("the small model confidence must lie in [0, 1]")
         tokens = body["tokens"]
-        if not isinstance(tokens, list) or not tokens:
-            raise TraceError("the small model answer lists no tokens")
+        if not isinstance(tokens, list):
+            raise TraceError("the small model tokens must be a list")
         return cls(
             output=body["output"],
             confidence=confidence,
