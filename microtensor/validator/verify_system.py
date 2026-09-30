@@ -205,8 +205,14 @@ def jailed_verify(
 ) -> dict[str, Any]:
     from microtensor.core.escalation import allowlist as escalation_allowlist
     from microtensor.harness.engines.gguf import GgufEngine
+    from microtensor.harness.engines.router import explain
     from microtensor.harness.execute import rebuild_manifest
 
+    parsed = SystemManifest.from_dict(system)
+    router = load_router(Path(artifact) / parsed.locate(Role.ROUTER), parsed.router_features)
+    triggers = {
+        str(raw["task_ref"]): explain(router, dict(raw["router"]["features"])) for raw in traces
+    }
     engine = GgufEngine()
     engine.load(Path(weights), rebuild_manifest(load))
     try:
@@ -227,4 +233,5 @@ def jailed_verify(
         "certified": verdict.certified,
         "checked": verdict.checked,
         "reasons": list(verdict.reasons),
+        "triggers": triggers,
     }

@@ -280,6 +280,17 @@ def answer_features(output: Any) -> dict[str, float]:
     }
 
 
+def explain(router: Router | None, features: Mapping[str, float]) -> str:
+    if router is None:
+        return "no router"
+    if isinstance(router, ThresholdRouter):
+        for clause in router.clauses:
+            if clause.holds(features):
+                return f"{clause.feature} {clause.op} {clause.value:g}"
+        return f"default {router.default.value}"
+    return "linear model"
+
+
 def decide(router: Router | None, features: Mapping[str, float]) -> Decision:
     if router is None:
         return Decision.RESOLVE

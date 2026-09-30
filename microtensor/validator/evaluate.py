@@ -590,6 +590,9 @@ def evaluate_participant(
     )
 
 
+LIVE_ROWS = 500
+
+
 def _evaluate_full(
     context: ValidatorContext,
     participant: Participant,
@@ -667,6 +670,47 @@ def _evaluate_full(
         profiles={task.ref: task.profile for task in tasks.all},
     )
     answered = live.answered
+    triggers = dict(verdict.get("triggers") or {})
+    rows = []
+    for task in tasks.all[:LIVE_ROWS]:
+        trace = answered.get(task.ref)
+        if trace is None:
+            rows.append({"task_ref": task.ref, "answered": False, "profile": task.profile})
+            continue
+        price = (
+            escalations.get(f"{trace.escalation.model}@{trace.escalation.revision}")
+            if trace.escalation is not None
+            else None
+        )
+        rows.append(
+            {
+                "task_ref": task.ref,
+                "answered": True,
+                "profile": task.profile,
+                "escalated": trace.escalated,
+                "decided_at_ms": round(trace.router.at_ms, 1),
+                "total_ms": round(trace.total_ms, 1),
+                "trigger": triggers.get(task.ref, ""),
+                "features": {k: round(v, 4) for k, v in trace.router.features.items()},
+                "confidence": round(trace.small.confidence, 4),
+                "small_usd": score.small_usd,
+                "escalation_tokens": (
+                    trace.escalation.prompt_tokens + trace.escalation.completion_tokens
+                    if trace.escalation is not None
+                    else 0
+                ),
+                "escalation_usd": round(
+                    price.cost_usd(
+                        trace.escalation.prompt_tokens, trace.escalation.completion_tokens
+                    )
+                    if price is not None and trace.escalation is not None
+                    else 0.0,
+                    9,
+                ),
+                "score": round(score_task(track.metric, trace.final, task.gold), 4),
+                "small_score": round(score_task(track.metric, trace.small.output, task.gold), 4),
+            }
+        )
     outcomes = tuple(
         TaskOutcome(
             task_ref=task.ref,
@@ -703,7 +747,7 @@ def _evaluate_full(
         n_fixed=n_fixed,
         n_novel=n_novel,
         front_only=score.small_quality,
-        calibration=score.to_dict(),
+        calibration={**score.to_dict(), "live": rows},
         expected_ms=score.cost_usd * COST_UNITS_PER_USD,
     )
 
