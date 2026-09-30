@@ -778,3 +778,63 @@ Adding a router and specialist buys quality and pays for it in escalation cost,
 which moves you up and to the right. Whether that trade is worth making is
 exactly what the frontier measures, and you are better placed to judge it once
 you can see where your front actually landed.
+
+## 14 · Decision tracks
+
+A decision track does not score generated text. The validator shows your model a document and one question, reads the probability your model gives each allowed answer, and builds the answer itself. Nothing is decoded, so the output is always valid, and the document is read once however many questions are asked about it. The exact prompt is in [decision_prompt.md](decision_prompt.md).
+
+You are ranked on **calibrated quality**, `1 − Brier/2`, averaged over the task's questions. Brier is a proper scoring rule: your expected score is highest when the probability you state equals your real chance of being right. A model that is right 70% of the time scores more by saying 0.7 than by claiming certainty, so overconfidence costs you directly. Accuracy and calibration error are published on your certificate, overall and on the withheld partition, but they do not rank you.
+
+What your artifact must be: a GGUF with a chat template, whose tokenizer makes each of `A` to `Z`, `true` and `false` a single distinct token. Qwen, Llama, Gemma and Phi all qualify.
+
+### Train
+
+```bash
+python scripts/train_decider.py \
+  --base Qwen/Qwen3-1.7B --revision <pinned revision> \
+  --corpus train.jsonl --out decider/ \
+  --teacher teacher.jsonl
+```
+
+The script renders the same prompt the validator sends, puts the loss on the answer token only, and reshuffles the options every epoch so your model cannot learn that the answer is usually `A`. With `--teacher` it trains towards a teacher's probabilities (KL plus a Brier term); without it, it falls back to the gold labels. LoRA by default, `--full` for a full fine tune.
+
+The teacher file has one line per task: `{"ref": "...", "answers": {"question": {"label": 0.8, ...}}}`.
+
+### Export
+
+The script prints the two commands. Keep the output layer at 8 bits, because quantising it harder costs calibration before it costs accuracy:
+
+```bash
+python convert_hf_to_gguf.py decider/ --outfile decider-f16.gguf --outtype f16
+llama-quantize --token-embedding-type q8_0 decider-f16.gguf decider.gguf Q4_K_M
+```
+
+Use `--token-embedding-type` on models with tied embeddings, such as the small Qwens, and `--output-tensor-type` otherwise.
+
+### Calibrate
+
+```bash
+python scripts/fold_temperature.py --model decider.gguf --corpus train.jsonl --out decider-cal.gguf
+```
+
+This fits one temperature on your train split and folds it into the GGUF by scaling `output_norm.weight`. Every logit scales by the same factor, so your top answer never changes; only your stated confidence moves towards the truth. It refuses architectures where that does not hold: anything with an output bias or a logit soft cap.
+
+### Check before you submit
+
+```bash
+mt miner simulate --corpus corpora/
+```
+
+On a decision track this prints accuracy, Brier quality and calibration error for your front alone and for your whole system, then a reliability table. If the rows where you state 0.9 are right far less than 90% of the time, you are overconfident and are paying for it in rank.
+
+### Why decisions are cheap
+
+Measured on Qwen3-0.6B, one thread, a 501 token document:
+
+| Questions | Prefill tokens, decide | Prefill tokens, each alone | Wall clock |
+|---|---|---|---|
+| 1 | 969 | 969 | 0.87× |
+| 4 | 1,169 | 2,852 | 3.91× faster |
+| 8 | 1,355 | 5,282 | 3.42× faster |
+
+One question gains nothing, since there is nothing to share. From four questions up, the document is read once and each extra question costs only its own tokens.
