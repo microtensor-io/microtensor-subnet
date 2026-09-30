@@ -968,8 +968,8 @@ class CoordinatorStore:
                 quality_rotating, quality_fixed, resolve_rate, expected_ms,
                 expected_j, envelope, components, ablation, device_profile,
                 conforming, engine_version, corpus_version, fault, signature,
-                body_hash, received_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                body_hash, received_at, signed_body
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (round_index, worker_hotkey, system_digest) DO NOTHING
             """,
             (
@@ -993,6 +993,7 @@ class CoordinatorStore:
                 report.signature,
                 report.digest(),
                 time.time(),
+                json.dumps(report.body(), sort_keys=True),
             ),
         )
 
@@ -1224,7 +1225,7 @@ class CoordinatorStore:
         payload = []
         for row in rows:
             report = _report_of(row)
-            body = report.body()
+            body = _signed_body(row) or report.body()
             body["signature"] = report.signature
             payload.append(body)
         return payload
@@ -1371,6 +1372,11 @@ class CoordinatorStore:
         body: dict[str, Any] = json.loads(str(row["payload"]))
         body["signature"] = str(row["signature"])
         return body
+
+
+def _signed_body(row: Any) -> dict[str, Any]:
+    raw = row["signed_body"]
+    return dict(json.loads(raw)) if raw else {}
 
 
 def _report_of(row: Any) -> Report:
