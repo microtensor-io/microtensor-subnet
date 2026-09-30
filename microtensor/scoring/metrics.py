@@ -426,7 +426,7 @@ _FALSE: Final[frozenset[str]] = frozenset({"false", "no", "n", "0"})
 _PROBABILITY_SLACK: Final[float] = 1e-4
 
 
-def _expected_answers(gold: Any) -> dict[str, Any]:
+def expected_answers(gold: Any) -> dict[str, Any]:
     if isinstance(gold, dict):
         if isinstance(gold.get("expected"), dict):
             return dict(gold["expected"])
@@ -438,7 +438,7 @@ def _expected_answers(gold: Any) -> dict[str, Any]:
     return {}
 
 
-def _gold_label(kind: str, value: Any) -> str:
+def gold_label(kind: str, value: Any) -> str:
     text = _normalise_text(value if not isinstance(value, bool) else str(value).lower())
     if kind == "noul":
         if text in _TRUE:
@@ -478,7 +478,7 @@ def question_quality(answer: Any, expected: Any) -> float:
     if published is None:
         return 0.0
     kind, probabilities = published
-    target = _gold_label(kind, expected)
+    target = gold_label(kind, expected)
     if not target or target not in probabilities:
         return 0.0
     squared = math.fsum(
@@ -488,7 +488,7 @@ def question_quality(answer: Any, expected: Any) -> float:
 
 
 def decision_brier(output: Any, gold: Any) -> float:
-    expected = _expected_answers(gold)
+    expected = expected_answers(gold)
     if not expected:
         return 0.0
     answers = _decision_answers(output)
@@ -497,7 +497,7 @@ def decision_brier(output: Any, gold: Any) -> float:
 
 
 def decision_accuracy(output: Any, gold: Any) -> float:
-    expected = _expected_answers(gold)
+    expected = expected_answers(gold)
     if not expected:
         return 0.0
     answers = _decision_answers(output)
@@ -508,7 +508,7 @@ def decision_accuracy(output: Any, gold: Any) -> float:
             continue
         kind, probabilities = published
         best = max(probabilities.items(), key=lambda item: item[1])[0]
-        hits += best == _gold_label(kind, value)
+        hits += best == gold_label(kind, value)
     return hits / len(expected)
 
 
@@ -584,7 +584,7 @@ def combine_partitions(
 
 
 def decision_judgements(output: Any, gold: Any) -> list[tuple[float, bool]]:
-    expected = _expected_answers(gold)
+    expected = expected_answers(gold)
     answers = _decision_answers(output)
     found: list[tuple[float, bool]] = []
     for name, value in expected.items():
@@ -594,12 +594,12 @@ def decision_judgements(output: Any, gold: Any) -> list[tuple[float, bool]]:
             continue
         kind, probabilities = published
         best, confidence = max(probabilities.items(), key=lambda item: item[1])
-        found.append((confidence, best == _gold_label(kind, value)))
+        found.append((confidence, best == gold_label(kind, value)))
     return found
 
 
 def decision_level_errors(output: Any, gold: Any) -> list[float]:
-    expected = _expected_answers(gold)
+    expected = expected_answers(gold)
     answers = _decision_answers(output)
     errors: list[float] = []
     for name, value in expected.items():
@@ -607,7 +607,7 @@ def decision_level_errors(output: Any, gold: Any) -> list[float]:
         if published is None or published[0] != "score":
             continue
         try:
-            target = float(_gold_label("score", value))
+            target = float(gold_label("score", value))
             level = math.fsum(float(label) * share for label, share in published[1].items())
         except ValueError:
             continue
@@ -635,10 +635,10 @@ def decision_skill(entries: Sequence[tuple[Any, Any, Any]]) -> float:
     counts: dict[str, dict[str, int]] = {}
     for _, gold, spec in entries:
         questions = (spec or {}).get("questions") if isinstance(spec, dict) else None
-        for name, value in _expected_answers(gold).items():
+        for name, value in expected_answers(gold).items():
             kind, _ = _question_labels((questions or {}).get(name))
             if kind:
-                label = _gold_label(kind, value)
+                label = gold_label(kind, value)
                 counts.setdefault(name, {})
                 counts[name][label] = counts[name].get(label, 0) + 1
 
@@ -648,7 +648,7 @@ def decision_skill(entries: Sequence[tuple[Any, Any, Any]]) -> float:
         model_total += decision_brier(output, gold)
         questions = (spec or {}).get("questions") if isinstance(spec, dict) else None
         answers: dict[str, Any] = {}
-        for name in _expected_answers(gold):
+        for name in expected_answers(gold):
             kind, labels = _question_labels((questions or {}).get(name))
             if not kind or not labels:
                 continue
