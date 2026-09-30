@@ -22,7 +22,15 @@ from microtensor.core.constants import GATEWAY_URL, PUBLIC_SERVER_URL
 from microtensor.serving import audit as serving_audit
 from microtensor.serving import client, plan, supervise
 from microtensor.serving import loop as probe_loop
-from microtensor.serving.agent import AgentError, Pool, Served, Settings, run, served
+from microtensor.serving.agent import (
+    AgentError,
+    HttpEngine,
+    Pool,
+    Served,
+    Settings,
+    run,
+    served,
+)
 from microtensor.serving.client import ServerError
 
 log = logging.getLogger("microtensor.cli.operator")
@@ -253,7 +261,7 @@ def _run(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         return fail(f"could not read the pool: {exc}")
 
-    pool = Pool(settings.serves)
+    pool = Pool(settings.serves, build=_engines(args, wallet))
     try:
         asyncio.run(_serve(settings, pool, systems))
     except KeyboardInterrupt:
@@ -261,6 +269,33 @@ def _run(args: argparse.Namespace) -> int:
     except AgentError as exc:
         return fail(str(exc))
     return 0
+
+
+SYSTEM_SCHEME = "system:"
+
+
+def _engines(args: argparse.Namespace, wallet: Any) -> Any:
+    def build(url: str) -> Any:
+        if not url.startswith(SYSTEM_SCHEME):
+            return HttpEngine(url)
+        from microtensor.harness.sdk import openai_escalation
+        from microtensor.miner.host import wallet_signer
+        from microtensor.serving.archived import SystemEngine, open_system, runtime_for
+
+        if not args.escalation_url:
+            raise AgentError("a served system escalates to our mirrors; pass --escalation-url")
+        restored = open_system(Path(url[len(SYSTEM_SCHEME) :]), Path(args.restore_dir))
+        system = restored.manifest.system
+        if system is None or system.escalation is None:
+            raise AgentError(f"{url} is not a full system")
+        mirrored = f"{args.mirror_org}/{system.escalation.model.split('/', 1)[-1]}"
+        escalate = openai_escalation(args.escalation_url, mirrored)
+        runtime = runtime_for(
+            restored, escalate, hotkey=hotkey_address(wallet), gpu_layers=args.gpu_layers
+        )
+        return SystemEngine(runtime, wallet_signer(wallet), url)
+
+    return build
 
 
 def _archived(args: argparse.Namespace, wallet: Any) -> dict[str, Any]:
@@ -311,10 +346,12 @@ def _verify(args: argparse.Namespace) -> int:
     calibrations = probe_loop.load_calibrations(args.calibrations)
     if not artifacts:
         return fail(f"no artifact paths in {args.artifacts}")
-    if not calibrations:
+    if not calibrations and not all(probe_loop.is_system(p) for p in artifacts.values()):
         return fail(f"no calibrations in {args.calibrations}")
 
-    missing = sorted(set(artifacts) - set(calibrations))
+    missing = sorted(
+        m for m in set(artifacts) - set(calibrations) if not probe_loop.is_system(artifacts[m])
+    )
     if missing:
         return fail(f"no calibration for {', '.join(missing)}; an uncalibrated model cannot judge")
 

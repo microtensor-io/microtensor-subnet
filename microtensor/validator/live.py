@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
+import time
 import urllib.request
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from microtensor.core.system import SystemManifest
@@ -74,6 +76,13 @@ class GatewaySystemClient:
 class LiveRun:
     traces: tuple[Trace, ...]
     failures: tuple[tuple[str, str], ...]
+    latency_ms: dict[str, float] = field(default_factory=dict)
+
+    def p95_ms(self) -> float:
+        found = sorted(self.latency_ms.values())
+        if not found:
+            return 0.0
+        return found[min(len(found) - 1, math.ceil(0.95 * len(found)) - 1)]
 
     @property
     def answered(self) -> dict[str, Trace]:
@@ -103,12 +112,15 @@ def run_live(
     digest = system.digest()
     traces: list[Trace] = []
     failures: list[tuple[str, str]] = []
+    latency: dict[str, float] = {}
     for task in tasks:
+        started = time.perf_counter()
         try:
             trace = read(client.task(system.endpoint.name, request_for(round_index, task)), verify)
         except (TraceError, LiveError, OSError, ValueError) as exc:
             failures.append((task.ref, str(exc)))
             continue
+        latency[task.ref] = (time.perf_counter() - started) * 1000.0
         wrong = [
             what
             for what, ok in (
@@ -123,7 +135,11 @@ def run_live(
             failures.append((task.ref, f"the trace names a different {', '.join(wrong)}"))
             continue
         traces.append(trace)
-    return LiveRun(traces=tuple(traces), failures=tuple(failures))
+    return LiveRun(
+        traces=tuple(traces),
+        failures=tuple(failures),
+        latency_ms={ref: ms for ref, ms in latency.items() if ref in {t.task_ref for t in traces}},
+    )
 
 
 def chain_verifier() -> Verifier:

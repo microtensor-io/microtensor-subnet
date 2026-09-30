@@ -27,6 +27,16 @@ artifact, and commit a pointer on chain once per round. Validators fetch it and
 run it on their own certified hardware, so your machine is busy only while you
 are training.
 
+In the full system arenas you submit more than a model. A system is four parts
+built for one task: the specialist small model with calibrated confidence, the
+harness around it (prompts, tools, checks and output templates), a router that
+reads the small model's confidence and decides whether to answer, and an
+escalation model from the arena's allowlist of open models that takes over only
+when the router sends a request up. You host the system through the dial out
+agent, validators test it live on withheld tasks, and it is ranked on end to end
+quality against total cost within a latency ceiling. Start with
+[full_system_playbook.md](full_system_playbook.md).
+
 **You have a GPU and want it earning continuously without training.** You are
 an inference miner. You post collateral, run a stock engine on certified
 artifacts, and answer live traffic. You do not choose which models exist and you
@@ -148,6 +158,7 @@ and nothing more. You start the next one clean.
 | | |
 |---|---|
 | [system_miner.md](system_miner.md) | Train, package, publish and commit, round by round |
+| [full_system_playbook.md](full_system_playbook.md) | Build a full system: small model, harness, router and escalation |
 | [inference_miner.md](inference_miner.md) | Register, post collateral, serve and get verified |
 | [compute_miner.md](compute_miner.md) | Enrol a GPU machine in the pool |
 | [validator_setup.md](validator_setup.md) | Evaluate submissions and verify serving |

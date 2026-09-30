@@ -61,6 +61,7 @@ class Answered:
     escalated: bool = False
     answered_by: str = "front"
     router_features: dict[str, float] = field(default_factory=dict)
+    trace: dict[str, Any] = field(default_factory=dict)
 
     @property
     def empty(self) -> bool:
@@ -144,7 +145,50 @@ def ask(
         escalated=bool(found.get("escalated")),
         answered_by=str(found.get("answered_by", "front")),
         router_features={k: float(v) for k, v in dict(found.get("router_features") or {}).items()},
+        trace=dict(found.get("trace") or {}),
     )
+
+
+def judge_full_system(held: Any, answered: Answered, prompt: str) -> verify.Judgement:
+    from microtensor.core.escalation import EscalationModel
+    from microtensor.core.trace import TraceError, read
+    from microtensor.core.tracks import get_track
+    from microtensor.validator.live import chain_verifier
+    from microtensor.validator.verify_system import verify_system
+
+    restored, engine = held
+    system = restored.manifest.system
+    if not answered.trace:
+        return verify.Judgement(verify.CHEAT, 1.0, 0.0, "a system answer carried no trace")
+    try:
+        trace = read(answered.trace, chain_verifier())
+    except TraceError as exc:
+        return verify.Judgement(verify.CHEAT, 1.0, 0.0, str(exc))
+    if trace.hotkey != answered.hotkey or trace.system_digest != system.digest():
+        reason = "the trace names another operator or system"
+        return verify.Judgement(verify.CHEAT, 1.0, 0.0, reason)
+    if str(trace.final).strip() != answered.text.strip():
+        return verify.Judgement(verify.CHEAT, 1.0, 0.0, "the answer is not the traced final answer")
+    pinned = system.escalation
+    allowed = {
+        pinned.key: EscalationModel(
+            model=pinned.model, revision=pinned.revision, usd_per_mtok_in=0.0, usd_per_mtok_out=0.0
+        )
+    }
+    verdict = verify_system(
+        restored.root,
+        system,
+        engine,
+        [trace],
+        {trace.task_ref: (prompt, {})},
+        seed=trace.task_ref,
+        allowlist=allowed,
+        chat=get_track(restored.manifest.track).chat,
+        size=1,
+    )
+    if verdict.certified:
+        return verify.Judgement(verify.PASS, 0.0, 0.0, "")
+    return verify.Judgement(verify.CHEAT, 1.0, 0.0, "; ".join(verdict.reasons))
 
 
 def judge(model: Any, answered: Answered, calibration: verify.Calibration) -> verify.Judgement:

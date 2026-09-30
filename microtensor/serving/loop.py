@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from microtensor.core.system import FULL_SYSTEM
 from microtensor.serving import probe, verify
 from microtensor.serving.client import ServerError
 
@@ -94,11 +95,12 @@ def cycle(
                 continue
             calibration = calibrations.get(wanted)
             artifact = artifacts.get(wanted)
-            if calibration is None or artifact is None:
+            system = artifact is not None and is_system(artifact)
+            if artifact is None or (calibration is None and not system):
                 log.info("no calibrated artifact for %s; skipping", wanted)
                 continue
             if wanted not in opened:
-                opened[wanted] = probe.artifact_model(artifact)
+                opened[wanted] = open_system(artifact) if system else probe.artifact_model(artifact)
 
             for _ in range(per_operator):
                 verdict = _one(
@@ -112,6 +114,7 @@ def cycle(
                     model=wanted,
                     prompt=probe.prompt_for(chance),
                     tally=tally,
+                    system=system,
                 )
                 if verdict is None:
                     break
@@ -131,11 +134,12 @@ def _one(
     credential: str,
     wallet: Any,
     engine: Any,
-    calibration: verify.Calibration,
+    calibration: verify.Calibration | None,
     hotkey: str,
     model: str,
     prompt: str,
     tally: Counted,
+    system: bool = False,
 ) -> dict[str, Any] | None:
     try:
         answered = probe.ask(gateway, credential, hotkey=hotkey, model=model, prompt=prompt)
@@ -144,7 +148,10 @@ def _one(
         log.info("operator %s did not answer: %s", hotkey[:12], exc)
         return None
 
-    found = probe.judge(engine, answered, calibration)
+    if system or calibration is None:
+        found = probe.judge_full_system(engine, answered, prompt)
+    else:
+        found = probe.judge(engine, answered, calibration)
     tally.probed += 1
 
     if found.verdict == verify.CHEAT:
@@ -189,6 +196,35 @@ def _one(
             log.warning("could not withdraw %s: %s", hotkey[:12], exc)
 
     return reported
+
+
+def is_system(path: Path) -> bool:
+    if (path / "intake.json").is_file():
+        return True
+    manifest = path / "manifest.json"
+    if not manifest.is_file():
+        return False
+    try:
+        return (
+            int(
+                dict(json.loads(manifest.read_text(encoding="utf-8")).get("system") or {}).get(
+                    "schema_version", 1
+                )
+            )
+            >= FULL_SYSTEM
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+def open_system(path: Path) -> tuple[Any, Any]:
+    from microtensor.harness.engines.gguf import GgufEngine
+    from microtensor.serving.archived import open_system as restore
+
+    restored = restore(path, path.parent / f".{path.name}-restored")
+    engine = GgufEngine()
+    engine.load(restored.root, restored.manifest.load)
+    return restored, engine
 
 
 def load_calibrations(path: Path) -> dict[str, verify.Calibration]:
