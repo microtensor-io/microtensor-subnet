@@ -84,7 +84,7 @@ def simulate_full(
         tasks = tasks[:limit]
     chat = get_track(track).chat
     engine = GgufEngine()
-    engine.load(artifact / system.locate(Role.FRONT), load)
+    engine.load(artifact, load)
     router = load_router(artifact / system.locate(Role.ROUTER), system.router_features)
     escalate = openai_escalation(escalation_url, system.escalation.model)
     traces = []
