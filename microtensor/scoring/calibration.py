@@ -13,6 +13,8 @@ from microtensor.scoring.metrics import (
 )
 
 BINS: Final[int] = 10
+CORRECT_AT: Final[float] = 0.5
+GENERATED: Final[str] = "sequence"
 
 
 def _bin(confidence: float, bins: int) -> int:
@@ -52,6 +54,29 @@ def expected_calibration_error(rows: Sequence[tuple[float, bool]], bins: int = B
         if row["count"]
     )
     return round(gap, ACCURACY_DECIMALS)
+
+
+def sequence_confidence(logprobs: Sequence[float]) -> float:
+    return math.exp(math.fsum(logprobs) / len(logprobs)) if logprobs else 0.0
+
+
+def generation_summary(rows: Iterable[tuple[float, float]]) -> dict[str, Any]:
+    found = [(min(max(float(c), 0.0), 1.0), float(score)) for c, score in rows]
+    judged = [(confidence, score >= CORRECT_AT) for confidence, score in found]
+    squared = [(confidence - (1.0 if ok else 0.0)) ** 2 for confidence, ok in judged]
+    return {
+        "questions": len(judged),
+        "accuracy": round(sum(1 for _, ok in judged if ok) / len(judged), ACCURACY_DECIMALS)
+        if judged
+        else 0.0,
+        "brier_quality": round(1.0 - math.fsum(squared) / len(squared), ACCURACY_DECIMALS)
+        if squared
+        else 0.0,
+        "ece": expected_calibration_error(judged),
+        "level_mae": None,
+        "reliability": reliability(judged),
+        "prompt_format": GENERATED,
+    }
 
 
 def summarise(pairs: Iterable[tuple[Any, Any]]) -> dict[str, Any]:
