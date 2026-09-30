@@ -25,6 +25,7 @@ from microtensor.cli.common import (
 from microtensor.core.constants import (
     COORDINATOR_URL,
     CORPUS_VERSION,
+    GATEWAY_URL,
     GENESIS_BLOCK,
     PROVENANCE_REQUIRED,
     PUBLIC_SERVER_URL,
@@ -180,6 +181,21 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     serve.set_defaults(handler=_serve)
 
+    host = inner.add_parser(
+        "host", help="keep your full system online for live testing until the round settles"
+    )
+    _add_settings_arguments(host)
+    host.add_argument(
+        "--escalation-url",
+        required=True,
+        help="OpenAI compatible server running your allowlisted escalation model",
+    )
+    host.add_argument("--gateway", default=GATEWAY_URL, help="where the dial out agent connects")
+    host.add_argument(
+        "--gpu-layers", type=int, default=-1, help="small model layers on the GPU, -1 for all"
+    )
+    host.set_defaults(handler=_host)
+
     status = inner.add_parser("status", help="show what this miner would publish")
     _add_settings_arguments(status)
     status.add_argument(
@@ -254,6 +270,51 @@ def _wallet_from_saved(args: argparse.Namespace, home: Path) -> None:
     for attr, env in (("wallet_name", "MT_WALLET_NAME"), ("wallet_hotkey", "MT_WALLET_HOTKEY")):
         if getattr(args, attr, None) is None and not os.environ.get(env) and stored.get(attr):
             setattr(args, attr, stored[attr])
+
+
+def _host(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from microtensor.chain.wallet import hotkey_address
+    from microtensor.harness.sdk import openai_escalation
+    from microtensor.miner.host import system_handler, wallet_signer
+    from microtensor.serving.agent import AgentError, Pool, Settings, run
+    from microtensor.serving.archived import ArchiveError, open_system, runtime_for
+
+    try:
+        config = _config(args)
+        restored = open_system(config.artifact_dir, config.home / "hosted")
+    except (MinerConfigError, ArchiveError, OSError, ValueError) as exc:
+        return fail(str(exc))
+    system = restored.manifest.system
+    if system is None or system.escalation is None or system.endpoint is None:
+        return fail("mt miner host runs a full system; package one with schema_version 2 first")
+    wallet = open_wallet(config.chain)
+    hotkey = hotkey_address(wallet)
+    runtime = runtime_for(
+        restored,
+        openai_escalation(args.escalation_url, system.escalation.model),
+        hotkey=hotkey,
+        gpu_layers=args.gpu_layers,
+    )
+    handlers = {system.endpoint.name: system_handler(runtime, wallet_signer(wallet))}
+    try:
+        settings = Settings(
+            gateway=args.gateway,
+            hotkey=hotkey,
+            serves=(),
+            worker=system.endpoint.worker,
+            systems=(system.endpoint.name,),
+        )
+    except AgentError as exc:
+        return fail(str(exc))
+    print(f"hosting {system.endpoint.name} ({system.digest()[:19]}) as {hotkey[:12]}")
+    print("keep this running until your round settles; validators test it live")
+    try:
+        asyncio.run(run(settings, Pool(()), systems=handlers))
+    except KeyboardInterrupt:
+        print("stopped")
+    return 0
 
 
 def _config(args: argparse.Namespace) -> MinerConfig:
