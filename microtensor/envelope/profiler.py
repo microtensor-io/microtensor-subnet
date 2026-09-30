@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from microtensor.core.protocol import ArtifactFormat, LoadManifest, MeasuredEnve
 from microtensor.core.tracks import DECIDE, GENERATE, HardwareClass, get_class, get_track
 from microtensor.envelope.device import DeviceProfile, conforms, detect
 from microtensor.envelope.latency import Distribution, summarise
-from microtensor.envelope.probe import max_input_decision, max_input_prompt
+from microtensor.envelope.probe import declared_tokens, max_input_decision, max_input_prompt
 from microtensor.envelope.sampler import ResidentSampler
 from microtensor.harness.contract import Engine, Request, Response, answer
 from microtensor.harness.registry import engine_for, load_builtin
@@ -106,22 +106,73 @@ def plan_payload(plan: ProfilePlan) -> dict[str, Any]:
     }
 
 
+def _with_words(plan: ProfilePlan, words: list[str], count: int) -> ProfilePlan:
+    text = " ".join(words[:count])
+    if plan.mode != DECIDE:
+        return replace(plan, prompt=text)
+    decision = dict(plan.max_input.get("decision") or {})
+    decision["context"] = text
+    return replace(plan, prompt=text, max_input={**plan.max_input, "decision": decision})
+
+
+def fit(engine: Engine, plan: ProfilePlan) -> tuple[ProfilePlan, int]:
+    measure = getattr(engine, "input_tokens", None)
+    declared = declared_tokens(plan.max_input)
+    if not callable(measure) or declared <= 0:
+        return plan, 0
+    budget = declared if plan.mode == DECIDE else declared - plan.max_output_tokens
+    if budget <= 0:
+        return plan, 0
+    words = plan.prompt.split()
+    while words and len(words) < budget * 2:
+        words = words + words
+    if not words:
+        return plan, 0
+
+    def size(count: int) -> int:
+        return int(measure(_request(_with_words(plan, words, count), 0)))
+
+    low, high = 1, len(words)
+    if size(low) > budget:
+        return _with_words(plan, words, low), size(low)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if size(middle) <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    fitted = _with_words(plan, words, low)
+    return fitted, size(low)
+
+
 def _cold_start(
     engine: Engine, artifact: Path, manifest: LoadManifest, plan: ProfilePlan
-) -> tuple[float, Response]:
+) -> tuple[float, Response, ProfilePlan, int]:
     started = time.perf_counter()
     try:
         engine.load(artifact, manifest)
     except Exception as exc:
         raise ProfileError(f"artifact failed to load: {exc}") from exc
+    loaded_ms = (time.perf_counter() - started) * 1000.0
 
+    plan, fed = fit(engine, plan)
+
+    started = time.perf_counter()
     response = answer(engine, _request(plan, 0))
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    elapsed_ms = loaded_ms + (time.perf_counter() - started) * 1000.0
     if not response.ok:
         raise ProfileError(f"artifact produced no output on a cold cache: {response.error}")
     if not _produced(response, plan):
         raise ProfileError("artifact produced no output on a cold cache")
-    return elapsed_ms, response
+    return elapsed_ms, response, plan, fed
+
+
+def _input_at_peak(plan: ProfilePlan, fed: int) -> dict[str, Any]:
+    found = {key: value for key, value in plan.max_input.items() if key != "decision"}
+    if fed:
+        found["fed_tokens"] = fed
+        found["declared_tokens"] = declared_tokens(plan.max_input)
+    return found
 
 
 def profile(
@@ -140,7 +191,7 @@ def profile(
     sampler = ResidentSampler(plan.sample_interval_ms)
     sampler.start()
     try:
-        cold_start_ms, _ = _cold_start(engine, artifact, manifest, plan)
+        cold_start_ms, _, plan, fed = _cold_start(engine, artifact, manifest, plan)
         sampler.mark()
 
         ttfts: list[float] = []
@@ -175,7 +226,7 @@ def profile(
     envelope = MeasuredEnvelope(
         size_bytes=size_bytes,
         peak_rss_bytes=sampler.peak_bytes,
-        input_at_peak=dict(plan.max_input),
+        input_at_peak=_input_at_peak(plan, fed),
         ttft_p50_ms=round(latency.p50),
         ttft_p95_ms=round(latency.p95),
         tokens_per_second=sum(throughputs) / len(throughputs) if throughputs else 0.0,

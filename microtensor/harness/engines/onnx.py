@@ -168,6 +168,11 @@ class OnnxEngine:
                 return value
         return 0
 
+    def input_tokens(self, request: Request) -> int:
+        if self._tokenizer is None:
+            return 0
+        return len(self._tokenizer.encode(request.prompt).ids)
+
     def generate(self, request: Request) -> Response:
         if self._session is None or self._tokenizer is None:
             return Response.failed(request.task_ref, "engine was asked to generate before load")
