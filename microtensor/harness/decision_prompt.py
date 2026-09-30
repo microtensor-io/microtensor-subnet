@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -179,3 +180,27 @@ def build_answer(question: Question, micros: Sequence[int]) -> dict[str, Any]:
     else:
         answer[SCORE] = sum(level * share for level, share in enumerate(micros)) / GRID
     return answer
+
+
+def shuffle_options(spec: Any, nonce: str) -> Any:
+    if not isinstance(spec, Mapping):
+        return spec
+    questions = spec.get("questions")
+    if not isinstance(questions, Mapping):
+        return spec
+    shuffled: dict[str, Any] = {}
+    for name, body in questions.items():
+        criteria = body.get("criteria") if isinstance(body, Mapping) else None
+        if (
+            not isinstance(body, Mapping)
+            or body.get("type") != CHOICE
+            or not isinstance(criteria, Mapping)
+        ):
+            shuffled[name] = body
+            continue
+        order = sorted(
+            criteria,
+            key=lambda label: hashlib.sha256(f"{nonce}:{name}:{label}".encode()).hexdigest(),
+        )
+        shuffled[name] = {**body, "criteria": {label: criteria[label] for label in order}}
+    return {**spec, "questions": shuffled}

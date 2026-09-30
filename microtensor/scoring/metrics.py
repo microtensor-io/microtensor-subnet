@@ -421,6 +421,97 @@ def map_at_iou(output: Any, gold: Any) -> float:
     return 1.0 if parse_detections(output) else 0.0
 
 
+_TRUE: Final[frozenset[str]] = frozenset({"true", "yes", "y", "1"})
+_FALSE: Final[frozenset[str]] = frozenset({"false", "no", "n", "0"})
+_PROBABILITY_SLACK: Final[float] = 1e-4
+
+
+def _expected_answers(gold: Any) -> dict[str, Any]:
+    if isinstance(gold, dict):
+        if isinstance(gold.get("expected"), dict):
+            return dict(gold["expected"])
+        cases = gold.get("tests")
+        if isinstance(cases, list | tuple):
+            for case in cases:
+                if isinstance(case, dict) and isinstance(case.get("expected"), dict):
+                    return dict(case["expected"])
+    return {}
+
+
+def _gold_label(kind: str, value: Any) -> str:
+    text = _normalise_text(value if not isinstance(value, bool) else str(value).lower())
+    if kind == "noul":
+        if text in _TRUE:
+            return "true"
+        if text in _FALSE:
+            return "false"
+        return ""
+    return text
+
+
+def _published(answer: Any) -> tuple[str, dict[str, float]] | None:
+    if not isinstance(answer, dict):
+        return None
+    kind = answer.get("type")
+    shares = answer.get("probabilities")
+    if kind not in ("choice", "noul", "score") or not isinstance(shares, dict) or not shares:
+        return None
+    try:
+        probabilities = {_normalise_text(label): float(share) for label, share in shares.items()}
+    except (TypeError, ValueError):
+        return None
+    if any(not math.isfinite(v) or v < 0.0 for v in probabilities.values()):
+        return None
+    if abs(math.fsum(probabilities.values()) - 1.0) > _PROBABILITY_SLACK:
+        return None
+    return str(kind), probabilities
+
+
+def _decision_answers(output: Any) -> dict[str, Any]:
+    if isinstance(output, dict) and isinstance(output.get("answers"), dict):
+        return dict(output["answers"])
+    return {}
+
+
+def question_quality(answer: Any, expected: Any) -> float:
+    published = _published(answer)
+    if published is None:
+        return 0.0
+    kind, probabilities = published
+    target = _gold_label(kind, expected)
+    if not target or target not in probabilities:
+        return 0.0
+    squared = math.fsum(
+        (share - (1.0 if label == target else 0.0)) ** 2 for label, share in probabilities.items()
+    )
+    return max(0.0, 1.0 - 0.5 * squared)
+
+
+def decision_brier(output: Any, gold: Any) -> float:
+    expected = _expected_answers(gold)
+    if not expected:
+        return 0.0
+    answers = _decision_answers(output)
+    scores = [question_quality(answers.get(name), value) for name, value in expected.items()]
+    return math.fsum(scores) / len(scores)
+
+
+def decision_accuracy(output: Any, gold: Any) -> float:
+    expected = _expected_answers(gold)
+    if not expected:
+        return 0.0
+    answers = _decision_answers(output)
+    hits = 0
+    for name, value in expected.items():
+        published = _published(answers.get(name))
+        if published is None:
+            continue
+        kind, probabilities = published
+        best = max(probabilities.items(), key=lambda item: item[1])[0]
+        hits += best == _gold_label(kind, value)
+    return hits / len(expected)
+
+
 METRICS: Final[dict[str, Metric]] = {
     "execution_pass_rate": execution_pass_rate,
     "label_accuracy": label_accuracy,
@@ -432,6 +523,7 @@ METRICS: Final[dict[str, Metric]] = {
     "span_accuracy": span_accuracy,
     "exact_match_numeric": exact_match_numeric,
     "rubric_f1_tool_calls": rubric_f1_tool_calls,
+    "decision_brier": decision_brier,
 }
 
 
@@ -489,3 +581,35 @@ def combine_partitions(
     if total <= 0.0:
         return 0.0
     return quantise(sum(weight * score for weight, score in served) / total)
+
+
+def decision_judgements(output: Any, gold: Any) -> list[tuple[float, bool]]:
+    expected = _expected_answers(gold)
+    answers = _decision_answers(output)
+    found: list[tuple[float, bool]] = []
+    for name, value in expected.items():
+        published = _published(answers.get(name))
+        if published is None:
+            found.append((0.0, False))
+            continue
+        kind, probabilities = published
+        best, confidence = max(probabilities.items(), key=lambda item: item[1])
+        found.append((confidence, best == _gold_label(kind, value)))
+    return found
+
+
+def decision_level_errors(output: Any, gold: Any) -> list[float]:
+    expected = _expected_answers(gold)
+    answers = _decision_answers(output)
+    errors: list[float] = []
+    for name, value in expected.items():
+        published = _published(answers.get(name))
+        if published is None or published[0] != "score":
+            continue
+        try:
+            target = float(_gold_label("score", value))
+            level = math.fsum(float(label) * share for label, share in published[1].items())
+        except ValueError:
+            continue
+        errors.append(abs(level - target))
+    return errors

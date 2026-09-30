@@ -102,6 +102,9 @@ ALLOWED_ROUTER_FEATURES: Final[frozenset[str]] = frozenset(
         "max_entropy",
         "schema_valid",
         "input_tokens",
+        "answer_prob",
+        "answer_margin",
+        "answer_entropy",
     }
 )
 ROUTER_MAX_BYTES: Final[int] = 4 * 1024**2

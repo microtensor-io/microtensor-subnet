@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from microtensor.core.protocol import (
     TaskOutcome,
     evaluate_gate,
 )
-from microtensor.core.tracks import HardwareClass, get_class, get_track
+from microtensor.core.tracks import DECIDE, HardwareClass, get_class, get_track
 from microtensor.envelope.device import POLICY_ENV
 from microtensor.envelope.profiler import plan_for, plan_payload, run_profile
 from microtensor.harness.cascade import CascadeResult, Leg, run_cascade
@@ -36,6 +37,7 @@ from microtensor.scoring.execution import (
     has_module_tests,
     screen_solution,
 )
+from microtensor.scoring.calibration import partition_report
 from microtensor.scoring.metrics import combine_partitions, partition_scores, score_task
 from microtensor.tasks.corpus import FIXED, NOVEL, ROTATING, Task
 from microtensor.tasks.selection import RoundTasks, partition_of, to_requests
@@ -115,6 +117,7 @@ def _evaluation(
     n_novel: int = 0,
     cascade: CascadeResult | None = None,
     front_only: float = 0.0,
+    calibration: dict[str, Any] | None = None,
 ) -> Evaluation:
     track, hardware_class = participant.competition
     return Evaluation(
@@ -140,6 +143,21 @@ def _evaluation(
         expected_ms=_expected_ms(cascade, measured),
         front_only_score=front_only,
         system_digest=participant.manifest.system_digest,
+        calibration=dict(calibration or {}),
+    )
+
+
+def _calibration(tasks: RoundTasks, by_ref: Mapping[str, Response]) -> dict[str, Any]:
+    def pairs(bucket: Sequence[Task]) -> list[tuple[Any, Any]]:
+        found: list[tuple[Any, Any]] = []
+        for task in bucket:
+            response = by_ref.get(task.ref)
+            found.append((response.output if response and response.ok else None, task.gold))
+        return found
+
+    return partition_report(
+        {ROTATING: pairs(tasks.rotating), FIXED: pairs(tasks.fixed), NOVEL: pairs(tasks.novel)},
+        NOVEL,
     )
 
 
@@ -505,6 +523,9 @@ def evaluate_participant(
         rotating, fixed, novel, n_rotating, n_fixed, n_novel = dataset_scorer(tasks, by_ref)
     else:
         rotating, fixed, novel, n_rotating, n_fixed, n_novel = partition_scores(outcomes)
+    calibration = (
+        _calibration(tasks, by_ref) if get_track(tasks.track).answer_mode == DECIDE else None
+    )
     return _evaluation(
         participant,
         tasks,
@@ -518,6 +539,7 @@ def evaluate_participant(
         n_novel=n_novel,
         cascade=cascade,
         front_only=front_only_score,
+        calibration=calibration,
     )
 
 

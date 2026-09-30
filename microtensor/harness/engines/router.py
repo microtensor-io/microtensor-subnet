@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from microtensor.core.constants import (
     ALLOWED_ROUTER_FEATURES,
@@ -197,6 +197,9 @@ def load_router(path: Path, declared_features: Sequence[str]) -> Router:
     raise RouterError(f"unrecognised router artifact {path.name!r}; expected .json or .onnx")
 
 
+ANSWER_FEATURE_DIGITS: Final[int] = 6
+
+
 def features_from(
     response: Response,
     *,
@@ -219,6 +222,30 @@ def features_from(
         "max_entropy": max(entropies) if entropies else 0.0,
         "schema_valid": 1.0 if schema_valid else 0.0,
         "input_tokens": float(prompt_tokens),
+        **answer_features(response.output),
+    }
+
+
+def answer_features(output: Any) -> dict[str, float]:
+    answers = output.get("answers") if isinstance(output, dict) else None
+    tops: list[float] = []
+    margins: list[float] = []
+    spreads: list[float] = []
+    for answer in (answers or {}).values():
+        shares = answer.get("probabilities") if isinstance(answer, dict) else None
+        if not isinstance(shares, dict) or len(shares) < 2:
+            continue
+        ranked = sorted((float(v) for v in shares.values()), reverse=True)
+        tops.append(ranked[0])
+        margins.append(ranked[0] - ranked[1])
+        entropy = -math.fsum(p * math.log(p) for p in ranked if p > 0.0)
+        spreads.append(entropy / math.log(len(ranked)))
+    if not tops:
+        return {"answer_prob": 0.0, "answer_margin": 0.0, "answer_entropy": 0.0}
+    return {
+        "answer_prob": round(min(tops), ANSWER_FEATURE_DIGITS),
+        "answer_margin": round(min(margins), ANSWER_FEATURE_DIGITS),
+        "answer_entropy": round(max(spreads), ANSWER_FEATURE_DIGITS),
     }
 
 

@@ -158,6 +158,7 @@ class Evaluation:
     expected_j: float = 0.0
     front_only_score: float = 0.0
     system_digest: str = ""
+    calibration: dict[str, Any] = field(default_factory=dict)
 
     @property
     def earns(self) -> bool:

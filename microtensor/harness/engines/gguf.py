@@ -213,6 +213,27 @@ def validate_artifact(path: Path) -> None:
         )
 
 
+CONFIDENCE_DIGITS: Final[int] = 6
+
+
+class _Confidence:
+    def __init__(self, engine: GgufEngine) -> None:
+        self._engine = engine
+        self._seen = -1
+        self.logprobs: list[float] = []
+        self.entropies: list[float] = []
+
+    def __call__(self, input_ids: Any, logits: Any) -> bool:
+        position = len(input_ids)
+        if position <= self._seen:
+            return False
+        self._seen = position
+        logprob, entropy = self._engine._token_confidence()
+        self.logprobs.append(logprob)
+        self.entropies.append(entropy)
+        return False
+
+
 class GgufEngine:
     format = ArtifactFormat.GGUF
 
@@ -313,6 +334,21 @@ class GgufEngine:
             raise EngineError("cache rollback refused")
         self._model.n_tokens = shared
 
+    def _token_confidence(self) -> tuple[float, float]:
+        import numpy as np
+
+        row = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
+        logits = np.ctypeslib.as_array(row, shape=(int(self._model.n_vocab()),)).astype(np.float64)
+        top = float(logits.max())
+        shifted = logits - top
+        weights = np.exp(shifted)
+        total = float(weights.sum())
+        log_total = float(np.log(total))
+        logprob = float(shifted[int(logits.argmax())]) - log_total
+        probabilities = weights / total
+        entropy = log_total - float((probabilities * shifted).sum())
+        return round(logprob, CONFIDENCE_DIGITS), round(max(0.0, entropy), CONFIDENCE_DIGITS)
+
     def _answer_scores(self, question: decision_prompt.Question) -> list[float]:
         logits = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
         return [float(logits[self._answer_ids[text]]) for text in question.answers]
@@ -405,6 +441,7 @@ class GgufEngine:
         first_token_at = 0.0
         produced: list[str] = []
         count = 0
+        confidence = _Confidence(self)
 
         try:
             # Clear the KV cache first. llama.cpp keeps it between calls and
@@ -432,6 +469,7 @@ class GgufEngine:
                 "mirostat_mode": 0,
                 "seed": SEED,
                 "stream": True,
+                "stopping_criteria": confidence,
             }
 
             # Instruction tasks go through the model's chat template so an
@@ -469,6 +507,8 @@ class GgufEngine:
             ttft_ms=(first_token_at - started) * 1000.0 if first_token_at else 0.0,
             total_ms=(total - started) * 1000.0,
             output_tokens=count,
+            logprobs=tuple(confidence.logprobs),
+            entropies=tuple(confidence.entropies),
         )
 
     def _chat_pieces(self, prompt: str, sampler: dict[str, Any]) -> Any:
