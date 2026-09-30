@@ -175,6 +175,19 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     floor.add_argument("--allow-unsandboxed", action="store_true")
     floor.set_defaults(handler=_floor)
 
+    bar = inner.add_parser(
+        "bar", help="is an arena's test set saturated, and is its floor due to rise"
+    )
+    add_common_arguments(bar)
+    bar.add_argument("--track", required=True)
+    bar.add_argument("--class", dest="hardware_class", required=True)
+    bar.add_argument("--rounds", type=int, default=3, help="settled rounds to look back over")
+    bar.add_argument("--ceiling", type=float, default=0.95, help="best quality that saturates")
+    bar.add_argument(
+        "--freeze", action="store_true", help="a version freeze is due: raise the floor too"
+    )
+    bar.set_defaults(handler=_bar)
+
     cfg = inner.add_parser("config", help="print the served config and its hash")
     add_common_arguments(cfg)
     cfg.set_defaults(handler=_config)
@@ -562,6 +575,28 @@ def _open(args: argparse.Namespace) -> int:
     print(f"  {_config_hash_for(source, server)}")
     print(f"  mt coordinator anchor --round {round_.index}")
     print("Until that lands, workers refuse the round rather than measure against it.")
+    return 0
+
+
+def _bar(args: argparse.Namespace) -> int:
+    from microtensor.scoring.saturation import assess
+
+    with _store(args) as store:
+        history = store.frontier_history(args.track, args.hardware_class)
+    best = [float(row["best_quality"]) for row in history]
+    bar = assess(best, ceiling=args.ceiling, rounds=args.rounds)
+    print(f"arena    {args.track}/{args.hardware_class}")
+    print(f"rounds   {bar.rounds} settled in view")
+    print(f"best     {bar.best:.4f}  ({bar.gained:+.4f} over the window)")
+    print(f"verdict  {bar.verdict}")
+    print("novel    fresh withheld tasks are drawn every round from the novel partition")
+    if args.freeze or bar.saturated:
+        print()
+        print("raise the floor from the current base model before the next round:")
+        print(
+            f"  mt coordinator floor --track {args.track} --class {args.hardware_class} "
+            "--artifact <base.gguf> --corpus <dir> --apply --arena-id <id>"
+        )
     return 0
 
 
