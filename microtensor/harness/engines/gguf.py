@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
-from microtensor.core.tracks import DECISION_PROMPT_VERSION, Decoding
+from microtensor.core.tracks import DECIDE, DECISION_PROMPT_VERSION, Decoding
 from microtensor.harness import decision_prompt
 from microtensor.harness.contract import (
     EngineError,
@@ -312,6 +312,16 @@ class GgufEngine:
         if not self._model._ctx.kv_cache_seq_rm(-1, shared, -1):
             raise EngineError("cache rollback refused")
         self._model.n_tokens = shared
+
+    def input_tokens(self, request: Request) -> int:
+        if request.mode == DECIDE:
+            context, questions = decision_prompt.parse(request.inputs.get("decision"))
+            return max(len(self._decision_tokens(context, question)) for question in questions)
+        text = request.prompt
+        if request.chat:
+            rendered = self._render_chat([{"role": "user", "content": request.prompt}])
+            text = rendered if rendered is not None else request.prompt
+        return len(self._model.tokenize(text.encode("utf-8"), add_bos=True, special=True))
 
     def _answer_scores(self, question: decision_prompt.Question) -> list[float]:
         logits = _llama().llama_get_logits_ith(self._model._ctx.ctx, -1)
