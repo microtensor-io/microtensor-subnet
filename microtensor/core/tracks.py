@@ -220,6 +220,8 @@ TRACKS: Final[dict[str, Track]] = {
             enabled=True,
             classes=("mt-4g",),
             chat=True,
+            output_type=STRUCTURED,
+            output_schema="invoice",
         ),
         Track(
             id="text2sql",
@@ -232,6 +234,8 @@ TRACKS: Final[dict[str, Track]] = {
             enabled=True,
             classes=("mt-16g",),
             chat=True,
+            output_type=TEXT,
+            output_schema="sql",
         ),
         Track(
             id="detect",
