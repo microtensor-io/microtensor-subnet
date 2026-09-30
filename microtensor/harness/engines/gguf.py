@@ -366,7 +366,13 @@ class GgufEngine:
             return Response.failed(request.task_ref, str(exc))
 
         try:
-            rows = [self._decision_tokens(context, question) for question in questions]
+            plan = [(question, decision_prompt.stages(question)) for question in questions]
+            asked = [
+                asked_question
+                for question, staged in plan
+                for asked_question in ((staged[0], *staged[1]) if staged else (question,))
+            ]
+            rows = [self._decision_tokens(context, question) for question in asked]
             window = int(self._model.n_ctx())
             longest = max(len(row) for row in rows)
             if longest > window:
@@ -383,16 +389,26 @@ class GgufEngine:
             shared = int(self._model.n_tokens)
             saved = None if self._partial_rollback_ok() else self._save_sequence()
 
-            answers: dict[str, Any] = {}
-            for question, row in zip(questions, rows, strict=True):
+            found: list[list[float]] = []
+            for question, row in zip(asked, rows, strict=True):
                 if saved is None:
                     self._rewind(shared)
                 else:
                     self._restore_sequence(saved, shared)
                 self._model.eval(row[cut:])
-                shares = decision_prompt.to_grid(
-                    decision_prompt.softmax(self._answer_scores(question))
-                )
+                found.append(decision_prompt.softmax(self._answer_scores(question)))
+
+            answers: dict[str, Any] = {}
+            at = 0
+            for question, staged in plan:
+                if staged is None:
+                    combined = found[at]
+                    at += 1
+                else:
+                    groups = len(staged[1])
+                    combined = decision_prompt.combine(found[at], found[at + 1 : at + 1 + groups])
+                    at += 1 + groups
+                shares = decision_prompt.to_grid(combined)
                 answers[question.name] = decision_prompt.build_answer(question, shares)
             finished = time.perf_counter()
         except Exception as exc:
