@@ -604,7 +604,6 @@ def _evaluate_full(
     escalations: dict[str, Any],
     cpu_seconds: int,
 ) -> Evaluation:
-    from microtensor.core.protocol import Role
     from microtensor.scoring.metrics import score_task
     from microtensor.scoring.system import COST_UNITS_PER_USD, score_system
     from microtensor.validator.live import GatewaySystemClient, chain_verifier, run_live
@@ -639,7 +638,7 @@ def _evaluate_full(
         jailed_verify,
         str(artifact),
         system.body(),
-        str(artifact / system.locate(Role.FRONT)),
+        str(artifact),
         participant.manifest.load.to_dict(),
         [trace.to_dict() for trace in live.traces],
         {task.ref: (task.prompt, dict(task.inputs)) for task in tasks.all},
