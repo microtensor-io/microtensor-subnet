@@ -18,8 +18,7 @@ from microtensor.core.protocol import (
     evaluate_gate,
 )
 from microtensor.core.tracks import get_class
-from microtensor.envelope.probe import max_input_prompt
-from microtensor.envelope.profiler import ProfilePlan, run_profile
+from microtensor.envelope.profiler import plan_for, plan_payload, run_profile
 from microtensor.harness.jail import run_jailed
 from microtensor.harness.limits import Limits
 from microtensor.harness.registry import available, load_builtin
@@ -138,6 +137,7 @@ def selfcheck(
     hardware_class: str,
     *,
     seed: str = "selfcheck",
+    track: str = "",
     profile_seconds: int = 60,
     margin: float = DECLARATION_MARGIN,
     allow_unsandboxed: bool = False,
@@ -150,25 +150,14 @@ def selfcheck(
 
     hardware = get_class(hardware_class)
     max_input = dict(load.max_input)
-    plan = ProfilePlan(
-        prompt=max_input_prompt(seed, max_input),
-        max_input=max_input,
-        duration_seconds=profile_seconds,
-    )
+    plan = plan_for(seed, max_input, track, duration_seconds=profile_seconds)
 
     result = run_jailed(
         run_profile,
         str(artifact),
         load.to_dict(),
         hardware_class,
-        {
-            "prompt": plan.prompt,
-            "max_input": plan.max_input,
-            "duration_seconds": plan.duration_seconds,
-            "max_requests": plan.max_requests,
-            "sample_interval_ms": plan.sample_interval_ms,
-            "max_output_tokens": plan.max_output_tokens,
-        },
+        plan_payload(plan),
         limits=Limits.for_class(hardware, profiling_cpu_budget(profile_seconds)),
         allow_unsandboxed=allow_unsandboxed,
     )

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from microtensor.core.protocol import ArtifactFormat, LoadManifest
-from microtensor.core.tracks import Decoding
+from microtensor.core.tracks import ANSWER_MODES, DECIDE, GENERATE, Decoding
 from microtensor.harness import progress
 
 
@@ -36,10 +36,13 @@ class Request:
     seed: int = 0
     nonce: str = ""
     chat: bool = False
+    mode: str = GENERATE
 
     def __post_init__(self) -> None:
         if not self.task_ref:
             raise ValueError("every request must carry a task reference")
+        if self.mode not in ANSWER_MODES:
+            raise ValueError(f"request mode {self.mode!r} is not one of {sorted(ANSWER_MODES)}")
         if self.max_output_tokens < 1:
             raise ValueError("max_output_tokens must be positive")
         if self.decoding is Decoding.SEEDED and self.seed == 0:
@@ -104,12 +107,29 @@ class EngineInfo:
     runtime: str = ""
 
 
+def supports_decide(engine: Any) -> bool:
+    return callable(getattr(engine, "decide", None))
+
+
+def answer(engine: Any, request: Request) -> Response:
+    if request.mode != DECIDE:
+        response: Response = engine.generate(request)
+        return response
+    if not supports_decide(engine):
+        return Response.failed(
+            request.task_ref,
+            f"the {getattr(engine, 'format', 'unknown')} engine cannot answer a decision task",
+        )
+    decided: Response = engine.decide(request)
+    return decided
+
+
 def batch(requests: Sequence[Request], engine: Engine) -> list[Response]:
     progress.reset()
     responses: list[Response] = []
     for request in requests:
         try:
-            response = engine.generate(request)
+            response = answer(engine, request)
         except EngineError as exc:
             response = Response.failed(request.task_ref, str(exc))
         responses.append(response)
