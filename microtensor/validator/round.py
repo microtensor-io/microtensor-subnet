@@ -371,6 +371,7 @@ def _measure_batch(
             cpu_seconds=arena.cpu_seconds_per_artifact if arena else 0,
             hardware=hardware,
             on_evaluated=publish,
+            escalations=plan.escalations.get((track, hardware_class), {}),
         )
     except Abstain as exc:
         if leasing and holding:

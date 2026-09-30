@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
 from microtensor.chain.commitment import Commitment, decode_all
@@ -239,7 +239,7 @@ def discover(
     round_: Round,
     allowlists: Mapping[tuple[str, str], frozenset[str]] | None = None,
     *,
-    escalations: Mapping[tuple[str, str], frozenset[str]] | None = None,
+    escalations: Mapping[tuple[str, str], Collection[str]] | None = None,
 ) -> Roster:
     raw = context.client.commitments(list(snapshot.hotkeys))
     commitments = dict(decode_all(raw))

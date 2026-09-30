@@ -11,6 +11,7 @@ from microtensor.scoring.calibration import expected_calibration_error, reliabil
 from microtensor.scoring.metrics import score_task
 
 REFERENCE_CPU_USD_PER_HOUR: Final[float] = 0.04
+COST_UNITS_PER_USD: Final[float] = 1_000_000.0
 CORRECT_AT: Final[float] = 0.5
 DIGITS: Final[int] = 6
 
