@@ -37,6 +37,8 @@ class Request:
     nonce: str = ""
     chat: bool = False
     mode: str = GENERATE
+    grammar: dict[str, str] = field(default_factory=dict)
+    confidence_output: str = ""
 
     def __post_init__(self) -> None:
         if not self.task_ref:
@@ -60,6 +62,7 @@ class Response:
     error: str = ""
     logprobs: tuple[float, ...] = ()
     entropies: tuple[float, ...] = ()
+    confidence: tuple[float, ...] = ()
 
     @property
     def ok(self) -> bool:
