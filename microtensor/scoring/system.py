@@ -26,6 +26,7 @@ class SystemScore:
     small_usd: float
     escalation_usd: float
     calibration: dict[str, Any] = field(default_factory=dict)
+    escalation_by_profile: dict[str, float] = field(default_factory=dict)
 
     @property
     def cost_usd(self) -> float:
@@ -43,6 +44,7 @@ class SystemScore:
             "escalation_usd": self.escalation_usd,
             "cost_usd": round(self.cost_usd, 9),
             "calibration": dict(self.calibration),
+            "escalation_by_profile": dict(self.escalation_by_profile),
         }
 
 
@@ -58,6 +60,7 @@ def score_system(
     *,
     small_ms: float | None = None,
     cpu_usd_per_hour: float = REFERENCE_CPU_USD_PER_HOUR,
+    profiles: Mapping[str, str] | None = None,
 ) -> SystemScore:
     count = len(golds)
     if count == 0:
@@ -90,6 +93,11 @@ def score_system(
                 )
         elif small < CORRECT_AT:
             misses += 1
+    by_profile: dict[str, list[bool]] = {}
+    for ref, profile in (profiles or {}).items():
+        trace = by_ref.get(ref)
+        if profile and trace is not None:
+            by_profile.setdefault(profile, []).append(trace.escalated)
     measured = math.fsum(small_times) / max(1, len(small_times))
     per_task_ms = small_ms if small_ms is not None else measured
     correct = [ok for _, ok in judged]
@@ -106,5 +114,9 @@ def score_system(
             "accuracy": round(sum(correct) / len(correct), DIGITS) if correct else 0.0,
             "ece": expected_calibration_error(judged),
             "reliability": reliability(judged),
+        },
+        escalation_by_profile={
+            profile: round(sum(flags) / len(flags), DIGITS)
+            for profile, flags in sorted(by_profile.items())
         },
     )

@@ -20,6 +20,7 @@ from microtensor.tasks.corpus import (
     CorpusError,
     load_all,
     load_corpus,
+    profile_problems,
     unresolved_databases,
 )
 from microtensor.tasks.selection import partition_sizes
@@ -150,6 +151,12 @@ def _check(args: argparse.Namespace) -> int:
             problems.extend(bundle_problems)
             for problem in bundle_problems[:5]:
                 print(f"  PROBLEM {problem}")
+
+    for name in sorted(corpora):
+        if get_track(name).full_system:
+            for problem in profile_problems(corpora[name]):
+                problems.append(f"{name}: {problem}")
+                print(f"  PROBLEM {name}: {problem}")
 
     if not args.skip_contamination:
         problems.extend(_contamination(corpora))
