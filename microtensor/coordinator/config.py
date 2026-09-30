@@ -23,12 +23,12 @@ from microtensor.core.constants import (
 from microtensor.core.tracks import (
     CLASSES,
     DECIDE,
+    DECISION_PROMPT_VERSION,
     GENERATE,
     Track,
     competitions,
     enabled_tracks,
 )
-from microtensor.harness.decision_prompt import DECISION_PROMPT_VERSION
 
 CONFIG_VERSION = 1
 

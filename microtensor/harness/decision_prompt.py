@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-DECISION_PROMPT_VERSION: Final[str] = "d1"
+from microtensor.core.tracks import DECISION_PROMPT_VERSION
 
 CHOICE: Final[str] = "choice"
 NOUL: Final[str] = "noul"

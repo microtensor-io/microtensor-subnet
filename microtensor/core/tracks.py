@@ -22,6 +22,7 @@ class Decoding(str, Enum):
 GENERATE: Final[str] = "generate"
 DECIDE: Final[str] = "decide"
 ANSWER_MODES: Final[frozenset[str]] = frozenset({GENERATE, DECIDE})
+DECISION_PROMPT_VERSION: Final[str] = "d1"
 
 
 @dataclass(frozen=True, slots=True)
