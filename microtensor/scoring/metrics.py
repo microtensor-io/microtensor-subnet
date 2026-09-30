@@ -635,10 +635,10 @@ def decision_skill(entries: Sequence[tuple[Any, Any, Any]]) -> float:
     counts: dict[str, dict[str, int]] = {}
     for _, gold, spec in entries:
         questions = (spec or {}).get("questions") if isinstance(spec, dict) else None
-        for name, value in _expected_answers(gold).items():
+        for name, value in expected_answers(gold).items():
             kind, _ = _question_labels((questions or {}).get(name))
             if kind:
-                label = _gold_label(kind, value)
+                label = gold_label(kind, value)
                 counts.setdefault(name, {})
                 counts[name][label] = counts[name].get(label, 0) + 1
 
@@ -648,7 +648,7 @@ def decision_skill(entries: Sequence[tuple[Any, Any, Any]]) -> float:
         model_total += decision_brier(output, gold)
         questions = (spec or {}).get("questions") if isinstance(spec, dict) else None
         answers: dict[str, Any] = {}
-        for name in _expected_answers(gold):
+        for name in expected_answers(gold):
             kind, labels = _question_labels((questions or {}).get(name))
             if not kind or not labels:
                 continue
