@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -46,7 +47,30 @@ class Clause:
         return bool(OPS[self.op](features[self.feature], self.value))
 
 
+GRAM: Final[int] = 4
+MAX_TYPICAL: Final[int] = 200_000
+
+
+def grams(text: str) -> set[int]:
+    folded = " ".join(text.lower().split())
+    return {
+        int.from_bytes(
+            hashlib.blake2b(folded[i : i + GRAM].encode(), digest_size=8).digest(), "big"
+        )
+        for i in range(max(0, len(folded) - GRAM + 1))
+    }
+
+
+def typicality(text: str, reference: frozenset[int]) -> float:
+    found = grams(text)
+    if not found or not reference:
+        return 0.0
+    return len(found & reference) / len(found)
+
+
 class Router:
+    typical: frozenset[int] = frozenset()
+
     """Interpreted routing policy. Participants supply data, never code."""
 
     features: tuple[str, ...]
@@ -111,7 +135,14 @@ def load_threshold(payload: dict[str, Any]) -> ThresholdRouter:
         default = Decision(str(payload.get("default", Decision.RESOLVE.value)))
     except ValueError as exc:
         raise RouterError(f"unknown default decision: {exc}") from exc
-    return ThresholdRouter([_clause(c, i) for i, c in enumerate(raw_clauses)], default)
+    router = ThresholdRouter([_clause(c, i) for i, c in enumerate(raw_clauses)], default)
+    typical = payload.get("typical") or []
+    if not isinstance(typical, list) or len(typical) > MAX_TYPICAL:
+        raise RouterError(f"a router carries at most {MAX_TYPICAL} typical input grams")
+    if any(isinstance(g, bool) or not isinstance(g, int) or g < 0 for g in typical):
+        raise RouterError("typical input grams must be non negative integers")
+    router.typical = frozenset(typical)
+    return router
 
 
 def _check_graph(model: Any) -> None:

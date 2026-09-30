@@ -71,6 +71,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _add_settings_arguments(sim)
     sim.add_argument("--corpus", type=Path, required=True, help="corpus directory")
     sim.add_argument("--limit", type=int, default=0, help="stop after this many tasks")
+    sim.add_argument("--escalation-url", default="", help="full systems: the escalation endpoint")
+    sim.add_argument("--escalation-price-in", type=float, default=0.0, help="USD per 1M tokens")
+    sim.add_argument("--escalation-price-out", type=float, default=0.0, help="USD per 1M tokens")
     sim.set_defaults(handler=_simulate)
 
     pack = inner.add_parser("package", help="digest, sign and write manifest.json")
@@ -381,6 +384,23 @@ def _simulate(args: argparse.Namespace) -> int:
             return fail(f"no corpus for {config.track} under {args.corpus}")
 
         system = _system_for(config)
+        if system.full:
+            from microtensor.miner.simulate import full_report, simulate_full
+
+            traces, score = simulate_full(
+                config.artifact_dir,
+                _load_manifest_spec(config),
+                system,
+                corpus.fixed,
+                metric=corpus.metric,
+                track=config.track,
+                escalation_url=args.escalation_url,
+                usd_per_mtok_in=args.escalation_price_in,
+                usd_per_mtok_out=args.escalation_price_out,
+                limit=args.limit,
+            )
+            print(full_report(traces, score, {t.ref: t.gold for t in corpus.fixed}, corpus.metric))
+            return 0
         result = simulate(
             config.artifact_dir,
             _load_manifest_spec(config),

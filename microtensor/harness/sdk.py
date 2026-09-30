@@ -20,7 +20,13 @@ from microtensor.core.trace import (
     Trace,
 )
 from microtensor.harness.contract import Request, Response
-from microtensor.harness.engines.router import Decision, Router, decide, features_from
+from microtensor.harness.engines.router import (
+    Decision,
+    Router,
+    decide,
+    features_from,
+    typicality,
+)
 from microtensor.harness.package import load
 
 SDK_VERSION: Final[str] = "1.0.0"
@@ -151,6 +157,8 @@ class Runtime:
             entropies=small.entropies,
         )
         found = features_from(response, prompt_tokens=small.prompt_tokens)
+        found["input_typicality"] = typicality(rendered, self.router.typical)
+        found["harness_errors"] = float(sum(1 for step in steps if step.kind == "error"))
         features = {name: float(found.get(name, 0.0)) for name in self.features}
         decided_at = (time.perf_counter() - started) * 1000.0
         escalate = decide(self.router, features) is Decision.ESCALATE
