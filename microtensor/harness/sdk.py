@@ -142,6 +142,11 @@ class Runtime:
         steps.append(_step("hook", event, at, started))
         return dict(found) if isinstance(found, Mapping) else payload
 
+    def finish(self, output: Any) -> Any:
+        return self._hook("after", {"output": output}, [], time.perf_counter()).get(
+            "output", output
+        )
+
     def run(self, round_index: int, task_ref: str, prompt: str, inputs: Mapping[str, Any]) -> Trace:
         started = time.perf_counter()
         steps: list[HarnessStep] = []

@@ -196,6 +196,46 @@ def mirror(model: str, revision: str, org: str, token: str) -> str:
     return f"mirrored {model}@{revision} to {repo_id} (tag {tag})"
 
 
+def _part(value: Any) -> str:
+    return "not measured" if value is None else f"{float(value):+.4f}"
+
+
+def _breakdown_table(parts: dict[str, Any]) -> list[str]:
+    if not parts:
+        return []
+    small = dict(parts.get("small_model") or {})
+    harness = dict(parts.get("harness") or {})
+    router = dict(parts.get("router") or {})
+    floor = small.get("floor")
+    per_rescue = router.get("usd_per_rescue")
+    return [
+        "",
+        "## Where the quality comes from",
+        "",
+        f"End to end quality {float(parts.get('end_to_end') or 0.0):.4f}. Measured by the "
+        "validators from the round's traces; it explains the result and does not change pay.",
+        "",
+        "| Part | Measured |",
+        "|---|---|",
+        f"| Small model | {float(small.get('quality') or 0.0):.4f} alone"
+        + (
+            f", {_part(small.get('lift'))} over the arena floor {float(floor):.4f}"
+            if floor is not None
+            else ""
+        )
+        + " |",
+        f"| Harness | {_part(harness.get('lift'))} over a plain prompt on "
+        f"{int(harness.get('sample') or 0)} sampled tasks; "
+        f"output step {_part(harness.get('output_gain'))} |",
+        f"| Router and escalation | {_part(router.get('escalation_gain'))} from escalations; "
+        f"rescues {float(router.get('rescues') or 0.0):.1%}, "
+        f"waste {float(router.get('waste') or 0.0):.1%}, "
+        f"misses {float(router.get('misses') or 0.0):.1%}"
+        + (f"; ${float(per_rescue):.6f} per rescue" if per_rescue is not None else "")
+        + " |",
+    ]
+
+
 def _card(entry: dict[str, Any], manifest: Any, licence: str) -> str:
     from microtensor.archive.push import _front_matter, _licence_section
 
@@ -230,6 +270,7 @@ def _card(entry: dict[str, Any], manifest: Any, licence: str) -> str:
         lines.append(f"| Router | features {', '.join(system.router_features)} |")
     if system is not None and system.escalation is not None:
         lines.append(f"| Escalation | `{system.escalation.key}` from the arena allowlist |")
+    lines += _breakdown_table(dict(entry.get("breakdown") or {}))
     lines += [
         "",
         f"System digest `{entry.get('system_id')}`.",

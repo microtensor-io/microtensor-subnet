@@ -13,6 +13,12 @@ from microtensor.scoring.metrics import score_task
 REFERENCE_CPU_USD_PER_HOUR: Final[float] = 0.04
 COST_UNITS_PER_USD: Final[float] = 1_000_000.0
 CORRECT_AT: Final[float] = 0.5
+UNMEASURED_HARNESS: Final[dict[str, Any]] = {
+    "sample": 0,
+    "with_harness": None,
+    "plain_prompt": None,
+    "lift": None,
+}
 DIGITS: Final[int] = 6
 
 
@@ -28,10 +34,19 @@ class SystemScore:
     escalation_usd: float
     calibration: dict[str, Any] = field(default_factory=dict)
     escalation_by_profile: dict[str, float] = field(default_factory=dict)
+    rescues: float = 0.0
+    escalation_gain: float = 0.0
+    output_gain: float = 0.0
 
     @property
     def cost_usd(self) -> float:
         return self.small_usd + self.escalation_usd
+
+    @property
+    def usd_per_rescue(self) -> float | None:
+        if self.rescues <= 0:
+            return None
+        return round(self.escalation_usd / self.rescues, 12)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +61,9 @@ class SystemScore:
             "cost_usd": round(self.cost_usd, 9),
             "calibration": dict(self.calibration),
             "escalation_by_profile": dict(self.escalation_by_profile),
+            "rescues": self.rescues,
+            "escalation_gain": self.escalation_gain,
+            "output_gain": self.output_gain,
         }
 
 
@@ -67,7 +85,8 @@ def score_system(
     if count == 0:
         return SystemScore(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     by_ref = {trace.task_ref: trace for trace in traces if trace.task_ref in golds}
-    final_total = small_total = escalated = waste = misses = 0.0
+    final_total = small_total = escalated = waste = misses = rescues = 0.0
+    escalation_gain = output_gain = 0.0
     escalation_cost = 0.0
     small_times: list[float] = []
     judged: list[tuple[float, bool]] = []
@@ -85,15 +104,20 @@ def score_system(
         judged.append((trace.small.confidence, small >= CORRECT_AT))
         if trace.escalation is not None:
             escalated += 1
+            escalation_gain += final - small
             if small >= CORRECT_AT:
                 waste += 1
+            elif final >= CORRECT_AT:
+                rescues += 1
             price = allowlist.get(f"{trace.escalation.model}@{trace.escalation.revision}")
             if price is not None:
                 escalation_cost += price.cost_usd(
                     trace.escalation.prompt_tokens, trace.escalation.completion_tokens
                 )
-        elif small < CORRECT_AT:
-            misses += 1
+        else:
+            output_gain += final - small
+            if small < CORRECT_AT:
+                misses += 1
     by_profile: dict[str, list[bool]] = {}
     for ref, profile in (profiles or {}).items():
         trace = by_ref.get(ref)
@@ -120,4 +144,61 @@ def score_system(
             profile: round(sum(flags) / len(flags), DIGITS)
             for profile, flags in sorted(by_profile.items())
         },
+        rescues=round(rescues / count, DIGITS),
+        escalation_gain=round(escalation_gain / count, DIGITS),
+        output_gain=round(output_gain / count, DIGITS),
     )
+
+
+def harness_part(
+    probe: Mapping[str, Mapping[str, Any]], golds: Mapping[str, Any], metric: str
+) -> dict[str, Any] | None:
+    pairs = [
+        (
+            score_task(metric, row.get("harnessed"), golds[ref]),
+            score_task(metric, row.get("plain"), golds[ref]),
+        )
+        for ref, row in probe.items()
+        if ref in golds and "error" not in row
+    ]
+    if not pairs:
+        return None
+    harnessed = math.fsum(h for h, _ in pairs) / len(pairs)
+    plain = math.fsum(p for _, p in pairs) / len(pairs)
+    return {
+        "sample": len(pairs),
+        "with_harness": round(harnessed, DIGITS),
+        "plain_prompt": round(plain, DIGITS),
+        "lift": round(harnessed - plain, DIGITS),
+    }
+
+
+def breakdown(
+    score: SystemScore,
+    *,
+    floor: float | None = None,
+    harness: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    escalated = score.escalation_rate
+    return {
+        "end_to_end": score.quality,
+        "small_model": {
+            "quality": score.small_quality,
+            "floor": None if floor is None else round(floor, DIGITS),
+            "lift": None if floor is None else round(score.small_quality - floor, DIGITS),
+        },
+        "harness": {
+            **(dict(harness) if harness else UNMEASURED_HARNESS),
+            "output_gain": score.output_gain,
+        },
+        "router": {
+            "escalation_rate": escalated,
+            "escalation_gain": score.escalation_gain,
+            "rescues": score.rescues,
+            "waste": score.waste,
+            "misses": score.misses,
+            "precision": round(score.rescues / escalated, DIGITS) if escalated > 0 else None,
+            "escalation_usd": score.escalation_usd,
+            "usd_per_rescue": score.usd_per_rescue,
+        },
+    }

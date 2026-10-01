@@ -30,6 +30,7 @@ class Standing:
     contribution: dict[str, float] = field(default_factory=dict)
     release_version: str = ""
     milestone: dict[str, Any] = field(default_factory=dict)
+    breakdown: dict[str, Any] = field(default_factory=dict)
     reachable: bool = False
     reason: str = ""
 
@@ -43,6 +44,20 @@ def _get(base: str, path: str) -> Any:
     )
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
         return json.loads(response.read() or b"null")
+
+
+def fetch_breakdown(
+    base: str, track: str, hardware_class: str, system_digest: str, round_index: int | None = None
+) -> dict[str, Any]:
+    query = f"?round={int(round_index)}" if round_index is not None else ""
+    try:
+        found = _get(base, f"/v1/arenas/{track}/{hardware_class}/escalations{query}") or {}
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return {}
+    for system in found.get("systems") or ():
+        if str(system.get("system", "")) == system_digest:
+            return dict((system.get("summary") or {}).get("breakdown") or {})
+    return {}
 
 
 def fetch(base: str, track: str, hardware_class: str, system_digest: str) -> Standing:
