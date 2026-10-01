@@ -31,7 +31,7 @@ Current arenas keep running unchanged. A system arena opens only at a round boun
    - `target_quality` and `target_model` for the outside model line.
 5. **Mirror every escalation model once:** `mt archive mirror --model org/name --revision <sha>`.
 6. **Corpus.** Withheld routine and unusual tasks, with at least 20% unusual, passing `mt corpus check`, and teacher data published for the train split.
-7. **Validators.** Set `MT_GATEWAY_URL` and `MT_GATEWAY_SECRET`, and confirm the jail runs a GGUF replay on the Linux host.
+7. **Validators.** Live tests go from the validator's dendrite, signed by its wallet, to each miner's axon read from the metagraph; no gateway credential is needed. Confirm the jail runs a GGUF replay on the Linux host.
 8. **Coordinator box.** Run `mt archive intake --db <coordinator.sqlite> --watch 300 --reveals --org <private org>` so every submission is copied as it is committed.
 9. **Announce one round ahead** (draft below), then open the round the usual way: server open with the config, coordinator open, anchor.
 
@@ -50,7 +50,7 @@ Current arenas keep running unchanged. A system arena opens only at a round boun
 
 > **Full system arenas open at round N.**
 >
-> From round N, the new system arenas take a full system, not a single model: your small specialist model, the harness around it, a router, and an escalation model chosen from the arena's allowlist. You host it through the dial out agent; no public IP is needed.
+> From round N, the new system arenas take a full system, not a single model: your small specialist model, the harness around it, a router, and an escalation model chosen from the arena's allowlist. You host it with `mt miner host` on a Bittensor axon at a public IP and port, registered on chain, from your commit until the round settles.
 >
 > Validators send withheld tasks to your system during the round and check every answer: your small model is replayed from the archive, your router's decisions are recomputed from its declared rule, and escalations are charged at the published price. You are ranked on end to end quality against total cost, and a system that fails a check earns nothing that round.
 >

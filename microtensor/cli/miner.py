@@ -25,7 +25,6 @@ from microtensor.cli.common import (
 from microtensor.core.constants import (
     COORDINATOR_URL,
     CORPUS_VERSION,
-    GATEWAY_URL,
     GENESIS_BLOCK,
     PROVENANCE_REQUIRED,
     PUBLIC_SERVER_URL,
@@ -182,7 +181,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     serve.set_defaults(handler=_serve)
 
     host = inner.add_parser(
-        "host", help="keep your full system online for live testing until the round settles"
+        "host", help="serve your full system on your axon until the round settles"
     )
     _add_settings_arguments(host)
     host.add_argument(
@@ -190,7 +189,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         required=True,
         help="OpenAI compatible server running your allowlisted escalation model",
     )
-    host.add_argument("--gateway", default=GATEWAY_URL, help="where the dial out agent connects")
+    host.add_argument("--port", type=int, default=8091, help="the axon port validators reach")
+    host.add_argument(
+        "--external-ip", default="", help="the public IP to register, if not detected"
+    )
+    host.add_argument("--external-port", type=int, default=0, help="the public port, if forwarded")
     host.add_argument(
         "--gpu-layers", type=int, default=-1, help="small model layers on the GPU, -1 for all"
     )
@@ -272,13 +275,16 @@ def _wallet_from_saved(args: argparse.Namespace, home: Path) -> None:
             setattr(args, attr, stored[attr])
 
 
+VALIDATOR_REFRESH_SECONDS = 300.0
+
+
 def _host(args: argparse.Namespace) -> int:
-    import asyncio
+    import time
 
     from microtensor.chain.wallet import hotkey_address
     from microtensor.harness.sdk import openai_escalation
+    from microtensor.miner.axon import AxonUnavailable, serve_system
     from microtensor.miner.host import system_handler, wallet_signer
-    from microtensor.serving.agent import AgentError, Pool, Settings, run
     from microtensor.serving.archived import ArchiveError, open_system, runtime_for
 
     try:
@@ -298,20 +304,36 @@ def _host(args: argparse.Namespace) -> int:
         gpu_layers=args.gpu_layers,
     )
     handlers = {system.endpoint.name: system_handler(runtime, wallet_signer(wallet))}
+    client = open_client(config.chain, wallet)
+    refreshed = [0.0]
+    cached: dict[str, float] = {}
+
+    def validators() -> dict[str, float]:
+        if time.monotonic() - refreshed[0] > VALIDATOR_REFRESH_SECONDS:
+            neurons = client.snapshot(refresh=True).neurons
+            cached.clear()
+            cached.update({n.hotkey: float(n.stake) for n in neurons if n.validator_permit})
+            refreshed[0] = time.monotonic()
+        return dict(cached)
+
     try:
-        settings = Settings(
-            gateway=args.gateway,
-            hotkey=hotkey,
-            serves=(),
-            worker=system.endpoint.worker,
-            systems=(system.endpoint.name,),
+        serve_system(
+            wallet,
+            client.subtensor,
+            config.chain.netuid,
+            handlers,
+            validators,
+            port=args.port,
+            external_ip=args.external_ip,
+            external_port=args.external_port,
         )
-    except AgentError as exc:
+    except AxonUnavailable as exc:
         return fail(str(exc))
-    print(f"hosting {system.endpoint.name} ({system.digest()[:19]}) as {hotkey[:12]}")
-    print("keep this running until your round settles; validators test it live")
+    print(f"serving {system.endpoint.name} ({system.digest()[:19]}) on axon port {args.port}")
+    print("your axon is registered on chain; keep this running until your round settles")
     try:
-        asyncio.run(run(settings, Pool(()), systems=handlers))
+        while True:
+            time.sleep(60)
     except KeyboardInterrupt:
         print("stopped")
     return 0

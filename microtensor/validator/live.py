@@ -72,6 +72,47 @@ class GatewaySystemClient:
         return dict(payload["trace"])
 
 
+class AxonSystemClient:
+    def __init__(
+        self, wallet: Any, hotkey: str, address: str, port: int, timeout: float = 900.0
+    ) -> None:
+        import bittensor as bt
+
+        self.dendrite = (getattr(bt, "Dendrite", None) or bt.dendrite)(wallet=wallet)
+        self.axon = bt.AxonInfo(
+            version=0,
+            ip=address,
+            port=port,
+            ip_type=6 if ":" in address else 4,
+            hotkey=hotkey,
+            coldkey="",
+        )
+        self.timeout = timeout
+
+    def task(self, name: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        from microtensor.chain.synapse import system_task
+
+        synapse = system_task()(
+            system=name,
+            round_index=int(request["round_index"]),
+            task_ref=str(request["task_ref"]),
+            prompt=str(request.get("prompt", "")),
+            inputs=dict(request.get("inputs") or {}),
+        )
+        found = self.dendrite.query(
+            axons=[self.axon], synapse=synapse, timeout=self.timeout, deserialize=False
+        )
+        answer = found[0] if isinstance(found, list) else found
+        if getattr(answer, "failure", ""):
+            raise LiveError(str(answer.failure))
+        trace = getattr(answer, "trace", None)
+        if not trace:
+            status = getattr(getattr(answer, "dendrite", None), "status_code", None)
+            message = getattr(getattr(answer, "dendrite", None), "status_message", "") or ""
+            raise LiveError(f"the miner's axon returned no trace ({status} {message})".strip())
+        return dict(trace)
+
+
 @dataclass(frozen=True, slots=True)
 class LiveRun:
     traces: tuple[Trace, ...]

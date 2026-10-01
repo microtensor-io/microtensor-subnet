@@ -862,13 +862,19 @@ carries `system.json`.
 ### Host it through the round
 
 ```bash
-mt miner host --escalation-url http://127.0.0.1:18090 --gpu-layers -1
+mt miner host --escalation-url http://127.0.0.1:18090 --port 8091 --gpu-layers -1
 ```
 
-keeps your system online through the dial out agent under your hotkey. No
-inbound port and no public address. **Keep it running from your commit until
-the round settles.** During the round validators send it every withheld task,
-in the same format real traffic uses, and time each request themselves. Every
+serves your system on a Bittensor axon and registers its IP and port on chain
+under your hotkey, so validators find it in the metagraph. The port must be
+reachable from the internet: open it in your firewall, and pass
+`--external-ip` and `--external-port` if you are behind NAT or a forwarded
+port. Only validators holding a permit get through; anyone else is refused
+before your system runs, and requests are served in order of the caller's
+stake. **Keep it running from your commit until the round settles.** During the
+round validators call it from their dendrites with every withheld task, signed
+by their hotkeys, in the same format real traffic uses, and time each request
+themselves. Every
 answer goes back with a trace signed by your hotkey: the small model's answer,
 confidence and tokens, the router's features and decision, harness steps, the
 escalation answer if there was one, and the final answer. A task your system
