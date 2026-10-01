@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from microtensor.chain.client import ChainError
 from microtensor.chain.rounds import (
@@ -986,6 +987,38 @@ def _serve(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _signed(value: Any) -> str:
+    return "n/a" if value is None else f"{float(value):+.4f}"
+
+
+def breakdown_lines(parts: dict[str, Any]) -> list[str]:
+    if not parts:
+        return ["breakdown   not measured yet this round"]
+    small = dict(parts.get("small_model") or {})
+    harness = dict(parts.get("harness") or {})
+    router = dict(parts.get("router") or {})
+    floor = small.get("floor")
+    per_rescue = router.get("usd_per_rescue")
+    return [
+        f"breakdown   end to end {float(parts.get('end_to_end') or 0.0):.4f}, "
+        "information only, pay follows the whole system",
+        f"  small     {float(small.get('quality') or 0.0):.4f} alone, "
+        + (
+            f"{_signed(small.get('lift'))} over the {float(floor):.4f} floor"
+            if floor is not None
+            else "no floor set"
+        ),
+        f"  harness   {_signed(harness.get('lift'))} over a plain prompt on "
+        f"{int(harness.get('sample') or 0)} tasks, "
+        f"output step {_signed(harness.get('output_gain'))}",
+        f"  router    escalation {_signed(router.get('escalation_gain'))}, "
+        f"rescues {float(router.get('rescues') or 0.0):.1%}, "
+        f"waste {float(router.get('waste') or 0.0):.1%}, "
+        f"misses {float(router.get('misses') or 0.0):.1%}, "
+        + (f"${float(per_rescue):.6f} per rescue" if per_rescue is not None else "no rescues"),
+    ]
+
+
 def _status(args: argparse.Namespace) -> int:
     try:
         config = _config(args)
@@ -1033,6 +1066,19 @@ def _status(args: argparse.Namespace) -> int:
             f"{role} {value:.2f}" for role, value in sorted(standing.contribution.items())
         )
         print(f"contribution {parts}")
+
+    if manifest.system is not None and manifest.system.full:
+        from microtensor.miner.standing import fetch_breakdown
+
+        measured = fetch_breakdown(
+            args.server,
+            manifest.track,
+            manifest.hardware_class,
+            manifest.digest(),
+            manifest.round_index,
+        )
+        for line in breakdown_lines(measured):
+            print(line)
 
     if standing.milestone:
         target_quality = standing.milestone.get("target_quality")

@@ -26,6 +26,8 @@ MARGIN_TOLERANCE: Final[float] = 0.5
 CONFIDENCE_TOLERANCE: Final[float] = 0.02
 FEATURE_TOLERANCE: Final[float] = 0.05
 SAMPLE: Final[int] = 8
+PLAIN_MIN_TOKENS: Final[int] = 64
+PLAIN_MAX_TOKENS: Final[int] = 512
 
 
 class Replayer(Protocol):
@@ -189,6 +191,80 @@ def verify_system(
         if reason:
             reasons.append(reason)
     return Verdict(certified=not reasons, checked=len(chosen), reasons=tuple(reasons))
+
+
+def harness_probe(
+    artifact: Path,
+    system: SystemManifest,
+    engine: Any,
+    traces: Sequence[Trace],
+    tasks: Mapping[str, tuple[str, Mapping[str, Any]]],
+    *,
+    seed: str,
+    chat: bool,
+    size: int = SAMPLE,
+) -> dict[str, dict[str, Any]]:
+    if system.harness is None or system.escalation is None or system.router is None:
+        return {}
+
+    def refuse(_: str) -> EscalationCall:
+        raise RuntimeError("the harness probe never escalates")
+
+    runtime = Runtime(
+        artifact / system.harness.path,
+        load_router(artifact / system.locate(Role.ROUTER), system.router_features),
+        system.router_features,
+        engine_small(engine, chat=chat),
+        refuse,
+        escalation=system.escalation,
+        system_digest="probe",
+        hotkey="probe",
+    )
+    found: dict[str, dict[str, Any]] = {}
+    for trace in sample(traces, seed, size):
+        if trace.task_ref not in tasks:
+            continue
+        prompt, _ = tasks[trace.task_ref]
+        budget = min(PLAIN_MAX_TOKENS, max(PLAIN_MIN_TOKENS, 2 * len(trace.small.tokens)))
+        try:
+            plain = engine_small(engine, chat=chat, max_output_tokens=budget)(prompt).output
+            harnessed = runtime.finish(trace.small.output)
+        except Exception as exc:
+            found[trace.task_ref] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+            continue
+        found[trace.task_ref] = {"harnessed": harnessed, "plain": plain}
+    return found
+
+
+def jailed_harness_probe(
+    artifact: str,
+    system: dict[str, Any],
+    weights: str,
+    load: dict[str, Any],
+    traces: list[dict[str, Any]],
+    tasks: dict[str, tuple[str, dict[str, Any]]],
+    seed: str,
+    chat: bool,
+    size: int = SAMPLE,
+) -> dict[str, dict[str, Any]]:
+    from microtensor.harness.engines.gguf import GgufEngine
+    from microtensor.harness.execute import rebuild_manifest
+
+    engine = GgufEngine()
+    engine.load(Path(weights), rebuild_manifest(load))
+    try:
+        return harness_probe(
+            Path(artifact),
+            SystemManifest.from_dict(system),
+            engine,
+            [Trace.from_dict(raw) for raw in traces],
+            tasks,
+            seed=seed,
+            chat=chat,
+            size=size,
+        )
+    finally:
+        engine.unload()
 
 
 def jailed_verify(

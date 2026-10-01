@@ -166,6 +166,11 @@ def full_report(traces: Sequence[Any], score: Any, gold: dict[str, Any], metric:
         f"escalation rate    {s.escalation_rate:.1%}",
         f"waste              {s.waste:.1%}  escalated when the small model was right",
         f"misses             {s.misses:.1%}  kept an answer the small model got wrong",
+        f"rescues            {s.rescues:.1%}  escalations that turned a wrong answer right",
+        f"escalation gain    {s.escalation_gain:+.4f}  quality the escalations added",
+        f"output hook gain   {s.output_gain:+.4f}  quality the harness output step added",
+        "cost per rescue    "
+        + (f"${s.usd_per_rescue:.6f}" if s.usd_per_rescue is not None else "no rescues"),
         f"calibration error  {s.calibration.get('ece', 0.0):.4f}",
         f"cost per 1k tasks  ${s.cost_usd * 1000:.4f}  "
         f"(small ${s.small_usd * 1000:.4f}, escalation ${s.escalation_usd * 1000:.4f})",

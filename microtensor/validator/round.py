@@ -372,6 +372,7 @@ def _measure_batch(
             hardware=hardware,
             on_evaluated=publish,
             escalations=plan.escalations.get((track, hardware_class), {}),
+            floor=arena.quality_floor if arena else None,
         )
     except Abstain as exc:
         if leasing and holding:
@@ -715,9 +716,7 @@ def _run_round(
 
     try:
         require_engines()
-        roster = discover(
-            context, snapshot, round_, plan.allowlists, escalations=plan.escalations
-        )
+        roster = discover(context, snapshot, round_, plan.allowlists, escalations=plan.escalations)
     except Abstain as exc:
         return abstain(str(exc))
     except ProvenanceUnavailable as exc:

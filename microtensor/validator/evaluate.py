@@ -310,15 +310,11 @@ def run_system(
     """Execute the whole system, front then router then escalation."""
     system = participant.system
     load = participant.manifest.load.to_dict()
-    requests = to_requests(
-        tasks.all, tasks.seed, tasks.track, participant.manifest.artifact_digest
-    )
+    requests = to_requests(tasks.all, tasks.seed, tasks.track, participant.manifest.artifact_digest)
 
     front_path = artifact / system.locate(Role.FRONT) if not system.degenerate else artifact
     router_path = str(artifact / system.locate(Role.ROUTER)) if system.router else ""
-    specialist_path = (
-        str(artifact / system.locate(Role.SPECIALIST)) if system.specialist else ""
-    )
+    specialist_path = str(artifact / system.locate(Role.SPECIALIST)) if system.specialist else ""
 
     result = run_jailed(
         run_cascade,
@@ -335,9 +331,7 @@ def run_system(
 
     if not result.ok:
         if result.fault is Fault.INFRASTRUCTURE:
-            raise Abstain(
-                f"{participant.hotkey}: execution infrastructure failed — {result.error}"
-            )
+            raise Abstain(f"{participant.hotkey}: execution infrastructure failed — {result.error}")
         if not result.partial:
             return None, f"execution failed: {result.error}"
         log.info(
@@ -367,9 +361,7 @@ def outcomes_from(
     for task in tasks.all:
         leg = by_ref.get(task.ref)
         partition = partition_of(tasks, task.ref)
-        end_to_end.append(
-            _outcome(task, leg.response if leg else None, metric, partition, track)
-        )
+        end_to_end.append(_outcome(task, leg.response if leg else None, metric, partition, track))
         front_only.append(
             _outcome(task, leg.front_response if leg else None, metric, partition, track)
         )
@@ -387,9 +379,7 @@ def score(
 ) -> tuple[tuple[TaskOutcome, ...], dict[str, Response], str]:
     track = get_track(tasks.track)
     metric = track.metric
-    requests = to_requests(
-        tasks.all, tasks.seed, tasks.track, participant.manifest.artifact_digest
-    )
+    requests = to_requests(tasks.all, tasks.seed, tasks.track, participant.manifest.artifact_digest)
     result = run_jailed(
         run_tasks,
         str(artifact),
@@ -480,9 +470,11 @@ def _extraction_partition_scores(
     """Entity micro-F1 per partition, aggregated over the whole document set."""
     from microtensor.scoring.extraction import gold_entities, micro_f1, parse_entities
 
-    buckets: dict[
-        str, tuple[list[set[tuple[str, str]] | None], list[set[tuple[str, str]]]]
-    ] = {ROTATING: ([], []), FIXED: ([], []), NOVEL: ([], [])}
+    buckets: dict[str, tuple[list[set[tuple[str, str]] | None], list[set[tuple[str, str]]]]] = {
+        ROTATING: ([], []),
+        FIXED: ([], []),
+        NOVEL: ([], []),
+    }
     for task in tasks.all:
         response = by_ref.get(task.ref)
         preds = parse_entities(response.output) if response and response.ok else None
@@ -498,7 +490,6 @@ def _extraction_partition_scores(
         len(buckets[FIXED][1]),
         len(buckets[NOVEL][1]),
     )
-
 
 
 def _decision_partition_scores(
@@ -539,6 +530,7 @@ def evaluate_participant(
     cpu_seconds: int = 0,
     hardware: HardwareClass | None = None,
     escalations: Mapping[str, Any] | None = None,
+    floor: float | None = None,
 ) -> Evaluation:
     hardware = hardware or get_class(participant.competition[1])
     artifact = materialise(context, participant)
@@ -577,6 +569,7 @@ def evaluate_participant(
             measured,
             dict(escalations or {}),
             _cpu_budget(context, cpu_seconds),
+            floor,
         )
 
     cascade: CascadeResult | None = None
@@ -588,9 +581,7 @@ def evaluate_participant(
         )
         if failure or cascade is None:
             log.info("%s scored zero: %s", participant.hotkey, failure)
-            return _evaluation(
-                participant, tasks, gate=_verdict(gate, failure), measured=measured
-            )
+            return _evaluation(participant, tasks, gate=_verdict(gate, failure), measured=measured)
         metric = get_track(tasks.track).metric
         outcomes, front_outcomes = outcomes_from(cascade.legs, tasks, metric)
         front_only_score = combine_partitions(*partition_scores(front_outcomes))
@@ -601,9 +592,7 @@ def evaluate_participant(
         )
         if failure:
             log.info("%s scored zero: %s", participant.hotkey, failure)
-            return _evaluation(
-                participant, tasks, gate=_verdict(gate, failure), measured=measured
-            )
+            return _evaluation(participant, tasks, gate=_verdict(gate, failure), measured=measured)
         metric = get_track(tasks.track).metric
 
     dataset_scorer = _DATASET_METRICS.get(metric)
@@ -646,11 +635,17 @@ def _evaluate_full(
     measured: MeasuredEnvelope,
     escalations: dict[str, Any],
     cpu_seconds: int,
+    floor: float | None = None,
 ) -> Evaluation:
     from microtensor.scoring.metrics import score_task
-    from microtensor.scoring.system import COST_UNITS_PER_USD, score_system
+    from microtensor.scoring.system import (
+        COST_UNITS_PER_USD,
+        breakdown,
+        harness_part,
+        score_system,
+    )
     from microtensor.validator.live import AxonSystemClient, chain_verifier, run_live
-    from microtensor.validator.verify_system import jailed_verify
+    from microtensor.validator.verify_system import jailed_harness_probe, jailed_verify
 
     config = context.config
     system = participant.system
@@ -721,6 +716,29 @@ def _evaluate_full(
         small_ms=_expected_ms(None, measured),
         profiles={task.ref: task.profile for task in tasks.all},
     )
+    golds = {task.ref: task.gold for task in tasks.all}
+    harness: dict[str, Any] | None = None
+    try:
+        probe = run_jailed(
+            jailed_harness_probe,
+            str(artifact),
+            system.body(),
+            str(artifact),
+            participant.manifest.load.to_dict(),
+            [trace.to_dict() for trace in live.traces],
+            {task.ref: (task.prompt, dict(task.inputs)) for task in tasks.all},
+            tasks.seed,
+            track.chat,
+            limits=_limits(hardware, cpu_seconds),
+            allow_unsandboxed=config.allow_unsandboxed,
+        )
+        if probe.ok:
+            harness = harness_part(dict(probe.value or {}), golds, track.metric)
+        else:
+            log.info("%s harness probe unavailable: %s", participant.hotkey, probe.error)
+    except Exception as exc:
+        log.info("%s harness probe unavailable: %s", participant.hotkey, exc)
+    parts = breakdown(score, floor=floor, harness=harness)
     answered = live.answered
     triggers = dict(verdict.get("triggers") or {})
     rows = []
@@ -800,7 +818,12 @@ def _evaluate_full(
         n_fixed=n_fixed,
         n_novel=n_novel,
         front_only=score.small_quality,
-        calibration={**score.to_dict(), "p95_ms": round(p95, 1), "live": rows},
+        calibration={
+            **score.to_dict(),
+            "p95_ms": round(p95, 1),
+            "breakdown": parts,
+            "live": rows,
+        },
         expected_ms=score.cost_usd * COST_UNITS_PER_USD,
     )
 
@@ -820,6 +843,7 @@ def evaluate_competition(
     hardware: HardwareClass | None = None,
     on_evaluated: Callable[[Evaluation, Participant], None] | None = None,
     escalations: Mapping[str, Any] | None = None,
+    floor: float | None = None,
 ) -> CompetitionResult:
     evaluations: list[Evaluation] = []
 
@@ -835,6 +859,7 @@ def evaluate_competition(
                     cpu_seconds=cpu_seconds,
                     hardware=hardware,
                     escalations=escalations,
+                    floor=floor,
                 )
                 break
             except ArtifactMismatch as exc:

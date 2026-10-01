@@ -904,6 +904,23 @@ small model was right), misses (keeping an answer it got wrong), calibration,
 and how often unusual inputs were sent up. The live escalations view on the
 network page shows every request as it is decided.
 
+### Where your quality comes from
+
+Validators also split each certified system's result into its parts, so you can
+see which part to improve next. The split explains the result; it does not
+change pay, which follows the whole system's place on the frontier.
+
+| Part | Measured as |
+|---|---|
+| Small model | Its quality alone against the arena floor, the untrained base model under the harness |
+| Harness | On the verification sample, the archived small model rerun with the plain task prompt, compared with the same model through your harness; plus what your output step added on every task |
+| Router and escalation | The quality escalations added; rescues (escalations that turned a wrong answer right), waste and misses; escalation spend per rescue |
+
+The small model, output step and escalation gains add up exactly to your end to
+end quality. `mt miner status` prints the split for the current round,
+`mt miner simulate` prints the router and output step parts locally, and the
+published card carries the table.
+
 ### After the round
 
 | When | What happens to your system |
