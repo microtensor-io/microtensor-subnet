@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import typing
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,4 +77,75 @@ def serve(daemon: Any, port: int = DEFAULT_PORT, wallet: Any = None) -> Any:
     axon.attach(forward_fn=answer)
     axon.start()
     log.info("serving training status on port %d", port)
+    return axon
+
+
+DEFAULT_SYSTEM_PORT = 8091
+
+
+def serve_system(
+    wallet: Any,
+    subtensor: Any,
+    netuid: int,
+    handlers: Mapping[str, Callable[[Mapping[str, Any]], dict[str, Any]]],
+    validators: Callable[[], Mapping[str, float]],
+    *,
+    port: int = DEFAULT_SYSTEM_PORT,
+    external_ip: str = "",
+    external_port: int = 0,
+) -> Any:
+    try:
+        import bittensor as bt
+    except ImportError as exc:
+        raise AxonUnavailable("the system axon needs bittensor: pip install \".[miner]\"") from exc
+    from microtensor.chain.synapse import system_task
+
+    task = system_task()
+
+    def forward(synapse: Any) -> Any:
+        handler = handlers.get(synapse.system)
+        if handler is None:
+            synapse.failure = f"this miner hosts no system named {synapse.system!r}"
+            return synapse
+        try:
+            synapse.trace = handler(
+                {
+                    "round_index": synapse.round_index,
+                    "task_ref": synapse.task_ref,
+                    "prompt": synapse.prompt,
+                    "inputs": dict(synapse.inputs or {}),
+                }
+            )
+        except Exception as exc:
+            synapse.failure = f"{type(exc).__name__}: {exc}"
+        return synapse
+
+    def caller(synapse: Any) -> str:
+        return str(getattr(getattr(synapse, "dendrite", None), "hotkey", "") or "")
+
+    def blacklist(synapse: Any) -> tuple[bool, str]:
+        hotkey = caller(synapse)
+        if not hotkey:
+            return True, "the request carries no hotkey"
+        if hotkey not in validators():
+            return True, "only validators with a permit test this system"
+        return False, "validator"
+
+    def priority(synapse: Any) -> float:
+        return float(validators().get(caller(synapse), 0.0))
+
+    forward.__annotations__ = {"synapse": task, "return": task}
+    blacklist.__annotations__ = {"synapse": task, "return": typing.Tuple[bool, str]}  # noqa: UP006
+    priority.__annotations__ = {"synapse": task, "return": float}
+
+    options: dict[str, Any] = {"wallet": wallet, "port": port}
+    if external_ip:
+        options["external_ip"] = external_ip
+    if external_port:
+        options["external_port"] = external_port
+    axon = (getattr(bt, "Axon", None) or bt.axon)(**options)
+    axon.attach(forward_fn=forward, blacklist_fn=blacklist, priority_fn=priority)
+    axon.serve(netuid=netuid, subtensor=subtensor)
+    axon.start()
+    log.info("serving %s on axon port %d", ", ".join(sorted(handlers)), port)
     return axon

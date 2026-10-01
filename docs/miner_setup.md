@@ -32,8 +32,9 @@ built for one task: the specialist small model with calibrated confidence, the
 harness around it (prompts, tools, checks and output templates), a router that
 reads the small model's confidence and decides whether to answer, and an
 escalation model from the arena's allowlist of open models that takes over only
-when the router sends a request up. You host the system through the dial out
-agent, validators test it live on withheld tasks, and it is ranked on end to end
+when the router sends a request up. You host the system on a Bittensor axon at
+a public IP and port, validators test it live on withheld tasks from their
+dendrites, and it is ranked on end to end
 quality against total cost within a latency ceiling. Start with
 [full_system_playbook.md](full_system_playbook.md).
 

@@ -649,19 +649,20 @@ def _evaluate_full(
 ) -> Evaluation:
     from microtensor.scoring.metrics import score_task
     from microtensor.scoring.system import COST_UNITS_PER_USD, score_system
-    from microtensor.validator.live import GatewaySystemClient, chain_verifier, run_live
+    from microtensor.validator.live import AxonSystemClient, chain_verifier, run_live
     from microtensor.validator.verify_system import jailed_verify
 
     config = context.config
     system = participant.system
-    if not config.gateway_url or not config.gateway_secret or system.endpoint is None:
-        raise Abstain(
-            "full systems are tested live through the gateway; "
-            "set MT_GATEWAY_URL and MT_GATEWAY_SECRET"
-        )
-    client = GatewaySystemClient(
-        config.gateway_url, config.gateway_secret, participant.hotkey, system.endpoint.worker
+    if context.wallet is None:
+        raise Abstain("full systems are tested over the miner's axon; this validator has no wallet")
+    neuron = next(
+        (n for n in context.client.snapshot().neurons if n.hotkey == participant.hotkey), None
     )
+    if neuron is None or not neuron.address or neuron.port <= 0:
+        log.info("%s scored zero: no axon is registered for its system", participant.hotkey)
+        return _evaluation(participant, tasks, measured=measured)
+    client = AxonSystemClient(context.wallet, participant.hotkey, neuron.address, neuron.port)
     live = run_live(
         client,
         system,
