@@ -52,7 +52,7 @@ def serve(daemon: Any, port: int = DEFAULT_PORT, wallet: Any = None) -> Any:
         import bittensor as bt
     except ImportError as exc:
         raise AxonUnavailable(
-            "the miner axon needs bittensor: pip install \".[miner]\""
+            "the miner axon needs bittensor: pip install ."
         ) from exc
 
     source = StatusSource(daemon)
@@ -97,7 +97,7 @@ def serve_system(
     try:
         import bittensor as bt
     except ImportError as exc:
-        raise AxonUnavailable("the system axon needs bittensor: pip install \".[miner]\"") from exc
+        raise AxonUnavailable("the system axon needs bittensor: pip install .") from exc
     from microtensor.chain.synapse import system_task
 
     task = system_task()

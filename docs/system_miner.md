@@ -177,7 +177,7 @@ pip install .
 To run `selfcheck` locally, which is strongly recommended, add the runtime too:
 
 ```bash
-pip install ".[validator]"
+pip install ".[validator,gguf,huggingface]"
 ```
 
 ### Register
