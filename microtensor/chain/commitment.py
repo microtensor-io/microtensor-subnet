@@ -24,7 +24,7 @@ class CommitmentError(ValueError):
 
 
 def short_digest(digest: str, chars: int = SHORT_DIGEST_CHARS) -> str:
-    body = digest[len(DIGEST_PREFIX):] if digest.startswith(DIGEST_PREFIX) else digest
+    body = digest[len(DIGEST_PREFIX) :] if digest.startswith(DIGEST_PREFIX) else digest
     body = body.strip().lower()
     if not _HEX.match(body) or len(body) < chars:
         raise CommitmentError(f"malformed digest {digest!r}")
@@ -194,6 +194,91 @@ def decode_all(raw_by_hotkey: dict[str, str]) -> dict[str, Commitment]:
     decoded: dict[str, Commitment] = {}
     for hotkey, raw in raw_by_hotkey.items():
         commitment = Commitment.decode(raw)
+        if commitment is not None:
+            decoded[hotkey] = commitment
+    return decoded
+
+
+SUBMISSION_TAG: Final[str] = "mt2"
+ARTIFACT_REPO_PREFIX: Final[str] = "microtensor_"
+SLM_REPO_PREFIX: Final[str] = "mt_slm_"
+
+_ARENA = re.compile(r"^[a-z0-9][a-z0-9_]{0,15}$")
+_HF_USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
+_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionCommitment:
+    arena_id: str
+    hf_user: str
+    artifact_sha: str
+    fee_block: int
+    fee_index: int
+
+    def __post_init__(self) -> None:
+        if not _ARENA.match(self.arena_id):
+            raise CommitmentError(f"arena id {self.arena_id!r} is not a valid identifier")
+        if not _HF_USER.match(self.hf_user):
+            raise CommitmentError(f"hugging face user {self.hf_user!r} is not a valid name")
+        if not _GIT_SHA.match(self.artifact_sha):
+            raise CommitmentError("the artifact revision must be a 40 hex git commit sha")
+        if self.fee_block < 0 or self.fee_index < 0:
+            raise CommitmentError("the fee reference must name a block and an extrinsic index")
+
+    @property
+    def artifact_repo(self) -> str:
+        return f"{self.hf_user}/{ARTIFACT_REPO_PREFIX}{self.arena_id}"
+
+    @property
+    def slm_repo(self) -> str:
+        return f"{self.hf_user}/{SLM_REPO_PREFIX}{self.arena_id}"
+
+    @property
+    def fee_reference(self) -> str:
+        return f"{self.fee_block}:{self.fee_index}"
+
+    def encode(self) -> str:
+        payload = FIELD_SEPARATOR.join(
+            (
+                SUBMISSION_TAG,
+                self.arena_id,
+                self.hf_user,
+                self.artifact_sha,
+                str(self.fee_block),
+                str(self.fee_index),
+            )
+        )
+        size = len(payload.encode("utf-8"))
+        if size > MAX_COMMITMENT_BYTES:
+            raise CommitmentError(
+                f"commitment is {size} bytes, over the {MAX_COMMITMENT_BYTES} byte chain limit"
+            )
+        return payload
+
+    @classmethod
+    def decode(cls, raw: str) -> SubmissionCommitment | None:
+        if not raw:
+            return None
+        parts = raw.strip().split(FIELD_SEPARATOR)
+        if len(parts) != 6 or parts[0] != SUBMISSION_TAG:
+            return None
+        try:
+            return cls(
+                arena_id=parts[1],
+                hf_user=parts[2],
+                artifact_sha=parts[3].lower(),
+                fee_block=int(parts[4]),
+                fee_index=int(parts[5]),
+            )
+        except (CommitmentError, ValueError):
+            return None
+
+
+def decode_submissions(raw_by_hotkey: dict[str, str]) -> dict[str, SubmissionCommitment]:
+    decoded: dict[str, SubmissionCommitment] = {}
+    for hotkey, raw in raw_by_hotkey.items():
+        commitment = SubmissionCommitment.decode(raw)
         if commitment is not None:
             decoded[hotkey] = commitment
     return decoded
