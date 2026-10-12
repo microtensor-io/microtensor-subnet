@@ -89,7 +89,5 @@ def task_nonce(seed: str, task_ref: str, artifact_digest: str = "") -> str:
 def select_deterministic(items: Sequence[str], seed: str, count: int) -> list[str]:
     if count >= len(items):
         return sorted(items)
-    keyed = sorted(
-        (hashlib.sha256(f"{seed}:{ref}".encode()).hexdigest(), ref) for ref in items
-    )
+    keyed = sorted((hashlib.sha256(f"{seed}:{ref}".encode()).hexdigest(), ref) for ref in items)
     return sorted(ref for _, ref in keyed[:count])

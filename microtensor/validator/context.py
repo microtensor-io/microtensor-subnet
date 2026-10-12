@@ -1,253 +1,151 @@
 from __future__ import annotations
 
-import logging
+import hashlib
+import random
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from microtensor.chain.client import ChainClient
-from microtensor.chain.config import ChainConfig
-from microtensor.core.constants import (
-    ARTIFACT_CACHE_CAP_BYTES,
-    CORPUS_VERSION,
-    CPU_SECONDS_PER_ARTIFACT,
-    GENESIS_BLOCK,
-    PROVENANCE_REQUIRED,
-    ROUND_BLOCKS,
-    TASKS_PER_ROUND,
-)
-from microtensor.core.readiness import unenforced
-from microtensor.core.tracks import competitions, validate_registry
-from microtensor.provenance.record import CachedStore
-from microtensor.registry.cache import ArtifactCache
-from microtensor.scoring import execution
-from microtensor.store.state import ValidatorState
-from microtensor.tasks.corpus import Corpus, CorpusError, load_all
+from microtensor.artifact.validate import Manifest
+from microtensor.chain.commitment import SubmissionCommitment
+from microtensor.core.items import Item
 
-log = logging.getLogger("microtensor.validator")
-
-
-@dataclass(frozen=True, slots=True)
-class ValidatorConfig:
-    chain: ChainConfig
-    home: Path
-    corpus_dir: Path
-    corpus_version: str = CORPUS_VERSION
-    round_blocks: int = ROUND_BLOCKS
-    genesis_block: int = GENESIS_BLOCK
-    tasks_per_round: int = TASKS_PER_ROUND
-    cache_cap_bytes: int = ARTIFACT_CACHE_CAP_BYTES
-    cpu_seconds_per_artifact: int = CPU_SECONDS_PER_ARTIFACT
-    profile_seconds: int = 60
-    parallel: int = 1
-    allow_unsandboxed: bool = False
-    dry_run: bool = False
-    loopback: bool = False
-    # Loopback and the end-to-end harness stand up a synthetic arena, so they
-    # carry their own allowlist rather than reaching for a constant. A real
-    # deployment leaves this empty and takes the arena's list from the config
-    # the chain anchored.
-    allowlists: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
-    gateway_url: str = ""
-    gateway_secret: str = ""
-    verify_signatures: bool = True
-    # Defaults to the constant and is not exposed on the command line. Only
-    # the synthetic modes turn it off, the same way they turn off signature
-    # verification: loopback has no W&B and no real miners, so requiring a
-    # training run there would test the absence of a network rather than the
-    # gate. An operator flag here would let one validator admit what its peers
-    # reject, which is the divergence the gate exists to prevent.
-    require_provenance: bool = PROVENANCE_REQUIRED
-    degraded: bool = False
-    coordinator_url: str = ""
-
-    @property
-    def coordinated(self) -> bool:
-        """Whether this worker takes its work from a coordinator.
-
-        Without one it holds: rounds exist only on the server now, so there is
-        no independent round to run, only a standing vector to keep flowing.
-        """
-        return bool(self.coordinator_url)
-
-    @property
-    def state_path(self) -> Path:
-        return self.home / "state" / "validator.sqlite"
-
-    @property
-    def cache_dir(self) -> Path:
-        return self.home / "cache"
-
-    @property
-    def work_dir(self) -> Path:
-        return self.home / "work"
+SLM = "slm"
+HARNESS = "harness"
+ROUTER = "router"
+ESCALATION = "escalation"
+SYSTEM = "system"
+ADVERSARIAL = "adversarial"
+TESTS = (SLM, HARNESS, ROUTER, ESCALATION, SYSTEM)
 
 
 @dataclass(slots=True)
-class ValidatorContext:
-    config: ValidatorConfig
-    client: ChainClient
-    state: ValidatorState
-    cache: ArtifactCache
-    corpora: dict[str, Corpus]
-    hotkey: str = ""
-    wallet: Any = None
-    competitions: tuple[tuple[str, str], ...] = field(default_factory=tuple)
-    certifications: dict[str, dict[str, Any]] = field(default_factory=dict)
-    environment_digest: str = ""
-    runs: CachedStore | None = None
-    coordinator: Any = None
-
-    @classmethod
-    def build(
-        cls,
-        config: ValidatorConfig,
-        client: ChainClient,
-        *,
-        wallet: Any = None,
-        hotkey: str = "",
-        runs: CachedStore | None = None,
-        coordinator: Any = None,
-    ) -> ValidatorContext:
-        validate_registry()
-        config.work_dir.mkdir(parents=True, exist_ok=True)
-
-        for gate in unenforced():
-            log.warning("%s is UNENFORCED: %s", gate.name, gate.detail)
-
-        corpora = _corpora_for(config, coordinator)
-        missing = sorted({track for track, _ in competitions()} - set(corpora))
-
-        # A coordinated worker with nothing yet is waiting, not misconfigured.
-        # The coordinator serves a corpus once an arena is live, so before then
-        # there is nothing to have, and refusing to start makes an operator
-        # debug a validator that is behaving correctly. It holds each round and
-        # looks again instead. Standing alone with no corpus is still fatal:
-        # there is nothing to wait for.
-        if missing and config.coordinated:
-            log.warning(
-                "no corpus yet for %s; the coordinator serves one when an arena is "
-                "live, so this validator will hold and look again each round",
-                ", ".join(missing),
-            )
-        elif missing:
-            raise RuntimeError(
-                f"no corpus for enabled track(s) {missing}. "
-                f"A validator that skips a track publishes a vector missing that "
-                f"track's emission share while its peers include it, which is a "
-                f"consensus divergence rather than a smaller sample, so this is "
-                f"refused rather than logged. Found corpora for {sorted(corpora)}."
-            )
-
-        open_competitions = tuple(competitions())
-
-        from microtensor.envelope.certify import (
-            environment_root,
-            load_policies,
-            read_environment_digest,
-        )
-
-        execution.configure(
-            allow_unsandboxed=config.allow_unsandboxed,
-            env_root=environment_root(config.home),
-        )
-        environment_digest = read_environment_digest(environment_root(config.home))
-        if environment_digest:
-            log.info("evaluation environment %s", environment_digest)
-        else:
-            log.warning(
-                "no pinned evaluation environment at %s; run `mt validator env-setup`",
-                environment_root(config.home),
-            )
-
-        return cls(
-            config=config,
-            client=client,
-            state=ValidatorState(config.state_path),
-            cache=ArtifactCache(config.cache_dir, config.cache_cap_bytes),
-            corpora=corpora,
-            hotkey=hotkey,
-            wallet=wallet,
-            competitions=open_competitions,
-            certifications=load_policies(config.home),
-            environment_digest=environment_digest,
-            runs=runs,
-            coordinator=coordinator,
-        )
+class Artifact:
+    hotkey: str
+    coldkey: str
+    commitment: SubmissionCommitment
+    commit_block: int
+    artifact_dir: Path
+    slm_dir: Path | None
+    manifest: Manifest
+    manifest_sha: str
+    config: dict[str, Any]
+    slm_parameters: int = 0
+    failure: str = ""
 
     @property
-    def corpus_digest(self) -> str:
-        from microtensor.tasks.corpus import corpus_digest
-
-        return corpus_digest(self.corpora) if self.corpora else ""
+    def has(self) -> frozenset[str]:
+        return self.manifest.has
 
     @property
-    def tracks(self) -> tuple[str, ...]:
-        return tuple(sorted({track for track, _ in self.competitions}))
-
-    def corpus(self, track: str) -> Corpus:
-        return self.corpora[track]
-
-    def refresh_corpora(self) -> bool:
-        """Look again for a corpus this worker did not have at startup.
-
-        Called at the top of a round rather than on a timer, because the round
-        is when it matters and the coordinator publishes one when an arena
-        goes live. Returns whether anything is held now, so the caller can say
-        what it is waiting for rather than failing.
-        """
-        needed = {track for track, _ in self.competitions}
-        if needed <= set(self.corpora):
-            return True
-        found = _corpora_for(self.config, self.coordinator)
-        if found:
-            self.corpora.update(found)
-            log.info("the coordinator now serves %s", ", ".join(sorted(found)))
-        missing = sorted(needed - set(self.corpora))
-        if missing:
-            log.warning("still no corpus for %s; holding this round", ", ".join(missing))
-        return not missing
-
-    def close(self) -> None:
-        self.state.close()
-        self.client.close()
+    def artifact_sha(self) -> str:
+        return self.commitment.artifact_sha
 
 
-def _corpora_for(config: Any, coordinator: Any) -> dict[str, Corpus]:
-    """The task set this validator will measure against.
+@dataclass(frozen=True, slots=True)
+class Reference:
+    slm_dir: Path
+    harness_dir: Path
+    variant_dirs: tuple[Path, ...]
+    router_dir: Path | None
+    escalation_dir: Path | None
+    slm_parameters: int
 
-    A coordinated worker takes it from the coordinator so every worker in the
-    round measures the same tasks. Without that, two workers disagreeing about a
-    system is unreadable: nobody can tell a wrong measurement from a different
-    question, and the reconciliation majority counts configurations instead.
 
-    Falling back to a local corpus is deliberate for loopback and for a
-    coordinator that serves none yet. It is logged either way, because a
-    validator quietly measuring its own tasks is the failure this exists to stop.
-    """
-    from microtensor.validator.corpus import fetch
+@dataclass(slots=True)
+class EpochItems:
+    by_test: dict[str, list[Item]]
+    databases: dict[str, bytes]
+    adversarial: list[dict[str, Any]]
+    families: dict[str, str]
 
-    if coordinator is not None:
-        try:
-            served = fetch(coordinator)
-        except Exception as exc:
-            log.warning("the coordinator served no usable corpus (%s); using the local one", exc)
-        else:
-            if served:
-                return served
-            log.warning("the coordinator serves no corpus yet; using the local one")
+    def items(self, test: str) -> list[Item]:
+        return list(self.by_test.get(test, []))
 
-    log.info("loading the corpus from %s", config.corpus_dir)
-    try:
-        return load_all(config.corpus_dir, config.corpus_version)
-    except CorpusError:
-        # Nothing served and nothing local. For a coordinated worker that is a
-        # wait, not a fault: the coordinator publishes a corpus when an arena
-        # goes live. Standing alone it is fatal, because nothing is coming.
-        if not config.coordinated:
-            raise
-        log.warning(
-            "no corpus from the coordinator and none at %s; holding until one is served",
-            config.corpus_dir,
+    def twins_of(self, test: str) -> dict[str, Item]:
+        return {item.twin_of: item for item in self.by_test.get(test, []) if item.twin_of}
+
+    def originals(self, test: str) -> list[Item]:
+        return [item for item in self.by_test.get(test, []) if not item.twin_of]
+
+    def item_databases(self) -> dict[str, tuple[str, ...]]:
+        found: dict[str, tuple[str, ...]] = {}
+        for chosen in self.by_test.values():
+            for item in chosen:
+                shas = item.label.get("databases") or item.label.get("blobs") or []
+                found[item.item_id] = tuple(str(s) for s in shas)
+        for row in self.adversarial:
+            shas = row.get("databases") or row.get("blobs") or []
+            found[str(row.get("item_id", ""))] = tuple(str(s) for s in shas)
+        return found
+
+
+@dataclass(slots=True)
+class EpochContext:
+    arena_id: str
+    epoch_index: int
+    definition: dict[str, Any]
+    seed: str
+    open_block: int
+    open_block_hash: str
+    bundle_sha256: str
+    release_digest: str
+    snapshot_digest: str
+    roster_digest: str
+    previous_best: dict[tuple[str, str, str], float]
+    roster: dict[str, dict[str, Any]]
+    items: EpochItems
+    reference: Reference
+    work_dir: Path
+    sample_database: bytes = b""
+    r_class: dict[str, float] = field(default_factory=dict)
+    floors: tuple[float, ...] = (0.8, 0.9, 0.95, 0.99)
+
+    @property
+    def grader(self) -> str:
+        return str(self.definition.get("grader") or "sqlite_execution")
+
+    @property
+    def slm_prompt(self) -> str:
+        return str(
+            self.definition.get("slm_prompt")
+            or "Schema:\n{schema}\n\nQuestion: {question}\n\n"
+            "Write one SQLite query that answers the question.\nSQL:"
         )
-        return {}
+
+    def previous(self, hotkey: str, artifact_sha: str, pool: str) -> float | None:
+        return self.previous_best.get((hotkey, artifact_sha, pool))
+
+    def token_price(self, parameters: int) -> float:
+        if parameters <= 1_000_000_000:
+            return float(self.r_class.get("1b", 0.0))
+        if parameters <= 3_000_000_000:
+            return float(self.r_class.get("3b", 0.0))
+        return float(self.r_class.get("8b", 0.0))
+
+
+def order_for(seed: str, test: str, items: Iterable[Item]) -> list[Item]:
+    draw = int.from_bytes(hashlib.sha256(f"{seed}:{test}".encode()).digest()[:8], "big")
+    rng = random.Random(draw)  # noqa: S311
+    ordered = sorted(items, key=lambda item: item.item_id)
+    rng.shuffle(ordered)
+    return ordered
+
+
+def split_items(seed: str, items: Sequence[Item], limit: int = 0) -> dict[str, list[Item]]:
+    by_test: dict[str, list[Item]] = {}
+    for item in items:
+        for test in item.tests:
+            by_test.setdefault(test, []).append(item)
+    for test, chosen in by_test.items():
+        ordered = order_for(seed, test, chosen)
+        by_test[test] = ordered[:limit] if limit else ordered
+    return by_test
+
+
+def render_prompt(template: str, task: Mapping[str, Any]) -> str:
+    rendered = template
+    for key, value in task.items():
+        rendered = rendered.replace("{" + str(key) + "}", str(value))
+    return rendered

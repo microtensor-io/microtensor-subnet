@@ -82,9 +82,7 @@ class MetagraphSnapshot:
         return neuron.uid
 
     def validators(self, min_stake: float = MIN_VALIDATOR_STAKE) -> tuple[Neuron, ...]:
-        return tuple(
-            n for n in self.neurons if n.validator_permit and n.stake >= min_stake
-        )
+        return tuple(n for n in self.neurons if n.validator_permit and n.stake >= min_stake)
 
     def miners(self, min_stake: float = MIN_VALIDATOR_STAKE) -> tuple[Neuron, ...]:
         validators = {n.uid for n in self.validators(min_stake)}

@@ -143,9 +143,7 @@ def drop_network() -> None:
 
     remaining = [name for name in interfaces() if name != "lo"]
     if remaining:
-        raise UnsupportedPlatform(
-            f"network namespace still exposes {', '.join(remaining)}"
-        )
+        raise UnsupportedPlatform(f"network namespace still exposes {', '.join(remaining)}")
 
 
 def apply(limits: Limits) -> None:

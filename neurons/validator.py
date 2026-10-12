@@ -7,8 +7,8 @@ from microtensor.cli.main import main
 
 def run() -> int:
     argv = sys.argv[1:]
-    if not argv or argv[0] != "validator":
-        argv = ["validator", "run", *argv]
+    if not argv or argv[0] != "epoch":
+        argv = ["epoch", "loop", *argv]
     return main(argv)
 
 

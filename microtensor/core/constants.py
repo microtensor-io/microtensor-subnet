@@ -43,11 +43,6 @@ GENESIS_BLOCK: Final[int] = _blocks("MT_GENESIS_BLOCK", -17805488)
 BLOCK_TIME_SECONDS: Final[int] = 12
 ROUND_BLOCKS: Final[int] = _blocks("MT_ROUND_BLOCKS", 21600)
 RELEASE_ROUNDS: Final[int] = 30
-WEIGHT_INTERVAL_SECONDS: Final[int] = 1320
-EPOCH_BLOCKS: Final[int] = 360
-WEIGHT_REFRESH_BLOCKS: Final[int] = 300
-TELEMETRY_HEARTBEAT_BLOCKS: Final[int] = 300
-TELEMETRY_RETAIN_DAYS: Final[int] = 30
 SUBMISSION_CLOSES_BEFORE_BLOCKS: Final[int] = _blocks("MT_SUBMISSION_CLOSES_BEFORE_BLOCKS", 7200)
 
 
@@ -65,13 +60,9 @@ def _rounds(name: str) -> tuple[int, ...]:
 
 ALSO_ACCEPT_ROUNDS: Final[tuple[int, ...]] = _rounds("MT_ALSO_ACCEPT_ROUNDS")
 
-REVEAL_WINDOW_BLOCKS: Final[int] = _blocks("MT_REVEAL_WINDOW_BLOCKS", 300)
-SUBMISSION_WINDOW_BLOCKS: Final[int] = _blocks("MT_SUBMISSION_WINDOW_BLOCKS", 7200)
-EVALUATION_WINDOW_BLOCKS: Final[int] = _blocks("MT_EVALUATION_WINDOW_BLOCKS", 7200)
 REQUIRE_SEALED_SUBMISSIONS: Final[bool] = (
     os.environ.get("MT_REQUIRE_SEALED_SUBMISSIONS", "").strip() == "1"
 )
-DERIVATION_ENFORCING: Final[bool] = os.environ.get("MT_DERIVATION_ENFORCING", "").strip() == "1"
 DEADLINE_MARGIN_BLOCKS: Final[int] = 40
 
 MIN_VALIDATOR_STAKE: Final[float] = 1000.0
@@ -85,8 +76,6 @@ FIXED_FRACTION: Final[float] = 0.30
 NOVEL_FRACTION: Final[float] = 0.10
 TASKS_PER_ROUND: Final[int] = 200
 
-GENERATION_SECONDS_PER_TASK: Final[int] = 30
-CPU_SECONDS_PER_ARTIFACT: Final[int] = 12_000
 CORPUS_VERSION: Final[str] = "2026.1"
 
 CLASS_WEIGHTS: Final[dict[str, float]] = {"mt-4g": 1.0}
@@ -120,103 +109,30 @@ ROLE_BASELINES: Final[dict[str, str]] = {
     "specialist": "",
 }
 
-COORDINATOR_REPLICATION: Final[int] = 3
-COORDINATOR_QUORUM: Final[float] = 0.67
-COORDINATOR_RETRIES: Final[int] = 4
-COORDINATOR_BACKOFF_SECONDS: Final[float] = 5.0
-COORDINATOR_TIMEOUT_SECONDS: Final[int] = 30
-LEASE_SECONDS: Final[int] = 3600
-LEASE_MAX_ATTEMPTS: Final[int] = 2
-WORKER_STRIKES: Final[int] = 3
-WORKER_COOLDOWN_SECONDS: Final[int] = 3600
-ANOMALY_QUALITY: Final[float] = 0.98
-ANOMALY_MIN_REPLICATION: Final[int] = 2
 COORDINATOR_URL: Final[str] = os.environ.get(
     "MT_COORDINATOR_URL", "https://coordinator.microtensor.cloud"
 ).strip()
-COORDINATOR_SERVER_URL: Final[str] = ""
-# The hotkey whose on-chain commitment counts as the config anchor. Empty
-# means this build cannot check that a served config is the one the chain was
-# told about, so a validator refuses the round rather than measuring against
-# ceilings nobody committed to.
-COORDINATOR_HOTKEY: Final[str] = "5FeHbWK12HHMLY4AtnWkKk8jtQajhQZMLCenGd96Hhs4UJGc"
 PUBLIC_SERVER_URL: Final[str] = "https://api.microtensor.cloud"
 GATEWAY_URL: Final[str] = os.environ.get(
     "MT_GATEWAY_URL", "wss://api.microtensor.cloud/v1/operators/socket"
 ).strip()
-# The operator plane is bound to loopback on the server host, so the default
-# is what an operator reaches over an ssh tunnel rather than a public name.
-CONTROL_URL: Final[str] = "http://127.0.0.1:8081"
-COORDINATOR_PORT: Final[int] = 8443
-REPORT_MAX_BYTES: Final[int] = 256 * 1024
-REPUTATION_FLOOR: Final[float] = 0.80
-REPUTATION_RECOVERY_ROUNDS: Final[int] = 5
-REPUTATION_MIN_ROUNDS: Final[int] = 10
 
-PROFILE_DURATION_SECONDS: Final[int] = 60
-PROFILE_SAMPLE_INTERVAL_MS: Final[int] = 50
-LATENCY_SAMPLE_COUNT: Final[int] = 200
 WALL_BACKSTOP_FACTOR: Final[int] = 3
 DECLARATION_TOLERANCE_SIZE: Final[float] = 0.02
 DECLARATION_TOLERANCE_LATENCY: Final[float] = 0.10
 DECLARATION_LATENCY_FLOOR_MS: Final[int] = 2_000
 
 ACCURACY_DECIMALS: Final[int] = 4
-TRACK_THRESHOLD: Final[float] = 0.20
-MIN_ROUNDS_OBSERVED: Final[int] = _blocks("MT_MIN_ROUNDS_OBSERVED", 2)
 
-PAID_RANKS: Final[int] = 8
-RANK_DECAY: Final[float] = 0.85
 POSITION_SHARES: Final[tuple[float, ...]] = (0.30, 0.20, 0.14, 0.11, 0.09, 0.07, 0.05, 0.04)
-HYSTERESIS_EPSILON: Final[float] = 0.005
-INCUMBENT_DECAY: Final[float] = 0.05
-STALE_ROUNDS_BEFORE_EVICTION: Final[int] = 6
 
-HV_QUANT_Q: Final[int] = 10_000
-HV_QUANT_C: Final[int] = 10_000
-EPS_QUALITY: Final[float] = 0.005
-EPS_COST: Final[float] = 0.01
-REFERENCE_COST_MS: Final[float] = _ms("MT_REFERENCE_COST_MS", 2_000.0)
 
-EMA_ALPHA: Final[float] = 0.30
-DECAY_RATE: Final[float] = 0.40
-RECOVERY_RATE: Final[float] = 0.10
-CONCENTRATION_CAP_FRACTION: Final[float] = 0.25
-
-PARAM_DISTANCE_THRESHOLD: Final[float] = 0.02
-BEHAVIOUR_DISTANCE_THRESHOLD: Final[float] = 0.05
-PROBE_SET_SIZE: Final[int] = 256
-
-PROVENANCE_ENTITY: Final[str] = "microtensor"
-PROVENANCE_PROJECT: Final[str] = "training-runs"
-# On. The microtensor entity is a W&B team and training-runs is set to Open
-# visibility, so a miner writes from their own account without an invitation
-# and a validator reads with any W&B key. Both directions were checked with an
-# account outside the team before this was turned on: refused under Team
-# visibility, accepted under Open.
-#
-# What this gate is: an audit trail. Every field it reads is written by the
-# miner, so it makes a claim public and checkable against the artifact digest,
-# the competition and the allowlist. It does not prove a training run happened.
-# The store assumes exactly that, which is why every run bearing a hotkey is a
-# candidate and the checks decide rather than authorship.
-PROVENANCE_REQUIRED: Final[bool] = False
-PROVENANCE_RETRIES: Final[int] = 3
-PROVENANCE_BACKOFF_SECONDS: Final[float] = 3.0
-
-EXEC_CPU_SECONDS: Final[int] = 2
-EXEC_WALL_SECONDS: Final[int] = 6
-EXEC_RSS_BYTES: Final[int] = 256 * 1024**2
-
-SLOTS_PER_TRACK_CLASS: Final[int] = 40
-SUBMISSION_COOLDOWN_SECONDS: Final[int] = 6 * 3600
 MAX_MANIFEST_BYTES: Final[int] = 64 * 1024
 
 ARTIFACT_FETCH_RETRIES: Final[int] = 3
 ARTIFACT_FETCH_TIMEOUT_SECONDS: Final[int] = 900
 ARTIFACT_CACHE_CAP_BYTES: Final[int] = 200 * 1024**3
 
-RELEASE_REPO: Final[str] = "microtensor-io/microtensor-subnet"
 RELEASE_CHANNELS: Final[tuple[str, ...]] = ("stable", "prerelease")
 # The public half of the release signing key. Public on purpose: a validator
 # needs it to verify a release before installing it, and a key only it holds
@@ -226,11 +142,3 @@ RELEASE_CHANNELS: Final[tuple[str, ...]] = ("stable", "prerelease")
 RELEASE_SIGNING_KEY: Final[str] = (
     "0x3d8ea239db66637d762ffedf71ad6c0c487c7bc73d5a50d9dd86a0fbc22bdb16"
 )
-UPDATE_POLL_SECONDS: Final[int] = 300
-UPDATE_HTTP_TIMEOUT_SECONDS: Final[int] = 60
-UPDATE_MAX_ASSET_BYTES: Final[int] = 64 * 1024**2
-
-POLL_INTERVAL_SECONDS: Final[int] = 30
-WEIGHT_REFRESH_SECONDS: Final[int] = 1200
-WEIGHT_RETRY_SECONDS: Final[int] = 180
-MIN_SCORED_FRACTION: Final[float] = 0.50

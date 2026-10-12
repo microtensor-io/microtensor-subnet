@@ -92,8 +92,7 @@ def engine_for(fmt: ArtifactFormat) -> Engine:
     factory = _FACTORIES.get(fmt)
     if factory is None:
         raise EngineUnavailable(
-            f"no engine is registered for {fmt.value}; registered: "
-            f"{[f.value for f in available()]}"
+            f"no engine is registered for {fmt.value}; registered: {[f.value for f in available()]}"
         )
     return factory()
 

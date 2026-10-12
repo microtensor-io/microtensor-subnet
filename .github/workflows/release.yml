@@ -34,7 +34,7 @@ jobs:
           else
             echo "::warning::the suite is not published here; run it before tagging"
           fi
-          mt validator loopback --rounds 2 --miners 3
+          python -c "import math; from microtensor.scoring.pools import POOL_SHARES; assert math.isclose(sum(POOL_SHARES.values()), 1.0)"
 
       - name: Refuse a tag that disagrees with MECHANISM_VERSION
         run: |

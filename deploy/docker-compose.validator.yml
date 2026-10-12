@@ -1,14 +1,11 @@
 services:
   validator:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.validator
-    image: microtensor/validator:0.1.0
+    image: ghcr.io/microtensor-io/validator:1
     container_name: microtensor-validator
     restart: unless-stopped
-    stop_grace_period: 30m
-    cap_add:
-      - SYS_ADMIN
+    stop_grace_period: 1h
+    group_add:
+      - "${DOCKER_GID:-999}"
     environment:
       MT_NETUID: "${MT_NETUID:-576}"
       MT_NETWORK: "${MT_NETWORK:-test}"
@@ -16,28 +13,31 @@ services:
       MT_WALLET_HOTKEY: "${MT_WALLET_HOTKEY:?set the hotkey name}"
       MT_WALLET_PATH: /wallets
       MT_HOME: /var/lib/microtensor
-      MT_COORDINATOR_URL: "${MT_COORDINATOR_URL:-https://coordinator.microtensor.cloud}"
-      WANDB_API_KEY: "${WANDB_API_KEY:?set a W&B read key for microtensor/training-runs}"
       MT_SERVER_URL: "${MT_SERVER_URL:-https://api.microtensor.cloud}"
+      MT_RELAY_URL: "${MT_RELAY_URL:-https://api.microtensor.cloud}"
+      MT_GPUS: "${MT_GPUS:-0,1,2}"
+      MT_SANDBOX_RUNTIME: "${MT_SANDBOX_RUNTIME:-runsc}"
+      HF_HOME: /var/lib/microtensor/cache/hf
     volumes:
-      - state:/var/lib/microtensor
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/microtensor:/var/lib/microtensor
       - ${MT_WALLET_DIR:-~/.bittensor/wallets}:/wallets:ro
-      - ${MT_CORPUS_DIR:-./corpus}:/var/lib/microtensor/corpus:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     command:
-      - --cpu-seconds
-      - "900"
-      - --profile-seconds
-      - "60"
+      - epoch
+      - loop
+      - --arena
+      - "${MT_ARENA:?set the arena id}"
+      - --home
+      - /var/lib/microtensor
     logging:
       driver: json-file
       options:
         max-size: "50m"
         max-file: "5"
-    deploy:
-      resources:
-        limits:
-          memory: ${MT_MEMORY_LIMIT:-24g}
-          cpus: "${MT_CPU_LIMIT:-8}"
-
-volumes:
-  state:
