@@ -45,8 +45,14 @@ SPECS: dict[str, dict[str, Any]] = {
     "livecodebench": {
         "repo": "livecodebench/code_generation_lite",
         "mode": "stream",
-        "files": ("test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl", "test5.jsonl",
-                  "test6.jsonl"),
+        "files": (
+            "test.jsonl",
+            "test2.jsonl",
+            "test3.jsonl",
+            "test4.jsonl",
+            "test5.jsonl",
+            "test6.jsonl",
+        ),
         "ref": "question_id",
         "prompt": ("question_content",),
         "solution": (),

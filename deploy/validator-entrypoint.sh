@@ -1,10 +1,18 @@
 #!/bin/sh
 set -e
 
-ROOT="${MT_HOME:-/var/lib/microtensor}/evaluation-env"
-if [ ! -f "$ROOT/lock.txt" ]; then
-    echo "pinned evaluation environment missing at $ROOT; building it now"
-    mt validator env-setup
+if ! docker info >/dev/null 2>&1; then
+    echo "the docker socket is not reachable; mount /var/run/docker.sock and set DOCKER_GID" >&2
+    exit 1
 fi
 
-exec mt validator run "$@"
+if ! docker info --format '{{json .Runtimes}}' | grep -q runsc; then
+    echo "gVisor (runsc) is not registered with Docker; miner code will not run" >&2
+    exit 1
+fi
+
+if [ "$(pwd)" != "/opt/microtensor" ]; then
+    cd /opt/microtensor
+fi
+
+exec mt "$@"

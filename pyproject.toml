@@ -66,11 +66,6 @@ serving = [
 gguf = [
     "llama-cpp-python==0.3.35",
 ]
-coordinator = [
-    "pynacl>=1.5",
-    "fastapi>=0.110",
-    "uvicorn>=0.29",
-]
 validator-v2 = [
     "torch>=2.4",
     "transformers>=4.44",
@@ -93,7 +88,6 @@ dev = [
 [project.scripts]
 mt = "microtensor.cli.main:main"
 mt-validator = "neurons.validator:run"
-mt-miner = "neurons.miner:run"
 mt-operator = "neurons.operator:run"
 
 [tool.setuptools.dynamic]
@@ -180,10 +174,6 @@ module = [
 ]
 follow_imports = "skip"
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["microtensor.coordinator.api"]
-disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

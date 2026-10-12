@@ -192,9 +192,7 @@ class ArtifactManifest:
                     p95_latency_ms=int(declared["p95_latency_ms"]),
                 ),
                 system=(
-                    SystemManifest.from_dict(payload["system"])
-                    if payload.get("system")
-                    else None
+                    SystemManifest.from_dict(payload["system"]) if payload.get("system") else None
                 ),
                 version=str(payload.get("version", MECHANISM_VERSION)),
                 signature=str(payload.get("signature", "")),
@@ -270,9 +268,7 @@ def verify_tree(root: Path, manifest: ArtifactManifest) -> tuple[bool, str]:
         if digest_file(path) != entry.digest:
             return False, f"{entry.path} does not match its declared digest"
 
-    extra = {
-        p.relative_to(root).as_posix() for p in root.rglob("*") if is_artifact_file(root, p)
-    }
+    extra = {p.relative_to(root).as_posix() for p in root.rglob("*") if is_artifact_file(root, p)}
     listed = {f.path for f in manifest.files}
     if extra - listed:
         return False, f"artifact carries unlisted files: {sorted(extra - listed)[:3]}"

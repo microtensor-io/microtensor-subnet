@@ -107,9 +107,7 @@ class ComponentRef:
 
     def __post_init__(self) -> None:
         if not self.artifact_digest:
-            raise SystemManifestError(
-                f"the {self.role.value} component carries no artifact digest"
-            )
+            raise SystemManifestError(f"the {self.role.value} component carries no artifact digest")
         if not self.placement:
             raise SystemManifestError(f"the {self.role.value} component declares no placement")
         if self.path:
@@ -167,9 +165,7 @@ class SystemManifest:
         if self.specialist is not None and self.specialist.role is not Role.SPECIALIST:
             raise SystemManifestError("the specialist slot must carry a specialist component")
 
-        if self.schema_version < FULL_SYSTEM and (self.router is None) != (
-            self.specialist is None
-        ):
+        if self.schema_version < FULL_SYSTEM and (self.router is None) != (self.specialist is None):
             raise SystemManifestError(
                 "a router and a specialist are jointly optional; declare both or neither"
             )
@@ -254,9 +250,7 @@ class SystemManifest:
         return component.path or DEFAULT_PATHS[role]
 
     @classmethod
-    def single(
-        cls, artifact_digest: str, placement: str, base_model: str = ""
-    ) -> SystemManifest:
+    def single(cls, artifact_digest: str, placement: str, base_model: str = "") -> SystemManifest:
         return cls(
             front=ComponentRef(
                 role=Role.FRONT,

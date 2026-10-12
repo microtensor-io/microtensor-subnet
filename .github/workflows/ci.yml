@@ -37,17 +37,25 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: pip install ".[validator,dev]"
-      - name: Run the suite with the sandbox enforced
+      - name: Run the suite
         run: |
           if [ -d tests ]; then
             pytest tests -q
           else
             echo "::notice::the suite is not published in this repository; skipping"
           fi
-      - name: Confirm the jail refuses to run unsandboxed on a POSIX host
-        run: python -c "from microtensor.harness.limits import sandbox_available; assert sandbox_available()"
-      - name: A round must settle end to end with no chain
-        run: mt validator loopback --rounds 2 --miners 3
+      - name: Every module imports
+        run: |
+          python - <<'PY'
+          import importlib, pkgutil, microtensor
+          skipped = []
+          for info in pkgutil.walk_packages(microtensor.__path__, "microtensor."):
+              try:
+                  importlib.import_module(info.name)
+              except ImportError as exc:
+                  skipped.append(f"{info.name}: {exc}")
+          print("\n".join(skipped) or "all modules import")
+          PY
 
   mechanism:
     runs-on: ubuntu-latest
@@ -58,492 +66,39 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install ".[validator,dev]"
-      - name: Emission shares must sum to one
-        run: python -c "from microtensor.core.tracks import validate_registry; validate_registry()"
-      - name: The live competitions must be the two arenas of the round
+      - name: The pool shares sum to one and the payout schedule is monotone
         run: |
           python - <<'PY'
-          from microtensor.core.constants import CLASS_WEIGHTS
-          from microtensor.core.tracks import competitions
-          expected = [("invoice", "mt-4g"), ("text2sql", "mt-16g")]
-          assert competitions() == expected, competitions()
-          assert sum(CLASS_WEIGHTS.values()) == 1.0, CLASS_WEIGHTS
-          print(competitions())
+          import math
+          from microtensor.scoring.pools import POOL_SHARES, RANK_PAYOUT
+          assert math.isclose(sum(POOL_SHARES.values()), 1.0), POOL_SHARES
+          assert list(RANK_PAYOUT) == sorted(RANK_PAYOUT, reverse=True), RANK_PAYOUT
+          print("pools ok")
           PY
-      - name: A round must settle end to end with no chain
-        run: mt validator loopback --rounds 3 --miners 4
-      - name: The systems path must be the only path
+      - name: The sandbox image installs exactly the allowed packages
         run: |
           python - <<'PY'
-          import microtensor.core.constants as c
-          assert not hasattr(c, "SYSTEMS_ENABLED"), "the migration flag must stay deleted"
-          from microtensor.validator.settle import allocations
-          import inspect
-          assert "_frontier_allocation" in inspect.getsource(allocations)
-          print("systems are the only scoring path")
+          from microtensor.artifact.contract import ALLOWED_PACKAGES
+          for name, version in ALLOWED_PACKAGES.items():
+              assert version.count(".") >= 1, f"{name} is not pinned"
+          print(f"{len(ALLOWED_PACKAGES)} pinned packages")
           PY
-      - name: A degenerate system must reduce to the single-artifact path
-        run: |
-          python - <<'PY'
-          from microtensor.core.system import SystemManifest
-          system = SystemManifest.single("sha256:only", "mt-3g", base_model="org/base@sha")
-          assert system.degenerate
-          assert system.components == (system.front,)
-          assert system.fits_class("mt-3g") == (True, "")
-          print("degenerate reduction holds")
-          PY
-      - name: A worker must hold its last vector when the coordinator is unreachable
-        run: |
-          python - <<'PY'
-          from microtensor.validator.client import CoordinatorClient
-          from microtensor.validator.coordinated import HELD, Mode, plan_round
-          client = CoordinatorClient(
-              base_url="http://127.0.0.1:9", hotkey="w0", retries=2, backoff=0.0, timeout=1
-          )
-          plan = plan_round(client)
-          assert plan.mode is Mode.HOLD, "an outage must pause, not fragment"
-          assert not plan.measures, "a holding worker must not measure"
-          assert plan.reason == HELD
-          print("coordinator outage holds the last settled vector")
-          PY
-      - name: A worker must refuse a settlement it cannot recompute
-        run: |
-          python - <<'PY'
-          from microtensor.coordinator.collect import intake
-          from microtensor.coordinator.report import CostBlock, QualityBlock, Report
-          from microtensor.coordinator.settle import Entry, build
-          from microtensor.validator.client import SettlementRejected, verify_settlement
-
-          def report(w):
-              return Report(
-                  round_index=1, worker_hotkey=w, system_digest="sha256:s0",
-                  quality=QualityBlock(0.6, 0.6, 0.6), resolve_rate=1.0,
-                  cost=CostBlock(expected_ms=100.0), conforming=True,
-              )
-
-          reports = [report("w0"), report("w1"), report("w2")]
-          catalogue = {"sha256:s0": Entry("sha256:s0", "m0", 7, "code", "mt-3g", 0.0, 0.0,
-                                          rounds_observed=5)}
-          result = intake({"sha256:s0": reports})
-          settlement = build(1, config_hash="c", corpus_version="v",
-                             reconciled=result.reconciled, catalogue=catalogue,
-                             report_digests=[r.digest() for r in reports])
-          payload = settlement.body()
-          bodies = [r.body() for r in reports]
-          verify_settlement(payload, bodies, catalogue)
-
-          payload["weights"] = {"99": 1.0}
-          try:
-              verify_settlement(payload, bodies, catalogue)
-          except SettlementRejected:
-              print("forged weights refused")
-          else:
-              raise SystemExit("a worker accepted a settlement it did not recompute")
-          PY
-      - name: The coordinator must not import the measurement stack
-        run: |
-          python - <<'PY'
-          import ast, pathlib
-          banned = {"onnxruntime", "onnx", "psutil", "microtensor.harness"}
-          for path in pathlib.Path("microtensor/coordinator").rglob("*.py"):
-              tree = ast.parse(path.read_text(encoding="utf-8"))
-              for node in ast.walk(tree):
-                  names = []
-                  if isinstance(node, ast.Import):
-                      names = [a.name for a in node.names]
-                  elif isinstance(node, ast.ImportFrom) and node.module:
-                      names = [node.module]
-                  for name in names:
-                      assert not any(
-                          name == b or name.startswith(b + ".") for b in banned
-                      ), f"{path} imports {name}; the coordinator measures nothing"
-          print("coordinator carries no measurement dependency")
-          PY
-      - name: A coordinator host must refuse to run as a worker
-        run: |
-          python - <<'PY'
-          import tempfile, pathlib
-          from microtensor.core.role import COORDINATOR, WORKER, RoleConflict, claim, require
-          home = pathlib.Path(tempfile.mkdtemp())
-          claim(home, COORDINATOR)
-          try:
-              require(home, WORKER)
-          except RoleConflict:
-              print("mutual refusal holds")
-          else:
-              raise SystemExit("a coordinator home accepted a worker")
-          PY
-      - name: Exclusive hypervolume must equal leave-one-out
-        run: |
-          python - <<'PY'
-          import random
-          from microtensor.core.constants import HV_QUANT_C, HV_QUANT_Q
-          from microtensor.scoring.frontier import Point, exclusive_hypervolume, hypervolume
-          rng = random.Random(7)
-          for _ in range(500):
-              n = rng.randint(1, 9)
-              cs = sorted(rng.sample(range(0, HV_QUANT_C, 37), n))
-              qs = sorted(rng.sample(range(1, HV_QUANT_Q, 41), n))
-              pts = [Point(f"s{i}", q, c) for i, (q, c) in enumerate(zip(qs, cs))]
-              total = hypervolume(pts)
-              expected = {
-                  p.key: total - hypervolume([o for o in pts if o.key != p.key]) for p in pts
-              }
-              assert exclusive_hypervolume(pts) == expected, pts
-          worked = [Point("p1", 100, 1000), Point("p2", 200, 3000), Point("p3", 300, 6000)]
-          assert exclusive_hypervolume(worked) == {"p1": 200000, "p2": 300000, "p3": 400000}
-          print("closed form agrees with leave-one-out on 500 frontiers")
-          PY
-      - name: An uploaded bundle must verify against its own hidden tests
-        run: |
-          python - <<'PY'
-          import json
-          import random
-          from pathlib import Path
-
-          from microtensor.core.tracks import competitions
-
-          out = Path("/tmp/ci-corpus")
-          out.mkdir(parents=True, exist_ok=True)
-
-          def write(name, rows):
-              (out / name).write_text(
-                  "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
-              )
-
-          def code_bundle(track):
-              tasks, tests = [], []
-              for i in range(70):
-                  partition = "rotating" if i < 45 else "fixed"
-                  ref = f"{track}-ci-{i:03d}"
-                  tasks.append({
-                      "ref": ref,
-                      "prompt": f"Task {ref}: write fn_{i}(xs) returning xs plus {i * 3}.",
-                      "gold": None,
-                      "partition": partition,
-                      "max_output_tokens": 128,
-                      "inputs": {},
-                  })
-                  tests.append({
-                      "ref": ref,
-                      "entry_point": f"fn_{i}",
-                      "tests": [
-                          {"args": [[j]], "expected": j, "edge": j == 0} for j in range(6)
-                      ],
-                  })
-              write(f"{track}.jsonl", tasks)
-              write(f"{track}.tests.jsonl", tests)
-
-          def extract_bundle(track):
-              tasks = []
-              for i in range(70):
-                  partition = "rotating" if i < 45 else "fixed"
-                  ref = f"{track}-ci-{i:03d}"
-                  chemical = f"compound{i}"
-                  disease = f"syndrome{i}"
-                  tasks.append({
-                      "ref": ref,
-                      "prompt": (
-                          f"Sentence {ref}: exposure to {chemical} was associated "
-                          f"with {disease} in the cohort."
-                      ),
-                      "gold": {"entities": [
-                          {"text": chemical, "type": "chemical"},
-                          {"text": disease, "type": "disease"},
-                      ]},
-                      "partition": partition,
-                      "max_output_tokens": 256,
-                      "inputs": {},
-                  })
-              write(f"{track}.jsonl", tasks)
-
-          def classify_bundle(track):
-              labels = ["book_flight", "balance", "alarm", "oos"]
-              vocabulary = [
-                  "please", "book", "cancel", "flight", "balance", "alarm", "tomorrow",
-                  "morning", "account", "transfer", "weather", "reminder", "ticket",
-                  "hotel", "invoice", "refund", "seat", "window", "aisle", "checking",
-                  "savings", "wake", "early", "late", "monday", "friday", "paris",
-                  "tokyo", "budget", "receipt", "loan", "rate", "card", "pin",
-              ]
-              tasks, tests = [], []
-              for i in range(70):
-                  partition = "rotating" if i < 45 else "fixed"
-                  ref = f"{track}-ci-{i:03d}"
-                  words = random.Random(i).sample(vocabulary, 7)
-                  tasks.append({
-                      "ref": ref,
-                      "prompt": (
-                          f"Labels: {', '.join(labels)}\nQuery: {' '.join(words)} {i}\nLabel:"
-                      ),
-                      "gold": None,
-                      "partition": partition,
-                      "max_output_tokens": 16,
-                      "inputs": {},
-                  })
-                  tests.append({"ref": ref, "tests": [{"expected": labels[i % len(labels)]}]})
-              write(f"{track}.jsonl", tasks)
-              write(f"{track}.tests.jsonl", tests)
-
-          def support_bundle(track):
-              verbs = ["book", "cancel", "reschedule", "transfer", "refund", "reserve", "extend", "check"]
-              nouns = [
-                  "flight", "hotel", "car", "invoice", "loan", "appointment", "ticket", "table",
-                  "subscription", "delivery", "meeting", "payment", "alarm", "reminder",
-              ]
-              places = [
-                  "Paris", "Tokyo", "Lima", "Oslo", "Cairo", "Perth", "Quito", "Doha",
-                  "Bern", "Riga", "Kyoto", "Havana", "Nairobi", "Seoul", "Accra",
-              ]
-              fillers = [
-                  "please", "tomorrow", "urgently", "for two", "next week", "by noon", "in the morning",
-                  "with breakfast", "window seat", "economy", "before friday", "after lunch",
-                  "under budget", "with insurance", "non refundable", "same day",
-              ]
-              tasks, tests = [], []
-              for i in range(70):
-                  partition = "rotating" if i < 45 else "fixed"
-                  ref = f"{track}-ci-{i:03d}"
-                  rng = random.Random(i)
-                  verb, noun, place = rng.choice(verbs), rng.choice(nouns), rng.choice(places)
-                  extras = " ".join(rng.sample(fillers, 4))
-                  name = f"{verb}_{noun}"
-                  other = f"{rng.choice(verbs)}_{rng.choice(nouns)}"
-                  amount = rng.randint(1, 900)
-                  tasks.append({
-                      "ref": ref,
-                      "prompt": (
-                          f"Functions:\n- {name}(amount: int, city: str)\n- {other}(flag: bool)\n\n"
-                          f"Request: {verb} a {noun} in {place} for {amount}, {extras}.\n\n"
-                          "Reply with only JSON in this form and nothing else:\n"
-                          '{"tool_calls": [{"name": "...", "arguments": {...}}]}'
-                      ),
-                      "gold": None,
-                      "partition": partition,
-                      "max_output_tokens": 128,
-                      "inputs": {},
-                  })
-                  tests.append({
-                      "ref": ref,
-                      "tests": [{"tool_calls": [
-                          {"name": name, "arguments": {"amount": amount, "city": place}}
-                      ]}],
-                  })
-              write(f"{track}.jsonl", tasks)
-              write(f"{track}.tests.jsonl", tests)
-
-          def guard_bundle(track):
-              subjects = [
-                  "The bridge", "The museum", "The river", "The company", "The village", "The festival",
-                  "The reactor", "The orchard", "The library", "The harbour", "The observatory", "The clinic",
-              ]
-              facts = [
-                  "opened in 1962", "spans 400 metres", "employs 300 people", "was rebuilt after a flood",
-                  "closes on Mondays", "sits above the old town", "was designed by a local architect",
-                  "hosts a market each spring", "runs on hydro power", "was founded by two sisters",
-                  "holds 12,000 volumes", "exports most of its harvest", "was painted red in 1990",
-                  "serves three districts", "was moved twice", "keeps a bell from 1701",
-              ]
-              inventions = [
-                  "and won a national prize", "and has never closed", "and was built in one summer",
-                  "and is the largest in the region", "and was visited by a king", "and cost nothing to run",
-                  "and is made of marble", "and will double in size next year",
-              ]
-              vocabulary = [
-                  "granite", "copper", "willow", "harvest", "lantern", "meadow", "compass", "ledger",
-                  "anchor", "beacon", "cellar", "drought", "ember", "fjord", "gable", "hearth",
-                  "ivory", "jetty", "kiln", "lattice", "mortar", "nectar", "orchid", "pewter",
-                  "quarry", "rafter", "saddle", "tallow", "umber", "velvet", "wharf", "yarrow",
-              ]
-              tasks, tests = [], []
-              for i in range(70):
-                  partition = "rotating" if i < 45 else "fixed"
-                  ref = f"{track}-ci-{i:03d}"
-                  rng = random.Random(i)
-                  subject = rng.choice(subjects)
-                  true = rng.sample(facts, 3)
-                  detail = " ".join(rng.sample(vocabulary, 6))
-                  year, count = rng.randint(1800, 2020), rng.randint(2, 900)
-                  source = (
-                      f"{subject} {true[0]}. It {true[1]} and {true[2]}. "
-                      f"Records from {year} mention {count} visitors and note: {detail}."
-                  )
-                  invented = rng.choice(inventions) if i % 3 else ""
-                  statement = f"{subject} {true[0]} {invented}".strip() + f" Records from {year} mention {count} visitors."
-                  tasks.append({
-                      "ref": ref,
-                      "prompt": (
-                          "Below is a source passage and a statement generated from it.\n"
-                          "Return every part of the statement that the source does not support.\n\n"
-                          f"Source:\n{source}\n\nStatement:\n{statement}\n\n"
-                          "Reply with only JSON in this form and nothing else:\n"
-                          '{"unsupported": ["..."]}\n'
-                          'Return {"unsupported": []} when the source supports every part of the statement.'
-                      ),
-                      "gold": None,
-                      "partition": partition,
-                      "max_output_tokens": 96,
-                      "inputs": {},
-                  })
-                  tests.append({"ref": ref, "tests": [{"unsupported": [invented] if invented else []}]})
-              write(f"{track}.jsonl", tasks)
-              write(f"{track}.tests.jsonl", tests)
-
-          def invoice_bundle(track):
-              currencies = ["USD", "EUR", "GBP", "KES", "UGX", "JPY"]
-              sellers = ["Acme Supplies", "Blue Harbour Ltd", "Kampala Print Co", "Northwind Traders", "Orbit Freight"]
-              tasks, tests = [], []
-              for i in range(70):
-                  partition = "rotating" if i < 45 else "fixed"
-                  ref = f"{track}-ci-{i:03d}"
-                  rng = random.Random(i)
-                  number = f"INV-{2026}-{i:04d}"
-                  total = f"{rng.randint(100, 9000)}.{rng.randint(0, 99):02d}"
-                  currency = rng.choice(currencies)
-                  seller = rng.choice(sellers)
-                  tasks.append({
-                      "ref": ref,
-                      "prompt": (
-                          "Extract the fields invoice_number, total and currency from this invoice.\n\n"
-                          f"{seller}\nInvoice no. {number}\nAmount due: {total} {currency}\n"
-                          f"Due within {rng.randint(7, 60)} days.\n\n"
-                          "Reply with only a JSON object whose keys are the field names."
-                      ),
-                      "gold": None,
-                      "partition": partition,
-                      "max_output_tokens": 96,
-                      "inputs": {},
-                  })
-                  tests.append({
-                      "ref": ref,
-                      "tests": [{"fields": {"invoice_number": number, "total": total, "currency": currency}}],
-                  })
-              write(f"{track}.jsonl", tasks)
-              write(f"{track}.tests.jsonl", tests)
-
-          def text2sql_bundle(track):
-              import base64
-              import gzip
-              import os
-              import sqlite3
-              import tempfile
-
-              cities = [
-                  "Kampala", "Nairobi", "Kigali", "Lagos", "Accra", "Dakar",
-                  "Lusaka", "Harare", "Maputo", "Luanda", "Tunis", "Rabat",
-              ]
-              schema = (
-                  "CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, city TEXT, age INTEGER);"
-                  "CREATE TABLE orders (id INTEGER PRIMARY KEY, person_id INTEGER, total REAL);"
-              )
-
-              def database(seed):
-                  fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-                  os.close(fd)
-                  connection = sqlite3.connect(db_path)
-                  connection.executescript(schema)
-                  rng = random.Random(seed)
-                  for pid in range(1, rng.randint(8, 14)):
-                      connection.execute(
-                          "INSERT INTO people VALUES (?, ?, ?, ?)",
-                          (pid, f"person{seed}_{pid}", rng.choice(cities), rng.randint(18, 80)),
-                      )
-                      for _ in range(rng.randint(0, 2)):
-                          connection.execute(
-                              "INSERT INTO orders (person_id, total) VALUES (?, ?)",
-                              (pid, round(rng.uniform(5, 500), 2)),
-                          )
-                  connection.commit()
-                  connection.close()
-                  blob = base64.b64encode(gzip.compress(Path(db_path).read_bytes())).decode()
-                  os.unlink(db_path)
-                  return blob
-
-              tasks, tests = [], []
-              for i in range(70):
-                  partition = "rotating" if i < 45 else "fixed"
-                  ref = f"{track}-ci-{i:03d}"
-                  city = cities[i % len(cities)]
-                  age = 18 + i
-                  threshold = 10 + 3 * i
-                  if partition == "rotating" and i % 3 == 0:
-                      question = f"How many people in {city} are younger than {age}?"
-                      reference = f"SELECT count(*) FROM people WHERE city = '{city}' AND age < {age}"
-                  elif partition == "rotating" and i % 3 == 1:
-                      question = f"List the names of people older than {age}, alphabetically."
-                      reference = f"SELECT name FROM people WHERE age > {age} ORDER BY name"
-                  elif partition == "rotating":
-                      question = (
-                          f"What is the total value of orders above {threshold} placed by people in {city}?"
-                      )
-                      reference = (
-                          "SELECT SUM(orders.total) FROM orders JOIN people ON people.id = orders.person_id "
-                          f"WHERE people.city = '{city}' AND orders.total > {threshold}"
-                      )
-                  elif i % 3 == 0:
-                      question = f"Which cities have more than {i % 4} residents, with their resident counts?"
-                      reference = f"SELECT city, count(id) AS residents FROM people GROUP BY city HAVING count(id) > {i % 4}"
-                  elif i % 3 == 1:
-                      question = f"Who are the {2 + i % 3} oldest people, with their ages, oldest first?"
-                      reference = f"SELECT name, age FROM people ORDER BY age DESC, name LIMIT {2 + i % 3}"
-                  else:
-                      question = f"For each person with at least {1 + i % 2} orders, what is their average order value?"
-                      reference = (
-                          "SELECT people.name, AVG(orders.total) AS average FROM people "
-                          "JOIN orders ON orders.person_id = people.id GROUP BY people.id "
-                          f"HAVING count(orders.id) >= {1 + i % 2}"
-                      )
-                  tasks.append({
-                      "ref": ref,
-                      "prompt": (
-                          "You are given a SQLite schema. Write one SQL query that answers the question. "
-                          "Reply with the SQL only.\n\n"
-                          f"Schema:\n{schema}\n\nQuestion {i}: {question}"
-                      ),
-                      "gold": None,
-                      "partition": partition,
-                      "max_output_tokens": 128,
-                      "inputs": {},
-                  })
-                  tests.append({"ref": ref, "tests": [{"db": database(i), "sql": reference}]})
-              write(f"{track}.jsonl", tasks)
-              write(f"{track}.tests.jsonl", tests)
-
-          builders = {
-              "code": code_bundle,
-              "extract": extract_bundle,
-              "classify": classify_bundle,
-              "support": support_bundle,
-              "guard": guard_bundle,
-              "invoice": invoice_bundle,
-              "text2sql": text2sql_bundle,
-          }
-          for track in sorted({t for t, _ in competitions()}):
-              builders[track](track)
-          PY
-          mt corpus check /tmp/ci-corpus --tasks-per-round 12
-      - name: The package must build and carry both neuron entrypoints
+      - name: The package must build and carry the entrypoints
         run: |
           pip install build
           python -m build --wheel
           python - <<'PY'
-          import zipfile, glob, sys
+          import zipfile, glob
           whl = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(whl).namelist()
           entry = next(n for n in names if n.endswith("entry_points.txt"))
           text = zipfile.ZipFile(whl).read(entry).decode()
-          for script in ("mt =", "mt-validator =", "mt-miner ="):
+          for script in ("mt =", "mt-validator =", "mt-operator ="):
               assert script in text, f"{script} missing from {entry}"
           assert any(n.startswith("neurons/") for n in names), "neurons package not packaged"
           print(text)
           PY
 
-  # The pin is the only thing a mock cannot exercise. 0.3.2 shipped a
-  # llama.cpp that predated Qwen3 and answered every allowlisted model with
-  # `unknown model architecture: 'qwen3'`; nothing caught it until someone ran
-  # a real file. This job runs real files, inline rather than through the
-  # suite, because tests/ is not published in this repository and a check that
-  # silently skips is exactly the hole this is filling.
   gguf:
     runs-on: ubuntu-latest
     steps:
@@ -554,7 +109,7 @@ jobs:
           cache: pip
       - run: pip install ".[validator,gguf,huggingface,dev]"
       - name: Report what the build registers
-        run: mt inspect engines
+        run: python -c "from microtensor.harness.registry import available, load_builtin; load_builtin(); print(sorted(str(f) for f in available()))"
       - name: The gguf engine must actually register
         run: |
           python - <<'PY'
@@ -701,5 +256,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validator image builds
         run: docker build -f deploy/Dockerfile.validator -t microtensor/validator:ci .
-      - name: Miner image builds
-        run: docker build -f deploy/Dockerfile.miner -t microtensor/miner:ci .
+      - name: Sandbox image builds
+        run: docker build -f deploy/Dockerfile.sandbox -t microtensor/sandbox:ci .

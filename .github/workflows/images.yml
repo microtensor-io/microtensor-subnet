@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "deploy/v2/**"
+      - "deploy/**"
       - "microtensor/**"
       - "pyproject.toml"
       - ".github/workflows/images.yml"
@@ -35,7 +35,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/v2/Dockerfile.${{ matrix.image }}
+          file: deploy/Dockerfile.${{ matrix.image }}
           push: true
           tags: |
             ghcr.io/microtensor-io/${{ matrix.image }}:1

@@ -229,9 +229,7 @@ class OnnxEngine:
                 shifted = row - row.max()
                 log_p = shifted - numpy.log(numpy.exp(shifted).sum())
                 logprobs.append(round(float(log_p[next_id]), CONFIDENCE_DIGITS))
-                entropies.append(
-                    round(float(-(numpy.exp(log_p) * log_p).sum()), CONFIDENCE_DIGITS)
-                )
+                entropies.append(round(float(-(numpy.exp(log_p) * log_p).sum()), CONFIDENCE_DIGITS))
                 if request.confidence_output:
                     values = numpy.asarray(outputs[names.index(request.confidence_output)])
                     reported = tuple(

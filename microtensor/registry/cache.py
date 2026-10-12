@@ -29,7 +29,7 @@ class CacheEntry:
 
 
 def _key(digest: str) -> str:
-    body = digest[len(DIGEST_PREFIX):] if digest.startswith(DIGEST_PREFIX) else digest
+    body = digest[len(DIGEST_PREFIX) :] if digest.startswith(DIGEST_PREFIX) else digest
     if len(body) < 32 or not all(c in "0123456789abcdef" for c in body.lower()):
         raise CacheError(f"malformed digest {digest!r}")
     return body.lower()

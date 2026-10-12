@@ -20,10 +20,10 @@ from microtensor.cli.common import (
 )
 from microtensor.core.constants import PUBLIC_SERVER_URL
 from microtensor.core.items import key_registration_message, new_recipient_key
-from microtensor.validator.v2.client import ServerClient, ServerError
-from microtensor.validator.v2.config import EpochConfig
-from microtensor.validator.v2.epoch import EpochError, run_epoch
-from microtensor.validator.v2.items import ReleaseError
+from microtensor.validator.client import ServerClient, ServerError
+from microtensor.validator.config import EpochConfig
+from microtensor.validator.epoch import EpochError, run_epoch
+from microtensor.validator.items import ReleaseError
 
 log = logging.getLogger("microtensor.cli.epoch")
 KEY_BLOCKS = 2_600_000

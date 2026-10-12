@@ -1,33 +1,33 @@
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    MT_HOME=/var/lib/microtensor
+    MT_HOME=/var/lib/microtensor \
+    DOCKER_VERSION=27.3.1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates curl git \
+ && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
+    | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/microtensor
 
 COPY pyproject.toml README.md ./
 COPY microtensor ./microtensor
-COPY neurons ./neurons
-COPY deploy ./deploy
+COPY deploy/validator-entrypoint.sh /usr/local/bin/mt-entrypoint
 
 RUN pip install --upgrade pip \
- && pip install -e ".[validator,gguf,huggingface,s3]"
+ && pip install torch --index-url https://download.pytorch.org/whl/cpu \
+ && pip install -e ".[validator-v2,huggingface]" \
+ && chmod +x /usr/local/bin/mt-entrypoint
 
 RUN useradd --system --create-home --uid 10001 validator \
- && mkdir -p ${MT_HOME}/state ${MT_HOME}/cache ${MT_HOME}/work ${MT_HOME}/corpus \
- && chown -R validator:validator ${MT_HOME} \
- && chmod +x /opt/microtensor/deploy/validator-entrypoint.sh
+ && mkdir -p ${MT_HOME}/state ${MT_HOME}/cache ${MT_HOME}/work ${MT_HOME}/keys \
+ && chown -R validator:validator ${MT_HOME}
 
 USER validator
 VOLUME ["/var/lib/microtensor"]
 
-HEALTHCHECK --interval=5m --timeout=30s --start-period=10m --retries=3 \
-    CMD mt inspect engines || exit 1
-
-ENTRYPOINT ["/opt/microtensor/deploy/validator-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/mt-entrypoint"]

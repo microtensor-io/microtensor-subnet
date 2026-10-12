@@ -1,452 +1,125 @@
 # Running a Microtensor validator
 
-Netuid **576** on Bittensor testnet.
+Netuid **576** on Bittensor testnet. One validator evaluates every submission of an arena each epoch on its own GPUs, reports the five pool scores to the server, and sets weights itself.
 
 ## Requirements
 
 | | |
 |---|---|
-| OS | Linux (the sandbox needs `resource.setrlimit`) |
-| CPU | 8 cores |
-| RAM | 32 GB |
-| Disk | NVMe. 200 GB to start, 1 TB comfortable for a long run |
-| GPU | none |
-| Network | 1 Gbps, 500 GB to 1 TB monthly transfer |
-| Uptime | continuous. Weights are submitted every 300 blocks (about 60 min); a round runs 21,600 blocks (about 3 days) and submissions close 7,200 blocks before it ends |
-| Credentials | any W&B account (`wandb login`); no key is issued by us |
+| OS | Ubuntu 22.04 or 24.04 |
+| GPU | 3 × 24 GB (RTX 4090, L4, A10G or better), CUDA 12 driver |
+| CPU | 16 cores |
+| RAM | 64 GB |
+| Disk | NVMe, 400 GB free. Models are cached per revision and pruned after each epoch |
+| Network | 1 Gbps. One epoch downloads every submission's model once |
+| Software | Docker 27 or newer, NVIDIA Container Toolkit, gVisor (`runsc`) registered as a Docker runtime |
+| Uptime | continuous. An epoch is 50,400 blocks (about a week); the evaluation window opens 7,200 blocks in and a full pass over 30 submissions takes about 20 hours on three GPUs |
+| Access | a registered key and relay access granted by the team (see step 3) |
 
-## 1. Install
+Everything miner code does runs inside a gVisor sandbox with no network except four validator services. The validator itself runs as a container that starts sibling containers through the Docker socket: one vLLM server per submission on one GPU, one gateway, one sandbox.
 
-Python 3.10 or newer. On Debian and Ubuntu the venv module ships separately,
-so install it first:
-
-```bash
-sudo apt install -y python3-venv
-```
+## 1. Host preparation
 
 ```bash
-git clone https://github.com/microtensor-io/microtensor-subnet
-cd microtensor-subnet
+# Docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
 
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[validator,gguf,huggingface,s3]"
+# NVIDIA Container Toolkit
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+
+# gVisor
+curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
+sudo apt-get update && sudo apt-get install -y runsc
+sudo runsc install
+sudo systemctl restart docker
+
+sudo mkdir -p /var/lib/microtensor && sudo chown 10001:10001 /var/lib/microtensor
+docker run --rm --runtime=runsc hello-world
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
-Your prompt must show `(.venv)` before you run pip. If the venv step printed
-an `ensurepip` error, the venv was never created: install `python3-venv`,
-delete `.venv`, and start the block again. Running pip without the venv lands
-on the system Python, whose old setuptools fails the editable install with an
-error naming `build_editable`.
+Both test commands must succeed before anything else. `/var/lib/microtensor` has to exist at that exact path on the host: the validator bind-mounts it at the same path inside so the sibling containers it starts see the same files.
 
-Install with `-e`. A plain install copies the package into site-packages,
-and every later `git pull` silently changes nothing while the service keeps
-running old code.
-
-The venv also matters for the `mt` command itself: outside it, `mt` is the
-system tape utility, and `mt: invalid argument` means the venv is not active,
-not that anything is broken.
-
-`validator` carries the ONNX engine; `gguf` adds the llama.cpp one. Install
-the formats the arenas you measure accept. A format you skip simply does not
-register, and `mt inspect engines` shows what a build will run.
-
-`huggingface` and `s3` are fetch backends. Install the ones matching the source
-schemes miners use. `https` needs nothing extra.
-
-## 2. Register
+## 2. Register the hotkey
 
 ```bash
 btcli subnet register --netuid 576 --subtensor.network test --wallet.name <coldkey> --wallet.hotkey <hotkey>
-btcli stake add --netuid 576 --subtensor.network test --wallet.name <coldkey> --amount <alpha>
 ```
 
-Weights are only counted if your hotkey holds a validator permit.
+## 3. Keys and access
 
-## 3. Get authorized for coordinated rounds
-
-The chain permit lets you vote. Taking assignments in coordinated rounds
-additionally requires the operator to authorize your hotkey on the control
-plane. Send your hotkey to the operator and wait for confirmation before
-expecting work.
-
-Without this you start cleanly, verify the config, adopt and verify the
-coordinator's weights, and never measure anything. The validator logs
-`no assignment document` at round close; that is this, not a fault.
-
-Assignments are drawn when a round opens. A validator authorized mid round
-receives its first assignment at the next round open.
-
-## 4. Configure
+Hidden items are sealed to a key only your validator holds. Register it, then ask the team to grant relay access to your hotkey (the relay pays for frontier calls your evaluations make, within a per epoch allowance).
 
 ```bash
-export MT_NETWORK=test
-export MT_NETUID=576
-export MT_WALLET_NAME=<coldkey>
-export MT_WALLET_HOTKEY=<hotkey>
-export MT_COORDINATOR_URL=https://coordinator.microtensor.cloud
+docker run --rm -it \
+  -v /var/lib/microtensor:/var/lib/microtensor \
+  -v ~/.bittensor/wallets:/wallets:ro \
+  -e MT_WALLET_PATH=/wallets \
+  --entrypoint mt ghcr.io/microtensor-io/validator:1 \
+  epoch register-key --wallet.name <coldkey> --wallet.hotkey <hotkey> --home /var/lib/microtensor
 ```
 
-`MT_NETUID` defaults to 576. Flags override environment; `--coordinator` and
-`MT_COORDINATOR_URL` are the same setting.
-
-The cpu budget and task count of a coordinated round come from the anchored
-arena config, not from `--cpu-seconds` or `--tasks-per-round`. When an arena
-block is anchored the validator logs the value in force and that the flag is
-ignored. `--parallel N` evaluates up to N leased artifacts at once, each pinned
-to its own cores; it defaults to 1 and is experimental until a soak has shown
-the measured cost matches sequential evaluation.
-
-W&B credentials are required, from **any** W&B account; we issue nothing:
+Once access is granted:
 
 ```bash
-wandb login
+docker run --rm -it \
+  -v /var/lib/microtensor:/var/lib/microtensor \
+  -v ~/.bittensor/wallets:/wallets:ro \
+  -e MT_WALLET_PATH=/wallets \
+  --entrypoint mt ghcr.io/microtensor-io/validator:1 \
+  epoch relay-token --wallet.name <coldkey> --wallet.hotkey <hotkey> --home /var/lib/microtensor
 ```
 
-`wandb login` writes `~/.netrc` and that is enough; `WANDB_API_KEY` works too.
-Every submission carries a public training run in `microtensor/training-runs`
-bound to its artifact digest, and a validator that cannot read that project
-admits nobody. The project is world-readable, so any valid key can.
+The key lives at `/var/lib/microtensor/keys/x25519.key` and the relay token beside it. Back the directory up; losing the key means re-registering and waiting for the next epoch.
 
-## 5. Corpus
-
-A coordinated validator takes the corpus from the coordinator. You supply
-nothing. Every worker in a round measures the same tasks, and reports carry a
-content digest of what the worker actually holds, so a mismatch is rejected
-rather than folded into the majority as a disagreement.
-
-Only a standalone validator supplies its own, one `<track>.jsonl` per track
-under `$MT_HOME/corpus`, one task per line:
-
-```json
-{"ref": "code-0001", "prompt": "…", "gold": {"cases": [true, true]}, "partition": "rotating", "max_output_tokens": 512}
-```
-
-`partition` is `rotating` or `fixed`, and every corpus must carry a fixed
-partition. Per round the validator draws `⌈0.7·N⌉` rotating tasks with the round
-seed and takes `⌊0.3·N⌋` fixed tasks unchanged.
-
-## 6. Certify the host
+## 4. Run
 
 ```bash
-mt validator certify mt-3g --cooling-mode active --power-mode performance
+git clone https://github.com/microtensor-io/microtensor-subnet
+cd microtensor-subnet/deploy
+cat > .env <<EOF
+MT_WALLET_NAME=<coldkey>
+MT_WALLET_HOTKEY=<hotkey>
+MT_ARENA=sql_gen_s1
+MT_GPUS=0,1,2
+DOCKER_GID=$(getent group docker | cut -d: -f3)
+EOF
+docker compose -f docker-compose.validator.yml up -d
+docker compose -f docker-compose.validator.yml logs -f
 ```
 
-Cooling and power modes are pinned into the device profile hash. Changing either
-one later means certifying again.
+The loop polls the chain every ten minutes. When an arena's evaluation window opens it downloads the epoch bundle, opens it with your key, fetches every submission on the signed roster at its committed revision, runs the five tests, posts the signed report, and sets weights. An epoch already reported is not run again; the record is `/var/lib/microtensor/state/<arena>.epochs.json`.
 
-## 7. Verify
+## What one epoch does with a submission
+
+1. Verifies the fee on chain and every file hash in `manifest.json`.
+2. Serves the miner's model with vLLM on one GPU, isolated on an internal network.
+3. Serves the miner's router from the validator process.
+4. Starts the miner's `main.py` in the sandbox with four service URLs and nothing else.
+5. Runs the SLM, harness, router, escalation and system tests on the epoch's hidden items.
+6. Grades every answer outside the sandbox and signs the report.
+
+A submission that fails to build, crashes, times out or reaches for the network scores zero in every pool for the epoch, and the report says why.
+
+## Dry run
 
 ```bash
-mt inspect engines      # must show: sandbox enforced
-mt validator status
-mt inspect tracks
+docker compose -f docker-compose.validator.yml run --rm validator epoch run --arena sql_gen_s1 --dry-run --item-limit 20 --home /var/lib/microtensor
 ```
 
-Then test the full loop on synthetic data, with no chain involved:
+Evaluates twenty items per test, posts no report and sets no weights. Use it after installation and after every image update.
+
+## Updating
 
 ```bash
-mt validator loopback --rounds 3 --miners 4
+docker compose pull && docker compose -f docker-compose.validator.yml up -d
 ```
 
-Then a real round without submitting:
-
-```bash
-mt validator once --dry-run
-```
-
-## 8. Run
-
-```bash
-mt validator run
-```
-
-Coordinated (measures an assigned subset, adopts a settlement it recomputes):
-
-```bash
-mt validator run --coordinator https://coordinator.microtensor.cloud --auto-update
-```
-
-A coordinated validator takes the open round from the coordinator, because
-the operator opens rounds. The block schedule is only the fallback when the
-coordinator cannot be reached. Between rounds it idles on
-`round N is already settled; waiting for the next`, which is correct.
-
-To run standalone, leave `--coordinator` unset and `MT_COORDINATOR_URL` empty.
-`--auto-update` installs signed releases between rounds and exits for the
-supervisor to restart it, so only use it under systemd or docker. Backgrounded
-in a shell, the first update leaves it down.
-
-## 9. Compute pool rigs
-
-`mt validator run` also verifies compute pool rigs, as idle time work under the
-same hotkey: express ticks every thirty seconds and hourly deep passes over SSH,
-paused whenever a system is being measured so envelope numbers are untouched. It
-registers with the pool on first start and waits for the operator to activate
-the hotkey; the rig challenge library is fetched once from the compute repo's
-release and checked against its digest. Weights for rigs are set through the
-coordinator's vector like everything else; nothing here sets weights.
-
-```bash
-mt validator rigs register     # register with the pool without running rounds
-mt validator rigs run          # verify rigs alone, on a host with no arena validator
-mt validator run --no-rigs     # score arenas only
-```
-
-## 10. Inference operators
-
-Measuring models in rounds and verifying live serving are separate duties on the
-same hotkey. The second runs continuously rather than per round.
-
-You sample requests operators already answered, take the prompt and the token
-ids they returned, and evaluate the whole sequence in one prefill through your
-own copy of the certified artifact. Nothing is asked of the operator beyond what
-it already sent the client, so verification stays off its critical path.
-
-Under greedy decoding you record the margin each returned token lost by, since
-honest hardware can disagree only where two candidates were effectively tied.
-Under sampled decoding you record the mean negative log likelihood at the
-temperature that was requested. The threshold is calibrated per model from
-honest serving and is used only if the same model at a lower precision lands on
-the far side of it.
-
-| verdict | meaning |
-|---|---|
-| `pass` | the tokens are what the certified artifact produces |
-| `cheat` | they are not, past the calibrated threshold |
-| `unproven` | the sample could not be evaluated, and nothing is held against the operator |
-
-An empty response, a missing or unseparable calibration, a prefill that could
-not be aligned, and greedy and sampled statistics that disagree all resolve to
-`unproven`.
-
-Admission runs as a sequential test rather than a fixed probe count, so a clean
-operator is admitted in well under a hundred probes and a substituted one is
-rejected about as quickly. One validator rejecting keeps an operator out.
-
-Withdrawing an operator on trust advances its generation counter, which discards
-the probe history behind it and forces it to prove itself again. Liveness is not
-your concern: the gateway drops a disconnected operator within seconds, and that
-never touches what you decided.
-
-### Validating inference needs no GPU
-
-Two different duties wear the same name, and only one of them is heavy.
-
-**Checking the settlement** is integer arithmetic over a few hundred rows. The
-server publishes each epoch alongside the evidence it settled on: per operator
-and model the tokens, the requests and the four gate counts, plus the rates,
-ceilings and exact fraction thresholds. You recompute the vector and refuse on
-mismatch, exactly as you already do for a round settlement.
-
-```bash
-mt operator audit
-```
-
-No model is loaded, no artifact is fetched and no card is touched. Every
-validator should run this, and it is what makes the serving pool verified rather
-than relayed.
-
-**Probing operators** is the heavy duty and it is opt in. It loads the certified
-artifact and runs a prefill, so it needs whatever that artifact needs: a CPU for
-GGUF today, a card once systems ship in a GPU only format. You do not have to
-take it on, and declining costs you nothing in the round loop.
-
-### Probing, if you take it on
-
-Operators hold no inbound port, so you reach them through the gateway:
-
-```bash
-mt operator verify \
-  --artifacts artifacts.json \
-  --calibrations calibrations.json \
-  --credential "$MT_SERVE_SECRET"
-```
-
-`artifacts.json` maps each model to the certified artifact on your disk.
-`calibrations.json` maps each model to its calibrated threshold. A model with
-no calibration is skipped rather than guessed at, so the loop admits nobody
-until the first model is calibrated. Add `--once` for a single pass.
-
-The logic lives in `microtensor/serving/`.
-See [inference_miner.md](inference_miner.md) for the miner's side.
-
-## What the logs show
-
-Startup, in order; each line is a stage completing:
-
-```
-training run store reachable at microtensor/training-runs
-Enabling default logging (Warning level)        ← bittensor, during wallet load
-taking assignments from the coordinator at …    ← metagraph fetched, hotkey checked
-validator up on netuid 576 across N competitions
-round 1236 open: 5400 blocks until submissions close
-```
-
-The metagraph fetch between the second and third lines takes a minute or two
-and prints nothing. It is not stuck.
-
-**The long wait is normal.** A round is 21,600 blocks, about 3 days, and a
-validator acts when the round closes, not before. Until then it repeats
-`round N open: M blocks until submissions close` every few minutes, refreshing
-weights on the way. A silent process here is a broken one; a chatty one
-counting down blocks is healthy.
-
-Before an arena is live there is nothing to measure, and the round settles on
-the reserved hold. The validator fetches that settlement, recomputes it,
-checks the reserved uid against its own metagraph, and submits the same
-weights the coordinator would: verified rather than relayed. You still set
-weights every round from day one.
-
-`no corpus served yet; waiting for an arena to go live` is likewise a wait,
-not a fault, and is rechecked every round.
-
-Versions before 0.1.10 lost every log line after wallet load; bittensor
-resets the root logger to WARNING. Upgrade rather than debug the silence.
-
-### systemd
-
-```ini
-[Unit]
-Description=Microtensor validator
-After=network-online.target
-
-[Service]
-Type=simple
-User=validator
-Environment=MT_NETUID=576
-Environment=MT_WALLET_NAME=<coldkey>
-Environment=MT_WALLET_HOTKEY=<hotkey>
-Environment=MT_HOME=/var/lib/microtensor
-ExecStart=/opt/microtensor/.venv/bin/mt validator run --coordinator https://coordinator.microtensor.cloud --auto-update
-Restart=always
-RestartSec=30
-TimeoutStopSec=1800
-SuccessExitStatus=75
-
-[Install]
-WantedBy=multi-user.target
-```
-
-`TimeoutStopSec` is long so `SIGTERM` lets the current round finish.
-
-The unit's `User` must be the account that ran `wandb login`, or set
-`Environment=WANDB_API_KEY=<key>` explicitly. A service user without either
-fails at boot naming the run store.
-
-### Docker
-
-```bash
-cd deploy
-MT_WALLET_NAME=<coldkey> MT_WALLET_HOTKEY=<hotkey> \
-  docker compose -f docker-compose.validator.yml up -d
-```
-
-## Updates
-
-Validators on different builds compute different weights, and `version_key` is
-derived from `MECHANISM_VERSION`, so drift splits consensus.
-
-Auto-update is off by default:
-
-```bash
-mt validator run --auto-update --signing-key <pinned-ed25519-pubkey>
-```
-
-| situation | result |
-|---|---|
-| patch or minor, same mechanism | installed, exit 75, supervisor restarts |
-| evaluation in flight | deferred to the next submission window |
-| mechanism change, no activation block | held |
-| mechanism change with an activation block | deferred to that block, then held unless `--allow-mechanism-change` |
-| major version bump | held |
-| unsigned, missing SHA256SUMS, or digest mismatch | refused |
-
-Exit code 75 means restart me. Docker's `restart: unless-stopped` covers it.
-
-```bash
-mt update check             # what would happen now, and why
-mt update list              # published releases
-mt update apply --dry-run   # verify without installing
-```
-
-`mt update check` exits 2 when something is waiting for you.
-
-## Abstention
-
-A fault of the artifact scores zero. A fault of your infrastructure abstains.
-
-| event | result |
-|---|---|
-| over a class ceiling, or over its own declaration | inadmissible, scores 0 |
-| task times out, produces nothing, or the worker dies | that task scores 0 |
-| artifact unfetchable after retries | abstain |
-| no engine available | abstain |
-| run store unreachable after retries | abstain |
-| fewer than 50% of submissions scored | abstain |
-
-Abstaining sets no weights that round and leaves EMA state untouched. A partial
-vector is never submitted, because a missing track removes that track's whole
-emission share.
-
-A round that evaluates cleanly but pays nobody, because no artifact has reached
-`MIN_ROUNDS_OBSERVED` yet, is settled rather than abstained.
-
-## The dropped set
-
-Settlements carry a `dropped` map of miners that went quiet during training
-without committing, each with the block they were last heard from. It is
-verified the same way the advisory set is: recomputed from the published
-settlement, and a mismatch rejects the settlement.
-
-A commitment ends the check. A miner that committed on chain is measured whether
-or not it kept reporting, because the artifact is already fetchable.
-
-Standalone validators see no telemetry and are unaffected. They enrol from chain
-commitments alone, which is correct precisely because a commitment always
-survives silence.
-
----
-
-## Weights and rounds
-
-Weight submission is not tied to round completion. The validator re-submits its
-standing vector every 300 blocks, so it is never silent between rounds, and a
-round runs about 3 days. A validator that only set weights when a round
-finished would go quiet for hundreds of epochs and give up the dividends to
-whoever kept submitting.
-
-The refresh republishes what the last round settled. It recomputes nothing.
-
-## Round phases
-
-```
-[start ─────────────────── close) [close ──────── deadline] [·· margin ··]
- submissions open           freeze  evaluate + settle          extrinsic slack
-```
-
-1. Wait for the close block.
-2. Seed from `hash(B_close)`.
-3. Discover: read commitments, verify signatures and digests.
-4. Materialise: fetch artifacts, re-derive file tree digests before executing.
-5. Profile: size, peak RSS, TTFT p50/p95, cold start, inside the jail.
-6. Gate: over a ceiling or over its own declaration means it does not exist this round.
-7. Score: run the task set in the jail, quantised to 4 decimals.
-8. Settle: rank with hysteresis, apply incumbent decay and the concentration cap,
-   blend into the prior vector, submit.
-
-Each admitted system runs one cascade over the round's task set. Frontier members
-get one further run per declared component. Component outputs are cached by digest
-within the round.
-
-## Troubleshooting
-
-| symptom | cause |
-|---|---|
-| `mt inspect engines` shows `UNAVAILABLE` | not on a host that can validate |
-| refuses to start, CPU limit does not bind | kernel will not enforce budgets, pass `--allow-degraded` to run abstain only |
-| fails at boot naming the run store | `WANDB_API_KEY` missing, wrong, or the API is unreachable |
-| `mt validator status` warns about the permit | hotkey holds no validator permit |
-| holds every round with `no assignment document` | the operator has not authorized your hotkey for coordinated rounds |
-| starts, adopts weights, never measures | authorized mid round; assignments arrive at the next round open |
-| `git pull` changes nothing | the install was not editable; run `pip install -e .` once and restart |
+Images are built from `main` and tagged `ghcr.io/microtensor-io/validator:1` and `ghcr.io/microtensor-io/sandbox:1`. The validator pulls the sandbox image itself.
