@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 
+from microtensor.chain.client import TransferEvent
 from microtensor.chain.metagraph import MetagraphSnapshot
 from microtensor.chain.weights import WeightVector
 
@@ -27,6 +28,8 @@ class OfflineClient:
         self.published: list[str] = []
         self.submitted: list[WeightVector] = []
         self.closed = False
+        self._transfers: dict[tuple[int, int], TransferEvent] = {}
+        self._extrinsics: dict[str, tuple[int, int]] = {}
 
     @property
     def netuid(self) -> int:
@@ -71,6 +74,24 @@ class OfflineClient:
 
     def set_commitment(self, hotkey: str, payload: str) -> None:
         self._commitments[hotkey] = payload
+
+    def record_transfer(
+        self, block: int, index: int, event: TransferEvent, extrinsic_hash: str = ""
+    ) -> None:
+        self._transfers[(block, index)] = event
+        if extrinsic_hash:
+            self._extrinsics[extrinsic_hash.lower()] = (block, index)
+
+    def extrinsic_index(self, block: int, extrinsic_hash: str) -> int:
+        found = self._extrinsics.get(extrinsic_hash.lower())
+        if found is None or found[0] != block:
+            raise ValueError(f"extrinsic {extrinsic_hash} is not in block {block}")
+        return found[1]
+
+    def transfer_at(self, block: int, index: int) -> TransferEvent:
+        return self._transfers.get(
+            (block, index), TransferEvent("", "", 0, False, "no such extrinsic")
+        )
 
     def clear_commitments(self) -> None:
         self._commitments.clear()

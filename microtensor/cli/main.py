@@ -9,6 +9,7 @@ from microtensor.cli import corpus as corpus_cmd
 from microtensor.cli import inspect as inspect_cmd
 from microtensor.cli import miner as miner_cmd
 from microtensor.cli import operator as operator_cmd
+from microtensor.cli import submit as submit_cmd
 from microtensor.cli import update as update_cmd
 from microtensor.cli import validator as validator_cmd
 from microtensor.cli.common import configure_logging
@@ -30,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     validator_cmd.register(subparsers)
     coordinator_cmd.register(subparsers)
     miner_cmd.register(subparsers)
+    submit_cmd.register(subparsers)
     operator_cmd.register(subparsers)
     corpus_cmd.register(subparsers)
     update_cmd.register(subparsers)
