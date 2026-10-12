@@ -215,6 +215,8 @@ class Runner:
             fault_plan=tool_faults.FaultPlan(self.context.seed),
             desk=self.desk,
             slot=slot,
+            databases=self.context.items.databases,
+            item_databases=self.context.items.item_databases(),
         )
 
     def slm_phase(self, artifact: Artifact) -> None:

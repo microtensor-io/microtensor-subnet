@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Final
@@ -31,6 +31,8 @@ class ArtifactSession:
     slm_url: str
     router_url: str
     desk: TicketDesk | None
+    databases: Mapping[str, bytes] = field(default_factory=dict)
+    item_databases: Mapping[str, Sequence[str]] = field(default_factory=dict)
     current_item: str = ""
     tokens_in: int = 0
     tokens_out: int = 0
@@ -38,6 +40,13 @@ class ArtifactSession:
     tool_calls: int = 0
     faults_served: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def database_for(self, item_id: str) -> bytes:
+        for sha in self.item_databases.get(item_id, ()):
+            found = self.databases.get(sha)
+            if found is not None:
+                return found
+        return self.sample_database
 
     def reset_counters(self) -> None:
         with self.lock:
@@ -154,14 +163,11 @@ class Services:
                 with session.lock:
                     session.tool_calls += 1
                     item_id = session.current_item
+                database = session.database_for(item_id)
                 if path == contract.TOOL_SCHEMA:
-                    payload = tools.schema_lookup(
-                        session.sample_database, str(body.get("table", ""))
-                    )
+                    payload = tools.schema_lookup(database, str(body.get("table", "")))
                 else:
-                    payload = tools.query_execution(
-                        session.sample_database, str(body.get("sql", ""))
-                    )
+                    payload = tools.query_execution(database, str(body.get("sql", "")))
                 kind = session.fault_plan.fault_for(item_id) if session.fault_plan else ""
                 if kind:
                     with session.lock:

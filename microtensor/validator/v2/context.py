@@ -69,6 +69,17 @@ class EpochItems:
     def originals(self, test: str) -> list[Item]:
         return [item for item in self.by_test.get(test, []) if not item.twin_of]
 
+    def item_databases(self) -> dict[str, tuple[str, ...]]:
+        found: dict[str, tuple[str, ...]] = {}
+        for chosen in self.by_test.values():
+            for item in chosen:
+                shas = item.label.get("databases") or item.label.get("blobs") or []
+                found[item.item_id] = tuple(str(s) for s in shas)
+        for row in self.adversarial:
+            shas = row.get("databases") or row.get("blobs") or []
+            found[str(row.get("item_id", ""))] = tuple(str(s) for s in shas)
+        return found
+
 
 @dataclass(slots=True)
 class EpochContext:
