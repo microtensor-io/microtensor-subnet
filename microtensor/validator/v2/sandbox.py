@@ -6,6 +6,7 @@ import secrets
 import subprocess
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -173,6 +174,8 @@ class SandboxHost:
         fault_plan: tools.FaultPlan | None,
         desk: TicketDesk | None,
         slot: int,
+        databases: Mapping[str, bytes] | None = None,
+        item_databases: Mapping[str, Sequence[str]] | None = None,
     ) -> Sandbox:
         key = secrets.token_hex(4)
         network = f"mt-net-{key}"
@@ -195,6 +198,8 @@ class SandboxHost:
                 slm_url=f"http://{slm_ip}:8000",
                 router_url=router_url,
                 desk=desk,
+                databases=databases or {},
+                item_databases=item_databases or {},
             )
             self.services.attach(key, session)
             self._wait_slm(session.slm_url)

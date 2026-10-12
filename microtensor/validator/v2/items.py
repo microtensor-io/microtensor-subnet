@@ -147,11 +147,17 @@ def reference_components(
     if harness is None:
         raise ReleaseError("the bundle carries no reference harness")
     variants = tuple(path for name, path in sorted(trees.items()) if name.startswith("variant-"))
+    router_dir = trees.get("router")
+    router_repo = str(references.get("router", ""))
+    if router_dir is None and router_repo:
+        router_dir = download(
+            router_repo, str(references.get("router_revision", "main")), cache_dir
+        )
     return Reference(
         slm_dir=slm_dir,
         harness_dir=harness,
         variant_dirs=variants,
-        router_dir=trees.get("router"),
+        router_dir=router_dir,
         escalation_dir=trees.get("escalation"),
         slm_parameters=parameters,
     )
