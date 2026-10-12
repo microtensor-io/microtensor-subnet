@@ -29,11 +29,41 @@ class ChainError(RuntimeError):
 RAO_PER_TAO = 1_000_000_000
 
 
+def _address(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("Id", "id", "address"):
+            if key in value:
+                return str(value[key])
+    return str(value or "")
+
+
+def _transfer_fields(attributes: Any) -> tuple[str, str, int]:
+    if isinstance(attributes, dict):
+        return (
+            _address(attributes.get("from")),
+            _address(attributes.get("to")),
+            int(attributes.get("amount") or 0),
+        )
+    if isinstance(attributes, (list, tuple)) and len(attributes) >= 3:
+        return _address(attributes[0]), _address(attributes[1]), int(attributes[2] or 0)
+    return "", "", 0
+
+
 @dataclass(frozen=True, slots=True)
 class TransferReceipt:
     extrinsic_hash: str
     block: int
     block_hash: str
+    extrinsic_index: int = -1
+
+
+@dataclass(frozen=True, slots=True)
+class TransferEvent:
+    payer: str
+    recipient: str
+    amount_rao: int
+    ok: bool
+    reason: str = ""
 
 
 # Named once, because three call sites hit it and a bare AttributeError from
@@ -342,9 +372,72 @@ class SubtensorClient:
         block = receipt.block_number
         if block is None:
             block = substrate.get_block_number(block_hash)
+        index = -1
+        try:
+            index = self.extrinsic_index(int(block), str(receipt.extrinsic_hash))
+        except ChainError as exc:
+            log.warning("transfer landed but its index could not be read: %s", exc)
         return TransferReceipt(
-            extrinsic_hash=str(receipt.extrinsic_hash), block=int(block), block_hash=block_hash
+            extrinsic_hash=str(receipt.extrinsic_hash),
+            block=int(block),
+            block_hash=block_hash,
+            extrinsic_index=index,
         )
+
+    @_serialised
+    def extrinsic_index(self, block: int, extrinsic_hash: str) -> int:
+        substrate = getattr(self.subtensor, "substrate", None)
+        if substrate is None:
+            raise ChainError("this bittensor build exposes no substrate interface")
+        wanted = extrinsic_hash.lower()
+        wanted = wanted if wanted.startswith("0x") else "0x" + wanted
+
+        def read() -> Any:
+            block_hash = substrate.get_block_hash(block)
+            return substrate.get_block(block_hash=block_hash)
+
+        found = with_retry("get_block", read)
+        for index, extrinsic in enumerate((found or {}).get("extrinsics") or []):
+            if str(getattr(extrinsic, "extrinsic_hash", "")).lower() == wanted:
+                return index
+        raise ChainError(f"extrinsic {extrinsic_hash} is not in block {block}")
+
+    @_serialised
+    def transfer_at(self, block: int, index: int) -> TransferEvent:
+        substrate = getattr(self.subtensor, "substrate", None)
+        if substrate is None:
+            raise ChainError("this bittensor build exposes no substrate interface")
+
+        def read() -> Any:
+            block_hash = substrate.get_block_hash(block)
+            if not block_hash:
+                raise ChainError(f"block {block} is not on this chain")
+            return substrate.get_events(block_hash)
+
+        events = with_retry("get_events", read)
+        payer = recipient = ""
+        amount = 0
+        failed = False
+        seen = False
+        for event in events or []:
+            record = getattr(event, "value", event)
+            if not isinstance(record, dict) or record.get("extrinsic_idx") != index:
+                continue
+            seen = True
+            module = str(record.get("module_id", ""))
+            name = str(record.get("event_id", ""))
+            attributes = record.get("attributes") or {}
+            if module == "System" and name == "ExtrinsicFailed":
+                failed = True
+            if module == "Balances" and name == "Transfer":
+                payer, recipient, amount = _transfer_fields(attributes)
+        if not seen:
+            return TransferEvent("", "", 0, False, f"no extrinsic {index} in block {block}")
+        if failed:
+            return TransferEvent(payer, recipient, amount, False, "the extrinsic failed")
+        if not recipient:
+            return TransferEvent("", "", 0, False, "the extrinsic moved no balance")
+        return TransferEvent(payer, recipient, amount, True)
 
     @_serialised
     def commit_reveal_enabled(self) -> bool:
