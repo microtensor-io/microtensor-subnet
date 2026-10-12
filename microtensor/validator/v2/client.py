@@ -87,7 +87,7 @@ class ServerClient:
             raise ServerError(f"bundle download failed: {exc}") from exc
         if response.status_code != 200:
             raise ServerError(f"bundle download answered {response.status_code}")
-        return response.content
+        return bytes(response.content)
 
     def public_keys(self) -> dict[str, Any]:
         found = self._request("GET", "/v1/public/keys")

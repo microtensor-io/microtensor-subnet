@@ -45,7 +45,7 @@ class SlmClient:
                 response = http.get(self.base_url.rstrip("/") + "/v1/models")
         except httpx.HTTPError:
             return False
-        return response.status_code == 200
+        return bool(response.status_code == 200)
 
     def generate(self, prompt: str, *, max_tokens: int, stop: Sequence[str] = ()) -> Generation:
         body: dict[str, Any] = {
