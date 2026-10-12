@@ -6,6 +6,7 @@ import sys
 from microtensor.cli import archive as archive_cmd
 from microtensor.cli import coordinator as coordinator_cmd
 from microtensor.cli import corpus as corpus_cmd
+from microtensor.cli import epoch as epoch_cmd
 from microtensor.cli import inspect as inspect_cmd
 from microtensor.cli import miner as miner_cmd
 from microtensor.cli import operator as operator_cmd
@@ -32,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     coordinator_cmd.register(subparsers)
     miner_cmd.register(subparsers)
     submit_cmd.register(subparsers)
+    epoch_cmd.register(subparsers)
     operator_cmd.register(subparsers)
     corpus_cmd.register(subparsers)
     update_cmd.register(subparsers)
