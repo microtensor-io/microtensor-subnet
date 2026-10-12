@@ -4,7 +4,9 @@ import argparse
 import json
 import logging
 import os
+import time
 from pathlib import Path
+from typing import Any
 
 from microtensor.chain.client import ChainError
 from microtensor.chain.wallet import hotkey_address, sign_bytes
@@ -60,6 +62,23 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_chain_arguments(run)
     add_common_arguments(run)
     run.set_defaults(handler=_run)
+
+    loop = inner.add_parser("loop", help="run every epoch of an arena as its window opens")
+    loop.add_argument("--arena", required=True)
+    loop.add_argument("--server", default=os.environ.get("MT_SERVER_URL", PUBLIC_SERVER_URL))
+    loop.add_argument("--relay", default=os.environ.get("MT_RELAY_URL", ""))
+    loop.add_argument(
+        "--gpus", default=os.environ.get("MT_GPUS", "0"), help="comma separated indices"
+    )
+    loop.add_argument("--concurrency", type=int, default=3)
+    loop.add_argument("--sandbox-runtime", default=os.environ.get("MT_SANDBOX_RUNTIME", "runsc"))
+    loop.add_argument("--poll-seconds", type=int, default=600)
+    loop.add_argument("--once", action="store_true", help="one poll, then exit")
+    loop.add_argument("--item-limit", type=int, default=0, help="development only")
+    loop.add_argument("--dry-run", action="store_true", help="evaluate and report, set no weights")
+    add_chain_arguments(loop)
+    add_common_arguments(loop)
+    loop.set_defaults(handler=_loop)
 
 
 def _keys_dir(home: Path) -> Path:
@@ -141,18 +160,7 @@ def _run(args: argparse.Namespace) -> int:
         if current.get("phase") not in ("window", "settling"):
             return fail(f"no evaluation window is open for {args.arena} at block {block}")
         epoch_index = int(current["index"])
-    settings = EpochConfig(
-        chain=config,
-        home=args.home,
-        arena_id=args.arena,
-        server_url=args.server,
-        relay_url=args.relay or args.server,
-        gpus=tuple(g.strip() for g in str(args.gpus).split(",") if g.strip()),
-        concurrency=args.concurrency,
-        sandbox_runtime=args.sandbox_runtime,
-        dry_run=args.dry_run,
-        item_limit=args.item_limit,
-    )
+    settings = _settings(args, config)
     try:
         outcome = run_epoch(settings, chain=client, wallet=wallet, epoch_index=epoch_index)
     except (EpochError, ReleaseError, ChainError, ServerError) as exc:
@@ -168,3 +176,62 @@ def _run(args: argparse.Namespace) -> int:
         print(f"burned      {json.dumps(outcome.burned)}")
     print(f"weights     {len(outcome.weights)} hotkeys{' (dry run)' if args.dry_run else ''}")
     return 0
+
+
+def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
+    return EpochConfig(
+        chain=config,
+        home=args.home,
+        arena_id=args.arena,
+        server_url=args.server,
+        relay_url=args.relay or args.server,
+        gpus=tuple(g.strip() for g in str(args.gpus).split(",") if g.strip()),
+        concurrency=args.concurrency,
+        sandbox_runtime=args.sandbox_runtime,
+        dry_run=args.dry_run,
+        item_limit=args.item_limit,
+    )
+
+
+def _loop(args: argparse.Namespace) -> int:
+    logging.basicConfig(level=logging.INFO)
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    client = open_client(config, wallet)
+    server = ServerClient(args.server, hotkey_address(wallet), wallet)
+    state = Path(args.home) / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    record = state / f"{args.arena}.epochs.json"
+    done: set[int] = set()
+    if record.is_file():
+        done = {int(i) for i in json.loads(record.read_text(encoding="utf-8"))}
+    settings = _settings(args, config)
+    while True:
+        try:
+            block = client.block()
+            arena = server.arena(args.arena, block)
+            current = dict((arena or {}).get("current_epoch") or {})
+            index = current.get("index")
+            if arena is None:
+                log.warning("arena %s is unknown to %s", args.arena, args.server)
+            elif current.get("phase") == "window" and index is not None and int(index) not in done:
+                log.info("epoch %s of %s is open at block %d", index, args.arena, block)
+                outcome = run_epoch(settings, chain=client, wallet=wallet, epoch_index=int(index))
+                done.add(int(index))
+                record.write_text(json.dumps(sorted(done)), encoding="utf-8")
+                log.info(
+                    "epoch %s done: %d scored, %d refused, %d weights",
+                    index,
+                    len(outcome.scores),
+                    len(outcome.failures),
+                    len(outcome.weights),
+                )
+            else:
+                log.info(
+                    "block %d: %s epoch %s is %s", block, args.arena, index, current.get("phase")
+                )
+        except (EpochError, ReleaseError, ChainError, ServerError) as exc:
+            log.error("epoch loop: %s", exc)
+        if args.once:
+            return 0
+        time.sleep(max(30, int(args.poll_seconds)))

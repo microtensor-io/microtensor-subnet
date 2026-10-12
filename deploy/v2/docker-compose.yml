@@ -1,0 +1,43 @@
+services:
+  validator:
+    image: ghcr.io/microtensor-io/validator:1
+    container_name: microtensor-validator
+    restart: unless-stopped
+    stop_grace_period: 1h
+    group_add:
+      - "${DOCKER_GID:-999}"
+    environment:
+      MT_NETUID: "${MT_NETUID:-576}"
+      MT_NETWORK: "${MT_NETWORK:-test}"
+      MT_WALLET_NAME: "${MT_WALLET_NAME:?set the coldkey wallet name}"
+      MT_WALLET_HOTKEY: "${MT_WALLET_HOTKEY:?set the hotkey name}"
+      MT_WALLET_PATH: /wallets
+      MT_HOME: /var/lib/microtensor
+      MT_SERVER_URL: "${MT_SERVER_URL:-https://api.microtensor.cloud}"
+      MT_RELAY_URL: "${MT_RELAY_URL:-https://api.microtensor.cloud}"
+      MT_GPUS: "${MT_GPUS:-0,1,2}"
+      MT_SANDBOX_RUNTIME: "${MT_SANDBOX_RUNTIME:-runsc}"
+      HF_HOME: /var/lib/microtensor/cache/hf
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/microtensor:/var/lib/microtensor
+      - ${MT_WALLET_DIR:-~/.bittensor/wallets}:/wallets:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - epoch
+      - loop
+      - --arena
+      - "${MT_ARENA:?set the arena id}"
+      - --home
+      - /var/lib/microtensor
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
