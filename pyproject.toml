@@ -71,6 +71,14 @@ coordinator = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
 ]
+validator-v2 = [
+    "torch>=2.4",
+    "transformers>=4.44",
+    "safetensors>=0.4",
+    "sqlglot>=25",
+    "huggingface-hub>=0.24",
+    "httpx>=0.27",
+]
 huggingface = ["huggingface-hub>=0.24"]
 s3 = ["boto3>=1.34"]
 provenance = ["wandb>=0.17"]
