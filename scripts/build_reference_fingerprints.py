@@ -8,7 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from microtensor.tasks.contamination import (  # noqa: E402
+from microtensor_subnet.tasks.contamination import (  # noqa: E402
     Sample,
     fingerprint,
     fingerprint_dir,

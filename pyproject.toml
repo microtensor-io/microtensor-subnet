@@ -59,15 +59,15 @@ dev = [
 ]
 
 [project.scripts]
-mt = "microtensor.cli.main:main"
+mt = "microtensor_subnet.cli.main:main"
 mt-validator = "neurons.validator:run"
 mt-operator = "neurons.operator:run"
 
 [tool.setuptools.dynamic]
-version = { attr = "microtensor.core.constants.RELEASE_VERSION" }
+version = { attr = "microtensor_subnet.core.constants.RELEASE_VERSION" }
 
 [tool.setuptools.packages.find]
-include = ["microtensor*", "neurons*"]
+include = ["microtensor_subnet*", "neurons*"]
 
 [tool.ruff]
 line-length = 100
@@ -82,16 +82,16 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"microtensor/serving/verify.py" = ["S105"]
-"microtensor/serving/client.py" = ["S310"]
-"microtensor/serving/probe.py" = ["S310"]
-"microtensor/serving/supervise.py" = ["S310", "S603"]
-"microtensor/serving/audit.py" = ["S310"]
-"microtensor/harness/chat_template.py" = ["S701"]
+"microtensor_subnet/serving/verify.py" = ["S105"]
+"microtensor_subnet/serving/client.py" = ["S310"]
+"microtensor_subnet/serving/probe.py" = ["S310"]
+"microtensor_subnet/serving/supervise.py" = ["S310", "S603"]
+"microtensor_subnet/serving/audit.py" = ["S310"]
+"microtensor_subnet/harness/chat_template.py" = ["S701"]
 "scripts/train_specialist.py" = ["S311"]
 "tests/*" = ["S", "PLR2004"]
 "scripts/optimise_harness.py" = ["S311"]
-"microtensor/rigs/**" = ["N", "A", "C4", "RUF", "S", "B", "SIM", "UP", "E501", "W"]
+"microtensor_subnet/rigs/**" = ["N", "A", "C4", "RUF", "S", "B", "SIM", "UP", "E501", "W"]
 
 [tool.mypy]
 python_version = "3.10"
@@ -153,6 +153,6 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 
 [[tool.mypy.overrides]]
-module = ["microtensor.rigs.*"]
+module = ["microtensor_subnet.rigs.*"]
 ignore_errors = true
 warn_unreachable = false

@@ -15,7 +15,7 @@ RUN apt-get update \
 WORKDIR /opt/microtensor
 
 COPY pyproject.toml README.md ./
-COPY microtensor ./microtensor
+COPY microtensor_subnet ./microtensor_subnet
 COPY deploy/validator-entrypoint.sh /usr/local/bin/mt-entrypoint
 
 RUN pip install --upgrade pip \

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from microtensor.cli.main import main
+from microtensor_subnet.cli.main import main
 
 
 def run() -> int:

@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "deploy/**"
-      - "microtensor/**"
+      - "microtensor_subnet/**"
       - "pyproject.toml"
       - ".github/workflows/images.yml"
   workflow_dispatch:

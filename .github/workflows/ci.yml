@@ -22,7 +22,7 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
         continue-on-error: true
-      - run: mypy microtensor
+      - run: mypy microtensor_subnet
 
   test:
     runs-on: ubuntu-latest
@@ -47,9 +47,9 @@ jobs:
       - name: Every module imports
         run: |
           python - <<'PY'
-          import importlib, pkgutil, microtensor
+          import importlib, pkgutil, microtensor_subnet
           skipped = []
-          for info in pkgutil.walk_packages(microtensor.__path__, "microtensor."):
+          for info in pkgutil.walk_packages(microtensor_subnet.__path__, "microtensor_subnet."):
               try:
                   importlib.import_module(info.name)
               except ImportError as exc:
@@ -70,7 +70,7 @@ jobs:
         run: |
           python - <<'PY'
           import math
-          from microtensor.scoring.pools import POOL_SHARES, RANK_PAYOUT
+          from microtensor_subnet.scoring.pools import POOL_SHARES, RANK_PAYOUT
           assert math.isclose(sum(POOL_SHARES.values()), 1.0), POOL_SHARES
           assert list(RANK_PAYOUT) == sorted(RANK_PAYOUT, reverse=True), RANK_PAYOUT
           print("pools ok")
@@ -78,7 +78,7 @@ jobs:
       - name: The sandbox image installs exactly the allowed packages
         run: |
           python - <<'PY'
-          from microtensor.artifact.contract import ALLOWED_PACKAGES
+          from microtensor_subnet.artifact.contract import ALLOWED_PACKAGES
           for name, version in ALLOWED_PACKAGES.items():
               assert version.count(".") >= 1, f"{name} is not pinned"
           print(f"{len(ALLOWED_PACKAGES)} pinned packages")
@@ -104,6 +104,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validator image builds
-        run: docker build -f deploy/Dockerfile.validator -t microtensor/validator:ci .
+        run: docker build -f deploy/Dockerfile.validator -t microtensor_subnet/validator:ci .
       - name: Sandbox image builds
         run: docker build -f deploy/Dockerfile.sandbox -t microtensor/sandbox:ci .

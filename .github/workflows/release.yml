@@ -28,19 +28,19 @@ jobs:
       - name: Nothing is published unless the checks pass
         run: |
           ruff check .
-          mypy microtensor
+          mypy microtensor_subnet
           if [ -d tests ]; then
             pytest tests -q
           else
             echo "::warning::the suite is not published here; run it before tagging"
           fi
-          python -c "import math; from microtensor.scoring.pools import POOL_SHARES; assert math.isclose(sum(POOL_SHARES.values()), 1.0)"
+          python -c "import math; from microtensor_subnet.scoring.pools import POOL_SHARES; assert math.isclose(sum(POOL_SHARES.values()), 1.0)"
 
       - name: Refuse a tag that disagrees with MECHANISM_VERSION
         run: |
           python - <<'PY'
           import os, re, sys
-          from microtensor.core.constants import MECHANISM_VERSION, RELEASE_VERSION
+          from microtensor_subnet.core.constants import MECHANISM_VERSION, RELEASE_VERSION
           tag = os.environ["GITHUB_REF_NAME"]
           version = re.sub(r"^(?:[a-z]+-)?v", "", tag)
           if version != RELEASE_VERSION:
@@ -61,7 +61,7 @@ jobs:
           import subprocess, sys
           from pathlib import Path
 
-          from microtensor.core.constants import RELEASE_VERSION
+          from microtensor_subnet.core.constants import RELEASE_VERSION
 
           subprocess.run([sys.executable, "-m", "build", "--wheel"], check=True)
           built = sorted(Path("dist").glob("*.whl"))
@@ -93,8 +93,8 @@ jobs:
           # lands at install time on their machine instead of here.
           from pathlib import Path
 
-          from microtensor.core.constants import RELEASE_SIGNING_KEY
-          from microtensor.update.verify import check_signature
+          from microtensor_subnet.core.constants import RELEASE_SIGNING_KEY
+          from microtensor_subnet.update.verify import check_signature
 
           assert RELEASE_SIGNING_KEY, "RELEASE_SIGNING_KEY is empty; nothing can verify this"
 
@@ -121,7 +121,7 @@ jobs:
           ACTIVATION_BLOCK: ${{ vars.ACTIVATION_BLOCK }}
         run: |
           set -euo pipefail
-          MECHANISM=$(python -c 'from microtensor.core.constants import MECHANISM_VERSION; print(MECHANISM_VERSION)')
+          MECHANISM=$(python -c 'from microtensor_subnet.core.constants import MECHANISM_VERSION; print(MECHANISM_VERSION)')
           case "${GITHUB_REF_NAME}" in
             prerelease-*) CHANNEL=prerelease ;;
             *)              CHANNEL=stable ;;
