@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from microtensor.cli.common import (
 )
 from microtensor.core.constants import PUBLIC_SERVER_URL
 from microtensor.core.items import key_registration_message, new_recipient_key
+from microtensor.serving import probes
+from microtensor.serving.client import ServerError as ServingError
 from microtensor.validator.client import ServerClient, ServerError
 from microtensor.validator.config import EpochConfig
 from microtensor.validator.epoch import EpochError, run_epoch
@@ -27,6 +30,7 @@ from microtensor.validator.items import ReleaseError
 
 log = logging.getLogger("microtensor.cli.epoch")
 KEY_BLOCKS = 2_600_000
+PUBLIC_GATEWAY_URL = "https://api.microtensor.cloud"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -79,6 +83,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_chain_arguments(loop)
     add_common_arguments(loop)
     loop.set_defaults(handler=_loop)
+
+    probe = inner.add_parser("probe", help="probe inference operators with withheld items")
+    probe.add_argument("--arena", required=True)
+    probe.add_argument("--server", default=PUBLIC_SERVER_URL)
+    probe.add_argument("--gateway-url", default=PUBLIC_GATEWAY_URL)
+    probe.add_argument("--credential", default=os.environ.get("MT_SERVE_CREDENTIAL", ""))
+    probe.add_argument("--floor", type=float, default=0.9)
+    probe.add_argument("--per-operator", type=int, default=8)
+    probe.add_argument("--pause", type=float, default=30.0)
+    probe.add_argument("--seed", type=int, default=0)
+    probe.add_argument("--once", action="store_true")
+    add_chain_arguments(probe)
+    add_common_arguments(probe)
+    probe.set_defaults(handler=_probe)
 
 
 def _keys_dir(home: Path) -> Path:
@@ -176,6 +194,45 @@ def _run(args: argparse.Namespace) -> int:
         print(f"burned      {json.dumps(outcome.burned)}")
     print(f"weights     {len(outcome.weights)} hotkeys{' (dry run)' if args.dry_run else ''}")
     return 0
+
+
+def _probe(args: argparse.Namespace) -> int:
+    logging.basicConfig(level=logging.INFO)
+    if not args.credential:
+        return fail("set MT_SERVE_CREDENTIAL or pass --credential")
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    work_root = Path(args.home) / "work" / args.arena
+    rng = random.Random(args.seed or None)  # noqa: S311
+    while True:
+        sets = probes.latest(work_root, args.arena)
+        if not sets:
+            log.warning("no probe sets under %s yet; run an epoch first", work_root)
+        else:
+            try:
+                found = probes.cycle(
+                    server=args.server,
+                    gateway=args.gateway_url,
+                    credential=args.credential,
+                    wallet=wallet,
+                    sets=sets,
+                    floor=args.floor,
+                    per_operator=args.per_operator,
+                    rng=rng,
+                    pause=min(float(args.pause), 5.0),
+                )
+            except ServingError as exc:
+                log.error("probe cycle: %s", exc)
+                found = []
+            for item in found:
+                state = "ok" if item.success else ("fail" if item.reported else "skip")
+                print(f"{state:4s} {item.operator[:12]} {item.model} {item.item_id} {item.reason}")
+            reported = [p for p in found if p.reported]
+            failed = sum(1 for p in reported if not p.success)
+            print(f"probed {len(reported)} answers, {failed} failed")
+        if args.once:
+            return 0
+        time.sleep(max(30.0, float(args.pause)))
 
 
 def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
