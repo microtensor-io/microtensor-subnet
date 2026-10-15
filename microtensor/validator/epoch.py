@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import queue
-import socket
 import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -16,20 +14,7 @@ from microtensor.chain.wallet import hotkey_address
 from microtensor.chain.weights import quantise_weights, restrict_to_metagraph
 from microtensor.core.reports import PoolScore
 from microtensor.scoring import pools
-from microtensor.validator import (
-    collect,
-    escalation_test,
-    harness_test,
-    items,
-    provenance,
-    reference,
-    report,
-    router_test,
-    score,
-    slm_test,
-    system_test,
-)
-from microtensor.validator import tools as tool_faults
+from microtensor.validator import collect, items, provenance, report, score
 from microtensor.validator.client import ServerClient, ServerError
 from microtensor.validator.config import EpochConfig
 from microtensor.validator.context import (
@@ -40,12 +25,14 @@ from microtensor.validator.context import (
     EpochContext,
     Reference,
 )
-from microtensor.validator.docker import Docker
+from microtensor.validator.pools import escalation, harness, reference, router, slm, system
 from microtensor.validator.relay import RelayClient, TicketDesk
 from microtensor.validator.results import ArtifactOutcome, ReferenceRun, RouterRun, SlmRun
-from microtensor.validator.sandbox import Sandbox, SandboxError, SandboxHost
-from microtensor.validator.services import Services
-from microtensor.validator.slm import SlmClient
+from microtensor.validator.sandbox import GpuPool, Sandbox, SandboxError, SandboxHost, host_ip
+from microtensor.validator.sandbox import tools as tool_faults
+from microtensor.validator.sandbox.docker import Docker
+from microtensor.validator.sandbox.services import Services
+from microtensor.validator.sandbox.slm import SlmClient
 
 log = logging.getLogger("microtensor.validator.epoch")
 
@@ -62,17 +49,6 @@ class Outcome:
     weights: dict[str, float] = field(default_factory=dict)
     burned: dict[str, float] = field(default_factory=dict)
     report: dict[str, Any] = field(default_factory=dict)
-
-
-def _host_ip() -> str:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.connect(("10.255.255.255", 1))
-        return str(probe.getsockname()[0])
-    except OSError:
-        return "127.0.0.1"
-    finally:
-        probe.close()
 
 
 def _window(arena: Mapping[str, Any], index: int) -> Epoch:
@@ -167,19 +143,6 @@ def gather(
     return artifacts, failures
 
 
-class GpuPool:
-    def __init__(self, gpus: tuple[str, ...]) -> None:
-        self._free: queue.Queue[tuple[int, str]] = queue.Queue()
-        for slot, gpu in enumerate(gpus):
-            self._free.put((slot, gpu))
-
-    def take(self) -> tuple[int, str]:
-        return self._free.get()
-
-    def give(self, slot: int, gpu: str) -> None:
-        self._free.put((slot, gpu))
-
-
 @dataclass(slots=True)
 class Runner:
     config: EpochConfig
@@ -234,7 +197,7 @@ class Runner:
                 gpu,
             )
             try:
-                outcome.slm = slm_test.run(
+                outcome.slm = slm.run(
                     self.context,
                     SlmClient(sandbox.slm_url),
                     gpu=gpu,
@@ -261,7 +224,7 @@ class Runner:
             )
             try:
                 client = SlmClient(sandbox.slm_url)
-                self.reference_slm = slm_test.run(
+                self.reference_slm = slm.run(
                     self.context,
                     client,
                     gpu=gpu,
@@ -271,7 +234,7 @@ class Runner:
                     + self.context.items.items(ESCALATION),
                 )
                 if sandbox.router_url:
-                    self.reference_router = router_test.run(
+                    self.reference_router = router.run(
                         self.context,
                         sandbox.router_url,
                         self._sources(self.reference_slm.drafts(), {}, {}),
@@ -282,10 +245,10 @@ class Runner:
                     and self.reference_run is not None
                 ):
                     self.host.restart_main(sandbox, self.context.reference.escalation_dir)
-                    drafts = escalation_test.wrong_drafts(
+                    drafts = escalation.wrong_drafts(
                         self.context, self.reference_run, self.reference_slm.drafts()
                     )
-                    self.reference_escalation = escalation_test.run(
+                    self.reference_escalation = escalation.run(
                         self.context,
                         sandbox,
                         self.desk,
@@ -305,7 +268,7 @@ class Runner:
                     self.context.reference.harness_dir, path, None, {}, slot, gpu
                 )
                 try:
-                    self.base_slm[name] = slm_test.run(
+                    self.base_slm[name] = slm.run(
                         self.context, SlmClient(base_sandbox.slm_url), gpu=gpu, parameters=0
                     )
                 finally:
@@ -320,7 +283,7 @@ class Runner:
         coldkeys: Mapping[str, str],
     ) -> dict[str, Any]:
         reference_drafts = self.reference_slm.drafts() if self.reference_slm else {}
-        return router_test.build_sources(
+        return router.build_sources(
             self.context, own=own, reference=reference_drafts, peers=peers, peer_coldkeys=coldkeys
         )
 
@@ -353,19 +316,19 @@ class Runner:
             try:
                 own = (outcome.slm or self.reference_slm).drafts()
                 if "harness" in artifact.has:
-                    outcome.harness = harness_test.run(
+                    outcome.harness = harness.run(
                         self.context, self.host, sandbox, timeout=self.config.request_seconds
                     )
                     self.host.restart_main(sandbox, artifact_dir)
                 if "router" in artifact.has and sandbox.router_url:
-                    outcome.router = router_test.run(
+                    outcome.router = router.run(
                         self.context, sandbox.router_url, self._sources(own, peers, coldkeys)
                     )
                 if "escalation" in artifact.has:
-                    drafts = escalation_test.wrong_drafts(
+                    drafts = escalation.wrong_drafts(
                         self.context, self.reference_run, self.reference_slm.drafts()
                     )
-                    outcome.escalation = escalation_test.run(
+                    outcome.escalation = escalation.run(
                         self.context,
                         sandbox,
                         self.desk,
@@ -375,7 +338,7 @@ class Runner:
                         timeout=self.config.request_seconds,
                         token_price=token_price,
                     )
-                outcome.system = system_test.run(
+                outcome.system = system.run(
                     self.context,
                     sandbox,
                     self.desk,
@@ -402,10 +365,10 @@ def score_all(
     context = runner.context
     scores: dict[str, list[PoolScore]] = {}
     items_by_source = {
-        router_test.OWN: [i.item_id for i in context.items.items(ROUTER)],
-        router_test.REFERENCE: [i.item_id for i in context.items.items(ROUTER)],
-        router_test.PEER: [i.item_id for i in context.items.items(ROUTER)],
-        router_test.ADVERSARIAL: [str(r.get("item_id", "")) for r in context.items.adversarial],
+        router.OWN: [i.item_id for i in context.items.items(ROUTER)],
+        router.REFERENCE: [i.item_id for i in context.items.items(ROUTER)],
+        router.PEER: [i.item_id for i in context.items.items(ROUTER)],
+        router.ADVERSARIAL: [str(r.get("item_id", "")) for r in context.items.adversarial],
     }
     for hotkey, artifact in artifacts.items():
         outcome = runner.outcomes.get(hotkey)
@@ -509,9 +472,9 @@ def run_epoch(
     relay = RelayClient(config.relay_url, str(token.get("token", "")))
     desk = TicketDesk(relay, config.arena_id, epoch_index)
     engine = docker or Docker()
-    services = Services(_host_ip(), config.host_services_port)
+    services = Services(host_ip(), config.host_services_port)
     services.start()
-    host = SandboxHost(config, engine, services, _host_ip())
+    host = SandboxHost(config, engine, services, host_ip())
     runner = Runner(config, context, host, relay, GpuPool(config.gpus or ("0",)), desk)
     base_dirs: dict[str, Path] = {}
     for base in [str(b) for b in context.definition.get("allowed_bases") or []]:
