@@ -38,14 +38,14 @@ Five pools pay 20% each by rank (40 / 25 / 15 / 12 / 8). Every score is a one si
 
 | Path | What it holds |
 |---|---|
-| `microtensor/chain` | commitments (`mt2`), epochs, weights, chain client |
-| `microtensor/core/items.py` | item bundles, encryption, sealed keys, release manifests |
-| `microtensor/artifact` | the manifest contract, the allowed package list, validation |
-| `microtensor/validator` | the epoch pipeline: collect, sandbox, tests, scoring, report |
-| `microtensor/scoring` | lower bounds, pools, SQL execution grading |
-| `microtensor/cli/submit.py` | `mt submit manifest`, `validate`, `pay`, `commit`, `status` |
-| `microtensor/cli/epoch.py` | `mt epoch register-key`, `relay-token`, `run`, `loop` |
-| `microtensor/serving`, `microtensor/rigs` | the certified inference serving product and the compute pool |
+| `microtensor_subnet/chain` | commitments (`mt2`), epochs, weights, chain client |
+| `microtensor_subnet/core/items.py` | item bundles, encryption, sealed keys, release manifests |
+| `microtensor_subnet/artifact` | the manifest contract, the allowed package list, validation |
+| `microtensor_subnet/validator` | the epoch pipeline: collect, sandbox, tests, scoring, report |
+| `microtensor_subnet/scoring` | lower bounds, pools, SQL execution grading |
+| `microtensor_subnet/cli/submit.py` | `mt submit manifest`, `validate`, `pay`, `commit`, `status` |
+| `microtensor_subnet/cli/epoch.py` | `mt epoch register-key`, `relay-token`, `run`, `loop` |
+| `microtensor_subnet/serving`, `microtensor_subnet/rigs` | the certified inference serving product and the compute pool |
 | `deploy` | the validator and sandbox images and the validator compose file |
 
 ## Documentation

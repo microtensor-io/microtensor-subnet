@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+from pathlib import Path
+
+from microtensor_subnet.chain.client import SubtensorClient
+from microtensor_subnet.chain.config import ChainConfig
+from microtensor_subnet.chain.wallet import WalletError, load_wallet
+
+LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)-32s %(message)s"
+
+
+def default_home() -> Path:
+    return Path(os.environ.get("MT_HOME", Path.home() / ".microtensor"))
+
+
+ROOT_LOGGER = "microtensor"
+
+_level = logging.INFO
+
+
+def configure_logging(level: str = "INFO") -> None:
+    global _level
+    _level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(level=_level, format=LOG_FORMAT, datefmt="%H:%M:%S", stream=sys.stderr)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("botocore").setLevel(logging.WARNING)
+
+    reclaim_logging()
+
+
+def reclaim_logging() -> None:
+    logging.disable(logging.NOTSET)
+
+    ours = logging.getLogger(ROOT_LOGGER)
+    ours.setLevel(_level)
+    ours.propagate = False
+    if not ours.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%H:%M:%S"))
+        ours.addHandler(handler)
+
+    prefix = ROOT_LOGGER + "."
+    for name, logger in list(logging.Logger.manager.loggerDict.items()):
+        if name.startswith(prefix) and isinstance(logger, logging.Logger):
+            logger.setLevel(logging.NOTSET)
+
+
+def add_chain_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--netuid", type=int, help="subnet id")
+    parser.add_argument("--network", help="finney, test, local, or archive")
+    parser.add_argument("--endpoint", help="explicit chain websocket endpoint")
+    parser.add_argument("--wallet-name", help="coldkey wallet name")
+    parser.add_argument("--wallet-hotkey", help="hotkey name")
+    parser.add_argument("--wallet-path", help="wallet directory")
+
+
+def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--home", type=Path, default=default_home(), help="state directory")
+    parser.add_argument("--log-level", default="INFO")
+
+
+def chain_config(args: argparse.Namespace) -> ChainConfig:
+    return ChainConfig.from_env(
+        netuid=args.netuid,
+        network=args.network,
+        endpoint=args.endpoint,
+        wallet_name=args.wallet_name,
+        wallet_hotkey=args.wallet_hotkey,
+        wallet_path=args.wallet_path,
+    )
+
+
+def open_wallet(config: ChainConfig, *, required: bool = True):  # type: ignore[no-untyped-def]
+    try:
+        return load_wallet(config)
+    except WalletError as exc:
+        if required:
+            raise SystemExit(f"wallet unavailable: {exc}") from exc
+        return None
+
+
+def open_client(config: ChainConfig, wallet: object | None = None) -> SubtensorClient:
+    client = SubtensorClient(config, wallet)
+    reclaim_logging()
+    return client
+
+
+def fail(message: str) -> int:
+    print(f"error: {message}", file=sys.stderr)
+    return 1

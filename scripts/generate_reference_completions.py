@@ -9,8 +9,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from microtensor.core.constants import PUBLIC_SERVER_URL  # noqa: E402
-from microtensor.core.hashing import digest_file  # noqa: E402
+from microtensor_subnet.core.constants import PUBLIC_SERVER_URL  # noqa: E402
+from microtensor_subnet.core.hashing import digest_file  # noqa: E402
 
 MANIFEST_NAME = "corpus.manifest.json"
 
@@ -137,8 +137,8 @@ def text_backend(model_spec: str):  # type: ignore[no-untyped-def]
 
 
 def decide_backend(model_spec: str):  # type: ignore[no-untyped-def]
-    from microtensor.core.tracks import DECISION_PROMPT_VERSION
-    from microtensor.harness import decision_prompt as dp
+    from microtensor_subnet.core.tracks import DECISION_PROMPT_VERSION
+    from microtensor_subnet.harness import decision_prompt as dp
 
     torch, tokenizer, model = _causal(model_spec)
 
@@ -246,7 +246,7 @@ def vision_backend(model_spec: str):  # type: ignore[no-untyped-def]
 
 
 def backend_for(track_id: str, model_spec: str):  # type: ignore[no-untyped-def]
-    from microtensor.core.tracks import DECIDE, Modality, get_track
+    from microtensor_subnet.core.tracks import DECIDE, Modality, get_track
 
     track = get_track(track_id)
     if track.answer_mode == DECIDE:

@@ -9,4 +9,4 @@ The documentation lives on the site:
 - https://www.microtensor.cloud/docs/certified-inference/verification/sandbox-and-tests
 - https://www.microtensor.cloud/docs/certified-inference/verification/scoring
 
-Code map: `microtensor/chain` (commitments, epochs, weights), `microtensor/core/items.py` (bundles), `microtensor/artifact` (manifest and checks), `microtensor/validator` (the epoch pipeline), `microtensor/scoring` (bounds, pools, SQL grading), `microtensor/cli/submit.py` and `microtensor/cli/epoch.py`.
+Code map: `microtensor_subnet/chain` (commitments, epochs, weights), `microtensor_subnet/core/items.py` (bundles), `microtensor_subnet/artifact` (manifest and checks), `microtensor_subnet/validator` (the epoch pipeline), `microtensor_subnet/scoring` (bounds, pools, SQL grading), `microtensor_subnet/cli/submit.py` and `microtensor_subnet/cli/epoch.py`.
