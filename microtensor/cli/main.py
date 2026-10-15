@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from microtensor.cli import epoch as epoch_cmd
+from microtensor.cli import operator as operator_cmd
 from microtensor.cli import submit as submit_cmd
 from microtensor.cli.common import configure_logging
 from microtensor.core.constants import MECHANISM_VERSION, RELEASE_VERSION
@@ -23,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     submit_cmd.register(subparsers)
     epoch_cmd.register(subparsers)
+    operator_cmd.register(subparsers)
     return parser
 
 

@@ -20,7 +20,7 @@ COPY deploy/validator-entrypoint.sh /usr/local/bin/mt-entrypoint
 
 RUN pip install --upgrade pip \
  && pip install torch --index-url https://download.pytorch.org/whl/cpu \
- && pip install -e ".[validator-v2,huggingface]" \
+ && pip install -e ".[validator,serving,huggingface]" \
  && chmod +x /usr/local/bin/mt-entrypoint
 
 RUN useradd --system --create-home --uid 10001 validator \

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from microtensor.serving.pools import Dials, PoolError, Split, divide, weights
 from microtensor.serving.settle import (
     GATES,
@@ -12,46 +10,20 @@ from microtensor.serving.settle import (
     settle_pair,
     wilson_lower_bound,
 )
-from microtensor.serving.verify import (
-    CHEAT,
-    PASS,
-    UNPROVEN,
-    Calibration,
-    Judgement,
-    Statistic,
-    calibrate,
-    judge,
-    margins,
-    separable,
-    statistic,
-    token_nll,
-)
 
 __all__ = [
-    "CHEAT",
     "GATES",
-    "PASS",
-    "UNPROVEN",
-    "Calibration",
     "Dials",
-    "Judgement",
     "Observation",
     "PoolError",
     "Settled",
     "SettlementError",
     "Split",
-    "Statistic",
     "Verdict",
-    "calibrate",
     "divide",
     "gate",
-    "judge",
-    "margins",
-    "separable",
     "settle_epoch",
     "settle_pair",
-    "statistic",
-    "token_nll",
     "weights",
     "wilson_lower_bound",
 ]

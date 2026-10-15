@@ -4,9 +4,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-GIB: Final[int] = 1024**3
-DEFAULT_SLOTS: Final[int] = 4
-MIN_SLOTS: Final[int] = 1
 KEEP_MARGIN: Final[float] = 1.5
 
 
@@ -18,14 +15,13 @@ class PlanError(RuntimeError):
 class Offer:
     model: str
     artifact_digest: str
-    archive_repo: str = ""
-    track: str = ""
+    arena: str = ""
+    task: str = ""
     hardware_class: str = ""
-    size_bytes: int = 0
-    peak_rss_bytes: int = 0
-    servable: bool = True
+    vram_gb: float = 0.0
     ttft_ms: float = 0.0
     tpot_ms: float = 0.0
+    servable: bool = True
     wanted: float = 0.0
     cold: bool = False
     operators_online: int = 0
@@ -33,67 +29,58 @@ class Offer:
 
     @classmethod
     def from_wire(cls, row: Mapping[str, Any]) -> Offer:
+        envelope = dict(row.get("envelope") or {})
         return cls(
-            model=str(row.get("model", "")),
+            model=str(row.get("model") or row.get("id") or ""),
             artifact_digest=str(row.get("artifact_digest", "")),
-            archive_repo=str(row.get("archive_repo", "")),
-            track=str(row.get("track", "")),
+            arena=str(row.get("arena", "")),
+            task=str(row.get("task", "")),
             hardware_class=str(row.get("hardware_class", "")),
-            size_bytes=int(row.get("size_bytes") or 0),
-            peak_rss_bytes=int(row.get("peak_rss_bytes") or 0),
+            vram_gb=float(envelope.get("vram_gb") or 0.0),
+            ttft_ms=float(envelope.get("ttft_ms") or row.get("ttft_ms") or 0.0),
+            tpot_ms=float(envelope.get("tpot_ms") or row.get("tpot_ms") or 0.0),
             servable=bool(row.get("servable", True)),
-            ttft_ms=float(row.get("ttft_ms") or 0.0),
-            tpot_ms=float(row.get("tpot_ms") or 0.0),
             wanted=float(row.get("wanted") or 0.0),
             cold=bool(row.get("cold", False)),
             operators_online=int(row.get("operators_online") or 0),
             requests=int(row.get("requests") or 0),
         )
 
-    @property
-    def footprint(self) -> int:
-        return max(self.peak_rss_bytes, self.size_bytes)
-
 
 @dataclass(frozen=True, slots=True)
 class Capacity:
-    disk_bytes: int
-    memory_bytes: int
-    slots: int
-    max_models: int = 0
+    gpus: tuple[str, ...]
+    gpu_gb: float
+    disk_bytes: int = 0
 
     def __post_init__(self) -> None:
-        if self.disk_bytes <= 0 or self.memory_bytes <= 0:
-            raise PlanError("a planner needs a disk and a memory budget above zero")
-        if self.slots < MIN_SLOTS:
-            raise PlanError(f"a planner needs at least {MIN_SLOTS} concurrent slot")
-        if self.max_models < 0:
-            raise PlanError("a model ceiling cannot be negative")
+        if not self.gpus:
+            raise PlanError("a planner needs at least one GPU to hold a system on")
+        if self.gpu_gb <= 0:
+            raise PlanError("a planner needs the memory of a GPU in GB")
 
     @property
     def ceiling(self) -> int:
-        return self.max_models or self.slots
+        return len(self.gpus)
 
 
 @dataclass(frozen=True, slots=True)
 class Policy:
-    tracks: frozenset[str] = frozenset()
-    classes: frozenset[str] = frozenset()
+    arenas: frozenset[str] = frozenset()
     exclude: frozenset[str] = frozenset()
 
     def allows(self, offer: Offer) -> bool:
         if offer.model in self.exclude:
             return False
-        if self.tracks and offer.track not in self.tracks:
-            return False
-        return not (self.classes and offer.hardware_class not in self.classes)
+        return not (self.arenas and offer.arena not in self.arenas)
 
 
 @dataclass(frozen=True, slots=True)
 class Holding:
     model: str
     artifact_digest: str
-    concurrency: int
+    gpu: str
+    concurrency: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,8 +89,6 @@ class Plan:
     fetch: tuple[Offer, ...] = ()
     drop: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
-    disk_bytes: int = 0
-    memory_bytes: int = 0
     reasons: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -116,6 +101,7 @@ class Plan:
                 {
                     "model": h.model,
                     "artifact_digest": h.artifact_digest,
+                    "gpu": h.gpu,
                     "concurrency": h.concurrency,
                 }
                 for h in self.hold
@@ -123,32 +109,16 @@ class Plan:
             "fetch": [o.model for o in self.fetch],
             "drop": list(self.drop),
             "skipped": list(self.skipped),
-            "disk_bytes": self.disk_bytes,
-            "memory_bytes": self.memory_bytes,
             "reasons": dict(self.reasons),
         }
 
 
 def rank(offers: Iterable[Offer], held: Mapping[str, str]) -> list[Offer]:
-    def key(offer: Offer) -> tuple[float, int, int, str]:
+    def key(offer: Offer) -> tuple[float, int, float, str]:
         score = offer.wanted * (KEEP_MARGIN if offer.model in held else 1.0)
-        return (-score, 0 if offer.cold else 1, offer.footprint, offer.model)
+        return (-score, 0 if offer.cold else 1, offer.vram_gb, offer.model)
 
     return sorted(offers, key=key)
-
-
-def _slots(capacity: Capacity, chosen: int) -> list[int]:
-    if chosen <= 0:
-        return []
-    base = max(MIN_SLOTS, capacity.slots // chosen)
-    shares = [base] * chosen
-    left = capacity.slots - base * chosen
-    index = 0
-    while left > 0:
-        shares[index % chosen] += 1
-        left -= 1
-        index += 1
-    return shares
 
 
 def build(
@@ -157,18 +127,19 @@ def build(
     *,
     held: Mapping[str, str] | None = None,
     policy: Policy | None = None,
-    measured: Mapping[str, float] | None = None,
+    pinned: Mapping[str, str] | None = None,
 ) -> Plan:
     rules = policy or Policy()
     holding = dict(held or {})
-    timings = dict(measured or {})
-
     rows = [o if isinstance(o, Offer) else Offer.from_wire(o) for o in offers]
     reasons: dict[str, str] = {}
     usable: list[Offer] = []
-
     for offer in rows:
         if not offer.model or not offer.artifact_digest:
+            continue
+        if pinned is not None and pinned.get(offer.model) != offer.artifact_digest:
+            if offer.model in pinned:
+                reasons[offer.model] = "the catalogue moved past the pin you asked for"
             continue
         if not offer.servable:
             reasons[offer.model] = "the network publishes no serving envelope for it"
@@ -176,56 +147,28 @@ def build(
         if not rules.allows(offer):
             reasons[offer.model] = "your policy excludes it"
             continue
-        if offer.footprint > capacity.memory_bytes:
-            reasons[offer.model] = "it does not fit in memory"
-            continue
-        if offer.size_bytes > capacity.disk_bytes:
-            reasons[offer.model] = "it does not fit on disk"
-            continue
-        seen = timings.get(offer.model)
-        if seen is not None and offer.tpot_ms and seen > offer.tpot_ms:
+        if offer.vram_gb > capacity.gpu_gb:
             reasons[offer.model] = (
-                f"this machine takes {seen:.0f} ms a token and the envelope allows "
-                f"{offer.tpot_ms:.0f}"
+                f"it needs {offer.vram_gb:.0f} GB of GPU memory, yours have {capacity.gpu_gb:.0f}"
             )
             continue
         usable.append(offer)
 
     chosen: list[Offer] = []
-    disk = memory = 0
     for offer in rank(usable, holding):
         if len(chosen) >= capacity.ceiling:
-            reasons.setdefault(offer.model, "you are already holding as many models as you allow")
-            continue
-        if disk + offer.size_bytes > capacity.disk_bytes:
-            reasons.setdefault(offer.model, "no disk left after the models above it")
-            continue
-        if memory + offer.footprint > capacity.memory_bytes:
-            reasons.setdefault(offer.model, "no memory left after the models above it")
+            reasons.setdefault(offer.model, "every GPU is already holding a system")
             continue
         chosen.append(offer)
-        disk += offer.size_bytes
-        memory += offer.footprint
 
-    shares = _slots(capacity, len(chosen))
     hold = tuple(
-        Holding(model=offer.model, artifact_digest=offer.artifact_digest, concurrency=share)
-        for offer, share in zip(chosen, shares, strict=True)
+        Holding(model=offer.model, artifact_digest=offer.artifact_digest, gpu=gpu)
+        for offer, gpu in zip(chosen, capacity.gpus, strict=False)
     )
     wanted_now = {offer.model: offer.artifact_digest for offer in chosen}
-
     fetch = tuple(offer for offer in chosen if holding.get(offer.model) != offer.artifact_digest)
     drop = tuple(sorted(model for model in holding if model not in wanted_now))
-
-    return Plan(
-        hold=hold,
-        fetch=fetch,
-        drop=drop,
-        skipped=tuple(sorted(reasons)),
-        disk_bytes=disk,
-        memory_bytes=memory,
-        reasons=reasons,
-    )
+    return Plan(hold=hold, fetch=fetch, drop=drop, skipped=tuple(sorted(reasons)), reasons=reasons)
 
 
 def changed(plan: Plan, held: Mapping[str, str]) -> bool:
