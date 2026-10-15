@@ -14,6 +14,7 @@ from microtensor.chain.wallet import hotkey_address
 from microtensor.chain.weights import quantise_weights, restrict_to_metagraph
 from microtensor.core.reports import PoolScore
 from microtensor.scoring import pools
+from microtensor.serving.probes import sets as probe_sets
 from microtensor.validator import collect, items, provenance, report, score
 from microtensor.validator.client import ServerClient, ServerError
 from microtensor.validator.config import EpochConfig
@@ -502,6 +503,10 @@ def run_epoch(
         engine.sweep()
     known_public = provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json")
     scores = score_all(runner, artifacts, base_dirs, known_public)
+    try:
+        probe_sets.write(context, runner.outcomes, artifacts)
+    except OSError as exc:
+        log.warning("probe sets not written: %s", exc)
     for hotkey_, outcome in runner.outcomes.items():
         if outcome.failure:
             failures[hotkey_] = outcome.failure
