@@ -149,6 +149,16 @@ def _call(family: Family, call: Mapping[str, Any], position: int) -> str:
     )
 
 
+def end_of(family: str | Family, finish_reason: str) -> str:
+    found = family_of(family)
+    reason = str(finish_reason or "").strip().lower()
+    if reason == "tool_calls":
+        return found.end_tools or found.end
+    if reason == "stop":
+        return found.end
+    return ""
+
+
 def reassemble(
     family: str | Family,
     reasoning: str,

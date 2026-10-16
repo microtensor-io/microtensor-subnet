@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -8,6 +9,8 @@ import random
 import time
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from microtensor_subnet.chain.client import ChainError
 from microtensor_subnet.chain.wallet import hotkey_address, sign_bytes
@@ -21,16 +24,47 @@ from microtensor_subnet.cli.common import (
 )
 from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
 from microtensor_subnet.core.items import key_registration_message, new_recipient_key
-from microtensor_subnet.serving import probes
+from microtensor_subnet.serving import engines, markers, probes
 from microtensor_subnet.serving.client import ServerError as ServingError
+from microtensor_subnet.serving.engines import LLAMA, SGLANG, EngineError
+from microtensor_subnet.serving.host import GENERAL, read_catalogue
+from microtensor_subnet.serving.host.config import ENGINE_READY_SECONDS, MEM_FRACTION
+from microtensor_subnet.serving.host.fetch import FetchedModel, FetchError, fetch_model
+from microtensor_subnet.serving.host.plain import PlainError, close_model
+from microtensor_subnet.serving.tokens import TokenError
+from microtensor_subnet.serving.verifier import (
+    Calibrated,
+    Reference,
+    calibrate_model,
+    close_reference,
+    generate,
+    load_calibration,
+    open_engine,
+    open_reference,
+    save_calibration,
+    stamped,
+)
+from microtensor_subnet.serving.verify import UNPROVEN, VerificationError
 from microtensor_subnet.validator.client import ServerClient, ServerError
 from microtensor_subnet.validator.config import EpochConfig
 from microtensor_subnet.validator.epoch import EpochError, run_epoch
 from microtensor_subnet.validator.items import ReleaseError
+from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
 
 log = logging.getLogger("microtensor_subnet.cli.epoch")
 KEY_BLOCKS = 2_600_000
 PUBLIC_GATEWAY_URL = "https://api.microtensor.cloud"
+SETUP_ERRORS = (
+    VerificationError,
+    FetchError,
+    PlainError,
+    EngineError,
+    TokenError,
+    DockerError,
+    markers.MarkerError,
+    httpx.HTTPError,
+    OSError,
+)
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -84,8 +118,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_common_arguments(loop)
     loop.set_defaults(handler=_loop)
 
-    probe = inner.add_parser("probe", help="probe inference operators with withheld items")
-    probe.add_argument("--arena", required=True)
+    probe = inner.add_parser(
+        "probe", help="probe inference operators with withheld items and general models"
+    )
+    probe.add_argument("--arena", default="")
     probe.add_argument("--server", default=PUBLIC_SERVER_URL)
     probe.add_argument("--gateway-url", default=PUBLIC_GATEWAY_URL)
     probe.add_argument("--credential", default=os.environ.get("MT_SERVE_CREDENTIAL", ""))
@@ -94,6 +130,38 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     probe.add_argument("--pause", type=float, default=30.0)
     probe.add_argument("--seed", type=int, default=0)
     probe.add_argument("--once", action="store_true")
+    probe.add_argument(
+        "--general",
+        action="append",
+        default=[],
+        metavar="MODEL",
+        help="a general model to probe and verify by prefill; repeatable",
+    )
+    probe.add_argument(
+        "--verify-backend",
+        choices=(SGLANG, LLAMA),
+        default=SGLANG,
+        help="what prefills a general model's answers: an sglang engine or llama.cpp in process",
+    )
+    probe.add_argument(
+        "--engine-url", default="", help="a running engine that holds the one --general model"
+    )
+    probe.add_argument(
+        "--gpu",
+        default="",
+        help="GPUs for reference engines, comma separated; without it llama.cpp uses the CPU",
+    )
+    probe.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="calibrate the one --general model against --substitute, store it and exit",
+    )
+    probe.add_argument(
+        "--substitute",
+        default="",
+        metavar="MODEL",
+        help="the catalogue model whose answers calibration must tell apart",
+    )
     add_chain_arguments(probe)
     add_common_arguments(probe)
     probe.set_defaults(handler=_probe)
@@ -196,43 +264,228 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _images() -> dict[str, str]:
+    return {
+        SGLANG: os.environ.get("MT_SGLANG_IMAGE") or engines.SGLANG_IMAGE,
+        LLAMA: os.environ.get("MT_LLAMA_IMAGE") or engines.LLAMA_IMAGE,
+    }
+
+
+def _general_entries(server: str) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("model") or row.get("id") or ""): row
+        for row in read_catalogue(server)
+        if str(row.get("kind") or "") == GENERAL
+    }
+
+
+def _entry(catalogue: dict[str, dict[str, Any]], model: str) -> dict[str, Any]:
+    entry = catalogue.get(model)
+    if entry is None:
+        raise VerificationError(f"{model} is not a general model in the catalogue")
+    return entry
+
+
+def _fetch(args: argparse.Namespace, entry: dict[str, Any]) -> FetchedModel:
+    return fetch_model(entry, Path(args.home) / "cache", token=os.environ.get("HF_TOKEN", ""))
+
+
+def _gpus(args: argparse.Namespace) -> list[str]:
+    return [gpu.strip() for gpu in str(args.gpu or "").split(",") if gpu.strip()] or ["0"]
+
+
+def _reference(
+    args: argparse.Namespace,
+    docker: Docker,
+    entry: dict[str, Any],
+    fetched: FetchedModel,
+    gpu: str,
+) -> Reference:
+    if args.verify_backend == LLAMA and args.gpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    return open_reference(
+        docker,
+        fetched,
+        entry,
+        backend=args.verify_backend,
+        gpu=gpu,
+        images=_images(),
+        mem_fraction=MEM_FRACTION,
+        ready_seconds=ENGINE_READY_SECONDS,
+        engine_url=args.engine_url,
+        gpu_layers=engines.GPU_LAYERS if args.gpu else 0,
+    )
+
+
+def _targets(
+    args: argparse.Namespace, docker: Docker, references: list[Reference]
+) -> dict[str, probes.Target]:
+    if not args.general:
+        return {}
+    catalogue = _general_entries(args.server)
+    found: dict[str, probes.Target] = {}
+    gpus = _gpus(args)
+    for model in args.general:
+        entry = _entry(catalogue, model)
+        items = tuple(probes.items_for(entry))
+        digest = str(entry.get("artifact_digest") or "")
+        if not probes.verifiable(entry):
+            log.info("%s: no validator class can prefill it; outcome and format only", model)
+            found[model] = probes.Target(model, digest, items)
+            continue
+        calibrated = load_calibration(args.home, model, digest)
+        if calibrated is None:
+            raise VerificationError(
+                f"no calibration for {model} at {digest[:12]}; run "
+                f"mt epoch probe --general {model} --calibrate --substitute MODEL first"
+            )
+        gpu = gpus[len(references) % len(gpus)]
+        reference = _reference(args, docker, entry, _fetch(args, entry), gpu)
+        references.append(reference)
+        found[model] = probes.Target(
+            model, digest, items, reference.verifier, calibrated.calibration
+        )
+    return found
+
+
+async def _calibration(
+    args: argparse.Namespace,
+    docker: Docker,
+    entry: dict[str, Any],
+    substitute: dict[str, Any],
+) -> Calibrated:
+    requests = [item.request() for item in probes.items_for(entry)]
+    other = await asyncio.to_thread(_fetch, args, substitute)
+    held = await asyncio.to_thread(
+        open_engine,
+        docker,
+        other,
+        substitute,
+        gpu=_gpus(args)[0],
+        images=_images(),
+        mem_fraction=MEM_FRACTION,
+        ready_seconds=ENGINE_READY_SECONDS,
+    )
+    try:
+        substituted = await generate(held, requests)
+    finally:
+        close_model(docker, held)
+    fetched = await asyncio.to_thread(_fetch, args, entry)
+    reference = await asyncio.to_thread(_reference, args, docker, entry, fetched, _gpus(args)[0])
+    try:
+        if reference.engine is not None:
+            honest = await generate(reference.engine, requests)
+        else:
+            engine = await asyncio.to_thread(
+                open_engine,
+                docker,
+                fetched,
+                entry,
+                gpu=_gpus(args)[0],
+                images=_images(),
+                mem_fraction=MEM_FRACTION,
+                ready_seconds=ENGINE_READY_SECONDS,
+                engine_url=args.engine_url,
+            )
+            try:
+                honest = await generate(engine, requests)
+            finally:
+                if not args.engine_url:
+                    close_model(docker, engine)
+        calibration = await calibrate_model(
+            reference.verifier,
+            list(zip(requests, honest, strict=True)),
+            list(zip(requests, substituted, strict=True)),
+        )
+    finally:
+        close_reference(docker, reference)
+    return stamped(reference, calibration, substitute=args.substitute)
+
+
+def _calibrate(args: argparse.Namespace) -> int:
+    docker = Docker()
+    try:
+        catalogue = _general_entries(args.server)
+        entry = _entry(catalogue, args.general[0])
+        substitute = _entry(catalogue, args.substitute)
+        found = asyncio.run(_calibration(args, docker, entry, substitute))
+        path = save_calibration(args.home, found)
+    except SETUP_ERRORS as exc:
+        return fail(str(exc))
+    calibration = found.calibration
+    print(f"model       {found.model}  {found.artifact_digest[:12]}")
+    print(f"backend     {found.backend}")
+    print(f"honest      {calibration.honest_samples} samples")
+    print(f"threshold   {calibration.threshold:.6g} at alpha {calibration.alpha}")
+    print(f"substitute  {found.substitute} lowest {calibration.substituted_min:.6g}")
+    print(f"separated   {'yes' if calibration.separated else 'no; verdicts stay unproven'}")
+    print(f"stored      {path}")
+    return 0
+
+
+def _show(found: list[probes.Probe]) -> None:
+    for item in found:
+        state = item.verdict or ("ok" if item.success else ("fail" if item.reported else "skip"))
+        print(f"{state:8s} {item.operator[:12]} {item.model} {item.item_id} {item.reason}")
+    reported = [p for p in found if p.reported]
+    failed = sum(1 for p in reported if p.success is False)
+    unproven = sum(1 for p in reported if p.verdict == UNPROVEN)
+    print(f"probed {len(reported)} answers, {failed} failed, {unproven} unproven")
+
+
 def _probe(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO)
+    if not args.arena and not args.general:
+        return fail("name an arena with --arena or a general model with --general")
+    if args.engine_url and len(args.general) != 1:
+        return fail("--engine-url drives one running engine; name its model with one --general")
+    if args.calibrate:
+        if len(args.general) != 1 or not args.substitute:
+            return fail("--calibrate takes one --general model and the --substitute it must catch")
+        return _calibrate(args)
     if not args.credential:
         return fail("set MT_SERVE_CREDENTIAL or pass --credential")
     config = chain_config(args)
     wallet = open_wallet(config)
     work_root = Path(args.home) / "work" / args.arena
     rng = random.Random(args.seed or None)  # noqa: S311
-    while True:
-        sets = probes.latest(work_root, args.arena)
-        if not sets:
-            log.warning("no probe sets under %s yet; run an epoch first", work_root)
-        else:
-            try:
-                found = probes.cycle(
-                    server=args.server,
-                    gateway=args.gateway_url,
-                    credential=args.credential,
-                    wallet=wallet,
-                    sets=sets,
-                    floor=args.floor,
-                    per_operator=args.per_operator,
-                    rng=rng,
-                    pause=min(float(args.pause), 5.0),
-                )
-            except ServingError as exc:
-                log.error("probe cycle: %s", exc)
-                found = []
-            for item in found:
-                state = "ok" if item.success else ("fail" if item.reported else "skip")
-                print(f"{state:4s} {item.operator[:12]} {item.model} {item.item_id} {item.reason}")
-            reported = [p for p in found if p.reported]
-            failed = sum(1 for p in reported if not p.success)
-            print(f"probed {len(reported)} answers, {failed} failed")
-        if args.once:
-            return 0
-        time.sleep(max(30.0, float(args.pause)))
+    docker = Docker()
+    references: list[Reference] = []
+    try:
+        targets = _targets(args, docker, references)
+    except SETUP_ERRORS as exc:
+        for reference in references:
+            close_reference(docker, reference)
+        return fail(str(exc))
+    try:
+        while True:
+            sets = probes.latest(work_root, args.arena) if args.arena else {}
+            if args.arena and not sets:
+                log.warning("no probe sets under %s yet; run an epoch first", work_root)
+            if sets or targets:
+                try:
+                    found = probes.cycle(
+                        server=args.server,
+                        gateway=args.gateway_url,
+                        credential=args.credential,
+                        wallet=wallet,
+                        sets=sets,
+                        floor=args.floor,
+                        per_operator=args.per_operator,
+                        rng=rng,
+                        pause=min(float(args.pause), 5.0),
+                        general=targets,
+                    )
+                except ServingError as exc:
+                    log.error("probe cycle: %s", exc)
+                    found = []
+                _show(found)
+            if args.once:
+                return 0
+            time.sleep(max(30.0, float(args.pause)))
+    finally:
+        for reference in references:
+            close_reference(docker, reference)
 
 
 def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:

@@ -94,6 +94,18 @@ Other flags: `--kind system|model|any` (default any), `--model NAME` and `--fami
 
 Not yet live: engine image pins, memory fractions and parser flags are proven per model on a GPU box first, together with verification of general models by canonical prefill and their admission probes. Until that proof the catalogue lists no general model and the planner holds certified systems only.
 
+## How general models are verified
+
+Validators probe each general model through the gateway with a published pool of chat items: a plain question, a JSON reply, one and two step tool calls against a small weather and local time schema, and two long notes that fit 8K and 32K windows. Tool items go only to models that call tools and long items only to models whose context holds them. Probes run at temperature zero.
+
+Every answer is first checked for format. The finish reason must be `stop`, `tool_calls` or `length`; a tool call must name a tool the request offered and carry arguments that parse as a JSON object; an answer that ends for tool calls must carry one. A broken answer is reported as `format`.
+
+A validator that holds the model then verifies the answer by canonical prefill. It renders the prompt with the model's chat template and compares your prompt token ids with it, rebuilds the completion from the returned content, reasoning and tool calls in the family's raw format with its end of turn marker, and runs one forward pass over prompt and completion on its own copy of the pinned weights (SGLang `/generate` with input logprobs, or llama.cpp in process for GGUF). At every generated position it measures how far the returned token sits below the model's top choice. A substituted model, a cheaper quantisation or an edited answer leaves the top choice where the pinned weights would not, and a mean margin above the calibrated threshold is reported as `cheat`. When your prompt ids differ from the validator's template, the completion cannot be rebuilt or the prefill fails, the probe is `unproven`: it is recorded and never moves admission either way. `cheat` and `format` count as failed probes in admission and in the `cheat_share` gate of the serving settlement.
+
+Prefill verification shows that the text you returned is what the pinned weights produce greedily for that prompt. It does not cover sampled answers, latency (measured from metering) or models no validator class can hold. A model whose `verifiable_on` is empty (the largest releases) is probed by outcome and format only: an answer from the listed digest that passes the format checks counts as a pass, and the catalogue says so per model.
+
+Calibration and the per model verifiability table wait for a GPU box. A threshold is measured per model and digest from honest answers and from a substitute model (`mt epoch probe --general MODEL --calibrate --substitute OTHER`, with `--verify-backend sglang|llama`, `--engine-url` and `--gpu`) and stored under the validator's `calibration/<model>/<digest>.json`; a validator without one refuses to probe that model, and a threshold that never separated a substitute leaves every verdict `unproven`. No general model is listed before those numbers exist.
+
 ## Earnings
 
 Serving pays from the serving pool by metered, billed usage per operator and model, gated on success rate, time to first token and time per token (`mt operator audit` recomputes the published settlement). The launch is meter only; the gates and the split are unchanged from the serving settlement.
