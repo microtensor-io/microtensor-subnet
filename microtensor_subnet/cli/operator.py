@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from microtensor_subnet.chain.wallet import hotkey_address
@@ -18,16 +19,21 @@ from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
 from microtensor_subnet.serving import audit as serving_audit
 from microtensor_subnet.serving import client, plan
 from microtensor_subnet.serving.client import ServerError
+from microtensor_subnet.serving.engines import LLAMA, LLAMA_IMAGE, SGLANG, SGLANG_IMAGE
 from microtensor_subnet.serving.host import HostConfig, HostError, ServingHost, read_catalogue
-from microtensor_subnet.serving.host.config import DEFAULT_GPU_GB, REVIEW_SECONDS
+from microtensor_subnet.serving.host.config import DEFAULT_GPU_GB, MEM_FRACTION, REVIEW_SECONDS
 
 log = logging.getLogger("microtensor_subnet.cli.operator")
 
 GATEWAY_URL = "wss://api.microtensor.cloud/v1/operators/socket"
+KINDS = ("system", "model", "any")
+NO_IMAGE = "none"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser("operator", help="serve certified systems for the serving pool")
+    parser = subparsers.add_parser(
+        "operator", help="serve certified systems and general models for the serving pool"
+    )
     inner = parser.add_subparsers(dest="action", required=True)
 
     enrol = inner.add_parser("register", help="register this hotkey as an inference operator")
@@ -61,10 +67,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     preview = inner.add_parser("plan", help="what auto mode would hold on this machine")
     _gpu_arguments(preview)
     _policy_arguments(preview)
+    _engine_arguments(preview)
     _shared(preview)
     preview.set_defaults(handler=_plan)
 
-    serve = inner.add_parser("run", help="hold certified systems and answer the gateway")
+    serve = inner.add_parser(
+        "run", help="hold certified systems or general models and answer the gateway"
+    )
     serve.add_argument("--auto", action="store_true", help="let the catalogue choose what to hold")
     serve.add_argument(
         "--serve",
@@ -78,8 +87,21 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     serve.add_argument("--sandbox-runtime", default="runsc")
     serve.add_argument("--request-seconds", type=float, default=120.0)
     serve.add_argument("--review-seconds", type=float, default=REVIEW_SECONDS)
+    serve.add_argument(
+        "--mem-fraction",
+        type=float,
+        default=MEM_FRACTION,
+        help="share of each GPU the engine keeps for weights and cache",
+    )
+    serve.add_argument(
+        "--hf-token",
+        default=os.environ.get("HF_TOKEN", ""),
+        help="Hugging Face token for gated model repositories (env HF_TOKEN)",
+    )
+    serve.add_argument("--engine-url", default="", help=argparse.SUPPRESS)
     _gpu_arguments(serve)
     _policy_arguments(serve)
+    _engine_arguments(serve)
     _shared(serve)
     serve.set_defaults(handler=_run)
 
@@ -92,6 +114,47 @@ def _gpu_arguments(parser: argparse.ArgumentParser) -> None:
 def _policy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--arena", action="append", default=[], help="only these arenas")
     parser.add_argument("--not", dest="excluded", action="append", default=[])
+    parser.add_argument(
+        "--kind",
+        choices=KINDS,
+        default="any",
+        help="certified systems, general models or both",
+    )
+    parser.add_argument(
+        "--model",
+        dest="models",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="only these models; repeat for each",
+    )
+    parser.add_argument(
+        "--family",
+        dest="families",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="only general models of these families; repeat for each",
+    )
+    parser.add_argument(
+        "--accept-licences",
+        action="store_true",
+        default=os.environ.get("MT_ACCEPT_LICENCES", "").strip().lower() in ("1", "true", "yes"),
+        help="accept the licence of every general model the plan holds",
+    )
+
+
+def _engine_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--sglang-image",
+        default=os.environ.get("MT_SGLANG_IMAGE") or SGLANG_IMAGE,
+        help="SGLang image for awq, fp8 and safetensors models; none to disable",
+    )
+    parser.add_argument(
+        "--llama-image",
+        default=os.environ.get("MT_LLAMA_IMAGE") or LLAMA_IMAGE,
+        help="llama.cpp server image for gguf models; none to disable",
+    )
 
 
 def _shared(parser: argparse.ArgumentParser) -> None:
@@ -182,7 +245,24 @@ def _gpus(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def _policy(args: argparse.Namespace) -> plan.Policy:
-    return plan.Policy(arenas=frozenset(args.arena), exclude=frozenset(args.excluded))
+    return plan.Policy(
+        arenas=frozenset(args.arena),
+        exclude=frozenset(args.excluded),
+        kinds=frozenset() if args.kind == "any" else frozenset({args.kind}),
+        include=frozenset(args.models),
+        families=frozenset(f.strip().lower() for f in args.families),
+        accept_licences=bool(args.accept_licences),
+    )
+
+
+def _image(value: str) -> str:
+    found = str(value or "").strip()
+    return "" if found.lower() == NO_IMAGE else found
+
+
+def _images(args: argparse.Namespace) -> frozenset[str]:
+    pairs = ((SGLANG, _image(args.sglang_image)), (LLAMA, _image(args.llama_image)))
+    return frozenset(backend for backend, image in pairs if image)
 
 
 def parse_pins(entries: list[str]) -> dict[str, str]:
@@ -202,15 +282,26 @@ def _plan(args: argparse.Namespace) -> int:
     except Exception as exc:
         return fail(f"could not read the catalogue: {exc}")
     try:
-        capacity = plan.Capacity(gpus=_gpus(args), gpu_gb=args.gpu_gb)
+        capacity = plan.Capacity(gpus=_gpus(args), gpu_gb=args.gpu_gb, images=_images(args))
     except plan.PlanError as exc:
         return fail(str(exc))
-    return _show(plan.build(rows, capacity, policy=_policy(args)).to_dict())
+    offers = [plan.Offer.from_wire(row) for row in rows]
+    found = plan.build(offers, capacity, policy=_policy(args))
+    shown: dict[str, object] = found.to_dict()
+    shown["hardware_class"] = capacity.hardware_class
+    shown["licences"] = {
+        offer.model: {"licence": offer.licence, "licence_url": offer.licence_url}
+        for offer in offers
+        if offer.general and offer.model in found.models
+    }
+    return _show(shown)
 
 
 def _run(args: argparse.Namespace) -> int:
-    if not args.auto and not args.serve:
-        return fail("pass --auto to let the catalogue choose, or --serve MODEL@SHA")
+    if not args.auto and not args.serve and not args.models:
+        return fail("pass --auto to let the catalogue choose, --serve MODEL@SHA, or --model NAME")
+    if args.engine_url and len(args.models) != 1:
+        return fail("--engine-url drives one running engine; name its model with one --model")
     wallet = _wallet(args)
     try:
         pinned = parse_pins(args.serve) if args.serve else None
@@ -223,6 +314,10 @@ def _run(args: argparse.Namespace) -> int:
         sandbox_runtime=args.sandbox_runtime,
         request_seconds=args.request_seconds,
         review_seconds=args.review_seconds,
+        sglang_image=_image(args.sglang_image),
+        llama_image=_image(args.llama_image),
+        mem_fraction=args.mem_fraction,
+        hf_token=args.hf_token,
     )
 
     def declare(model: str, digest: str) -> None:
@@ -237,6 +332,8 @@ def _run(args: argparse.Namespace) -> int:
         pinned=pinned,
         worker=args.worker,
         declare=declare,
+        accept_licences=args.accept_licences,
+        engine_url=args.engine_url,
     )
     print(f"serving as {hotkey_address(wallet)} from {args.server}")
     try:

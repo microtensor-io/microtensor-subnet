@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
+from microtensor_subnet.serving.engines import LLAMA, LLAMA_IMAGE, SGLANG, SGLANG_IMAGE
 from microtensor_subnet.validator.config import (
     ARTIFACT_SECONDS,
     GATEWAY_IMAGE,
@@ -18,6 +19,8 @@ from microtensor_subnet.validator.config import (
 
 DEFAULT_GPU_GB: Final[float] = 24.0
 REVIEW_SECONDS: Final[float] = 300.0
+MEM_FRACTION: Final[float] = 0.88
+ENGINE_READY_SECONDS: Final[int] = 900
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +40,19 @@ class HostConfig:
     slm_ready_seconds: int = SLM_READY_SECONDS
     host_services_port: int = 9701
     review_seconds: float = REVIEW_SECONDS
+    sglang_image: str = SGLANG_IMAGE
+    llama_image: str = LLAMA_IMAGE
+    mem_fraction: float = MEM_FRACTION
+    engine_ready_seconds: int = ENGINE_READY_SECONDS
+    hf_token: str = field(default="", repr=False)
+
+    @property
+    def images(self) -> dict[str, str]:
+        return {
+            backend: image
+            for backend, image in ((SGLANG, self.sglang_image), (LLAMA, self.llama_image))
+            if image
+        }
 
     @property
     def cache_dir(self) -> Path:
