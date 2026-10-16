@@ -68,8 +68,10 @@ class Tokeniser:
         reasoning: str,
         content: str,
         tool_calls: Sequence[Mapping[str, Any]],
+        finish_reason: str = "",
     ) -> list[int]:
         text = markers.reassemble(family, reasoning, content, tool_calls)
+        text += markers.end_of(family, finish_reason)
         if not text:
             return []
         return _ids(self.tokenizer(text, add_special_tokens=False))
