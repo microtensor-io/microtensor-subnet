@@ -14,6 +14,10 @@ services:
       MT_WALLET_PATH: /wallets
       MT_HOME: /var/lib/microtensor
       HF_HOME: /var/lib/microtensor/cache/hf
+      HF_TOKEN: "${HF_TOKEN:-}"
+      MT_SGLANG_IMAGE: "${MT_SGLANG_IMAGE:-}"
+      MT_LLAMA_IMAGE: "${MT_LLAMA_IMAGE:-}"
+      MT_ACCEPT_LICENCES: "${MT_ACCEPT_LICENCES:-}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/microtensor:/var/lib/microtensor

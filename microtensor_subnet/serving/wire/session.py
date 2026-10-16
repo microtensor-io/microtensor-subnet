@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Final
@@ -17,6 +17,9 @@ HEARTBEAT_SECONDS: Final[float] = 15.0
 RECONNECT_CEILING_SECONDS: Final[float] = 60.0
 
 Handler = Callable[[str, Mapping[str, Any]], dict[str, Any]]
+OnChunk = Callable[[Mapping[str, Any]], Awaitable[None]]
+ChatHandler = Callable[[str, Mapping[str, Any], OnChunk], Awaitable[dict[str, Any]]]
+Send = Callable[[Mapping[str, Any]], Awaitable[None]]
 
 
 class SessionError(RuntimeError):
@@ -28,19 +31,32 @@ class Served:
     model: str
     artifact_digest: str
     concurrency: int = 1
+    kind: str = protocol.SYSTEM
+    context: int = 0
+    tool_calling: bool = False
+    vision: bool = False
 
     def __post_init__(self) -> None:
         if not self.model or not self.artifact_digest:
             raise SessionError("a served model is a name pinned by its artifact digest")
         if self.concurrency < MIN_CONCURRENCY:
             raise SessionError(f"concurrency for {self.model} must be at least {MIN_CONCURRENCY}")
+        if self.kind not in protocol.KINDS:
+            raise SessionError(f"{self.model} is offered as {self.kind!r}; kinds are system, model")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        offer: dict[str, Any] = {
             "model": self.model,
+            "kind": self.kind,
             "artifact_digest": self.artifact_digest,
             "concurrency": self.concurrency,
         }
+        if self.kind == protocol.MODEL:
+            offer["context"] = self.context
+            offer["tool_calling"] = self.tool_calling
+            if self.vision:
+                offer["vision"] = True
+        return offer
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +217,49 @@ async def serve_one(handler: Handler, frame: Mapping[str, Any], state: Capacity)
     )
 
 
+async def serve_chat(
+    handler: ChatHandler, frame: Mapping[str, Any], state: Capacity, send: Send
+) -> dict[str, Any]:
+    correlation = str(frame.get("correlation", ""))
+    model = str(frame.get("model", ""))
+    raw = frame.get("request")
+    request: dict[str, Any] = dict(raw) if isinstance(raw, Mapping) else {}
+    started = time.perf_counter()
+    seq = 0
+
+    async def on_chunk(delta: Mapping[str, Any]) -> None:
+        nonlocal seq
+        out = protocol.chunk(correlation, model=model, seq=seq, delta=delta)
+        seq += 1
+        await send(out)
+
+    try:
+        found = await handler(model, request, on_chunk)
+    except asyncio.CancelledError:
+        state.release(model, ok=False)
+        raise
+    except Exception as exc:
+        log.warning("chat %s on %s failed: %s", correlation or "?", model or "?", exc)
+        state.release(model, ok=False)
+        return protocol.response(correlation, model=model, error=f"{type(exc).__name__}: {exc}")
+    state.release(model, ok=not found.get("error"))
+    if found.get("error"):
+        return protocol.response(correlation, model=model, error=str(found["error"]))
+    return protocol.chat_response(
+        correlation,
+        model=model,
+        content=str(found.get("content") or ""),
+        reasoning=str(found.get("reasoning") or ""),
+        tool_calls=list(found.get("tool_calls") or []),
+        finish_reason=str(found.get("finish_reason") or "stop"),
+        usage=found.get("usage"),
+        tokens=found.get("tokens"),
+        artifact_digest=str(found.get("artifact_digest") or ""),
+        latency_ms=float(found.get("latency_ms") or (time.perf_counter() - started) * 1000),
+        ttft_ms=float(found.get("ttft_ms") or 0.0),
+    )
+
+
 def _drop(running: dict[str, asyncio.Task[None]], key: str, _: asyncio.Task[None]) -> None:
     running.pop(key, None)
 
@@ -209,10 +268,55 @@ async def _answer(socket: Any, handler: Handler, frame: Mapping[str, Any], state
     await _send(socket, await serve_one(handler, frame, state))
 
 
-async def session(settings: Settings, handler: Handler) -> None:
+async def _answer_chat(
+    socket: Any, handler: ChatHandler, frame: Mapping[str, Any], state: Capacity
+) -> None:
+    async def send(found: Mapping[str, Any]) -> None:
+        await _send(socket, found)
+
+    await _send(socket, await serve_chat(handler, frame, state, send))
+
+
+def refusal(
+    settings: Settings,
+    refused: set[str],
+    frame: Mapping[str, Any],
+    chat: ChatHandler | None,
+) -> str:
+    model = str(frame.get("model", ""))
+    served = settings.of(model)
+    if served is None or model in refused:
+        return "this operator does not serve it"
+    raw = frame.get("request")
+    asked_chat = isinstance(raw, Mapping) and raw.get("kind") == protocol.CHAT
+    if asked_chat and served.kind != protocol.MODEL:
+        return f"this operator serves {model} as a system, not for chat"
+    if asked_chat and chat is None:
+        return "this operator runs no chat handler"
+    if not asked_chat and served.kind == protocol.MODEL:
+        return f"this operator serves {model} for chat only"
+    return ""
+
+
+def welcomed(settings: Settings, frame: Mapping[str, Any], refused: set[str]) -> None:
+    version = int(frame.get("version") or 0)
+    if not version or version > protocol.SYSTEMS_ONLY_VERSION:
+        return
+    dropped = sorted(s.model for s in settings.serves if s.kind != protocol.SYSTEM)
+    if dropped:
+        log.warning(
+            "the gateway speaks protocol %d, which carries no chat; not serving %s",
+            version,
+            ", ".join(dropped),
+        )
+    refused.update(dropped)
+
+
+async def session(settings: Settings, handler: Handler, *, chat: ChatHandler | None = None) -> None:
     websockets = _websockets()
     state = Capacity.of(settings.serves)
     running: dict[str, asyncio.Task[None]] = {}
+    refused: set[str] = set()
 
     async with websockets.connect(settings.gateway, max_size=None) as socket:
         await _send(
@@ -237,13 +341,13 @@ async def session(settings: Settings, handler: Handler) -> None:
                 kind = str(frame.get("type", ""))
                 correlation = str(frame.get("correlation", ""))
                 model = str(frame.get("model", ""))
-                if kind == protocol.REQUEST:
-                    if settings.of(model) is None:
+                if kind == protocol.WELCOME:
+                    welcomed(settings, frame, refused)
+                elif kind == protocol.REQUEST:
+                    refused_now = refusal(settings, refused, frame, chat)
+                    if refused_now:
                         await _send(
-                            socket,
-                            protocol.response(
-                                correlation, model=model, error="this operator does not serve it"
-                            ),
+                            socket, protocol.response(correlation, model=model, error=refused_now)
                         )
                         continue
                     if not state.free(model):
@@ -255,7 +359,11 @@ async def session(settings: Settings, handler: Handler) -> None:
                         )
                         continue
                     state.take(model)
-                    task = asyncio.create_task(_answer(socket, handler, frame, state))
+                    served = settings.of(model)
+                    if chat is not None and served is not None and served.kind == protocol.MODEL:
+                        task = asyncio.create_task(_answer_chat(socket, chat, frame, state))
+                    else:
+                        task = asyncio.create_task(_answer(socket, handler, frame, state))
                     running[correlation] = task
                     task.add_done_callback(partial(_drop, running, correlation))
                 elif kind == protocol.CANCEL:
@@ -275,11 +383,17 @@ async def session(settings: Settings, handler: Handler) -> None:
                 await asyncio.gather(*running.values(), return_exceptions=True)
 
 
-async def run(settings: Settings, handler: Handler, *, stop: asyncio.Event | None = None) -> None:
+async def run(
+    settings: Settings,
+    handler: Handler,
+    *,
+    chat: ChatHandler | None = None,
+    stop: asyncio.Event | None = None,
+) -> None:
     attempt = 0
     while stop is None or not stop.is_set():
         try:
-            await session(settings, handler)
+            await session(settings, handler, chat=chat)
             attempt = 0
         except asyncio.CancelledError:
             raise

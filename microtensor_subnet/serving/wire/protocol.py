@@ -4,13 +4,19 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-VERSION: Final[int] = 3
+VERSION: Final[int] = 4
+SYSTEMS_ONLY_VERSION: Final[int] = 3
 HELLO: Final[str] = "hello"
 WELCOME: Final[str] = "welcome"
 REQUEST: Final[str] = "request"
 RESPONSE: Final[str] = "response"
 HEARTBEAT: Final[str] = "heartbeat"
 CANCEL: Final[str] = "cancel"
+CHUNK: Final[str] = "chunk"
+SYSTEM: Final[str] = "system"
+MODEL: Final[str] = "model"
+KINDS: Final[tuple[str, ...]] = (SYSTEM, MODEL)
+CHAT: Final[str] = "chat"
 
 
 class WireError(RuntimeError):
@@ -71,6 +77,55 @@ def response(
         },
         "latency_ms": round(float(latency_ms), 1),
         "finish_reason": finish_reason,
+    }
+
+
+def chunk(correlation: str, *, model: str, seq: int, delta: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "type": CHUNK,
+        "correlation": correlation,
+        "model": model,
+        "seq": int(seq),
+        "delta": dict(delta),
+    }
+
+
+def chat_response(
+    correlation: str,
+    *,
+    model: str,
+    content: str = "",
+    reasoning: str = "",
+    tool_calls: Sequence[Mapping[str, Any]] = (),
+    finish_reason: str = "stop",
+    usage: Mapping[str, int] | None = None,
+    tokens: Mapping[str, Sequence[int]] | None = None,
+    artifact_digest: str = "",
+    latency_ms: float = 0.0,
+    ttft_ms: float = 0.0,
+) -> dict[str, Any]:
+    counted = dict(usage or {})
+    ids = dict(tokens or {})
+    return {
+        "type": RESPONSE,
+        "correlation": correlation,
+        "model": model,
+        "kind": CHAT,
+        "content": content,
+        "reasoning": reasoning,
+        "tool_calls": [dict(call) for call in tool_calls],
+        "finish_reason": finish_reason,
+        "usage": {
+            "prompt_tokens": int(counted.get("prompt_tokens", 0)),
+            "completion_tokens": int(counted.get("completion_tokens", 0)),
+        },
+        "tokens": {
+            "prompt": [int(t) for t in ids.get("prompt") or ()],
+            "completion": [int(t) for t in ids.get("completion") or ()],
+        },
+        "artifact_digest": artifact_digest,
+        "latency_ms": round(float(latency_ms), 1),
+        "ttft_ms": round(float(ttft_ms), 1),
     }
 
 
