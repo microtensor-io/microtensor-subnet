@@ -11,13 +11,12 @@ from microtensor_subnet.validator.results import ItemRun, SlmRun
 from microtensor_subnet.validator.sandbox.slm import SlmClient, SlmError, gpu_memory_used
 
 log = logging.getLogger("microtensor_subnet.validator.pools.slm")
-STOP = ("\n\n", ";")
 
 
 def _run_item(context: EpochContext, client: SlmClient, item: Item, max_tokens: int) -> ItemRun:
     prompt = render_prompt(context.slm_prompt, item.task)
     try:
-        generation = client.generate(prompt, max_tokens=max_tokens, stop=STOP)
+        generation = client.generate(prompt, max_tokens=max_tokens, stop=context.stop)
     except SlmError as exc:
         return ItemRun(item.item_id, item.family, "", False, 0.0, str(exc), answered=False)
     try:
@@ -46,19 +45,20 @@ def run(
     *,
     gpu: str,
     parameters: int,
-    max_tokens: int = 256,
+    max_tokens: int | None = None,
     items: Sequence[Item] | None = None,
 ) -> SlmRun:
+    budget = max_tokens or context.max_tokens
     chosen = list(items) if items is not None else context.items.originals(SLM)
     twins = context.items.twins_of(SLM)
     runs: list[ItemRun] = []
     twin_runs: list[ItemRun] = []
     peak = gpu_memory_used(gpu)
     for item in chosen:
-        runs.append(_run_item(context, client, item, max_tokens))
+        runs.append(_run_item(context, client, item, budget))
         twin = twins.get(item.item_id)
         if twin is not None:
-            twin_runs.append(_run_item(context, client, twin, max_tokens))
+            twin_runs.append(_run_item(context, client, twin, budget))
         peak = max(peak, gpu_memory_used(gpu))
     answered = [r for r in runs if r.answered]
     return SlmRun(

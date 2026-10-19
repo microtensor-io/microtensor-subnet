@@ -75,14 +75,19 @@ def run_condition(
 
 
 def run_bare(
-    context: EpochContext, client: SlmClient, items: Sequence[Item], *, max_tokens: int = 256
+    context: EpochContext,
+    client: SlmClient,
+    items: Sequence[Item],
+    *,
+    max_tokens: int | None = None,
 ) -> Condition:
+    budget = max_tokens or context.max_tokens
     runs: list[ItemRun] = []
     tokens = 0
     for item in items:
         prompt = render_prompt(context.slm_prompt, item.task)
         try:
-            generation = client.generate(prompt, max_tokens=max_tokens, stop=("\n\n", ";"))
+            generation = client.generate(prompt, max_tokens=budget, stop=context.stop)
         except SlmError as exc:
             runs.append(_graded(context, item, "", 0.0, False, str(exc)))
             continue
