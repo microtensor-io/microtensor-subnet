@@ -110,6 +110,8 @@ module = [
     "boto3.*",
     "botocore.*",
     "huggingface_hub.*",
+    "gguf",
+    "gguf.*",
     "llama_cpp.*",
     "onnx.*",
     "onnxruntime.*",
