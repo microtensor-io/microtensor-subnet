@@ -5,7 +5,6 @@ from collections.abc import Sequence
 
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.core.items import Item
-from microtensor_subnet.validator import grade
 from microtensor_subnet.validator.context import SYSTEM, EpochContext
 from microtensor_subnet.validator.relay import SYSTEM as SYSTEM_PURPOSE
 from microtensor_subnet.validator.relay import RelayError, TicketDesk
@@ -93,10 +92,7 @@ def run(
             output = call.body.get("answer")
             route = str(call.body.get("route", ""))
             probability = call.body.get("p")
-            try:
-                verdict = grade.grade(context.grader, output, item.label, context.items.databases)
-            except grade.GradeError as exc:
-                verdict = grade.Grade(0.0, False, str(exc))
+            verdict = context.grade(item, output)
             runs.append(
                 ItemRun(
                     item.item_id,

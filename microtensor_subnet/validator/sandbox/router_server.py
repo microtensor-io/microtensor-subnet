@@ -112,9 +112,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--listen", default="127.0.0.1")
     parser.add_argument("--max-input-tokens", type=int, default=4096)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--max-parameters", type=int, default=contract.ROUTER_CPU_PARAMETERS)
     args = parser.parse_args(argv)
     model = RouterModel(args.model, args.max_input_tokens, args.device)
-    if model.parameters > contract.ROUTER_MAX_PARAMETERS:
+    if model.parameters > min(args.max_parameters, contract.ROUTER_MAX_PARAMETERS):
         print(f"router has {model.parameters} parameters, over the cap", file=sys.stderr)
         return 2
     server = ThreadingHTTPServer((args.listen, args.port), build(model))

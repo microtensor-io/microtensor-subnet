@@ -9,13 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from microtensor_subnet.artifact.params import ParameterError, footprint_bytes
 from microtensor_subnet.chain.epochs import Epoch, epoch_seed
 from microtensor_subnet.chain.wallet import hotkey_address
 from microtensor_subnet.chain.weights import quantise_weights, restrict_to_metagraph
 from microtensor_subnet.core.reports import PoolScore
 from microtensor_subnet.scoring import pools
 from microtensor_subnet.serving.probes import sets as probe_sets
-from microtensor_subnet.validator import collect, items, provenance, report, score
+from microtensor_subnet.validator import collect, compress, items, provenance, report, score
 from microtensor_subnet.validator.client import ServerClient, ServerError
 from microtensor_subnet.validator.config import EpochConfig
 from microtensor_subnet.validator.context import (
@@ -31,17 +32,22 @@ from microtensor_subnet.validator.relay import RelayClient, TicketDesk
 from microtensor_subnet.validator.results import ArtifactOutcome, ReferenceRun, RouterRun, SlmRun
 from microtensor_subnet.validator.sandbox import (
     GpuPool,
+    Limits,
     Sandbox,
     SandboxError,
     SandboxHost,
     host_ip,
 )
+from microtensor_subnet.validator.sandbox import judge as probe_judge
 from microtensor_subnet.validator.sandbox import tools as tool_faults
 from microtensor_subnet.validator.sandbox.docker import Docker
 from microtensor_subnet.validator.sandbox.services import Services
 from microtensor_subnet.validator.sandbox.slm import SlmClient
 
 log = logging.getLogger("microtensor_subnet.validator.epoch")
+DEFAULT_CONTEXT = 8192
+DEFAULT_MEMORY_BYTES = 24 * 1024**3
+DEFAULT_MAX_PARAMETERS = 8_000_000_000
 
 
 class EpochError(RuntimeError):
@@ -166,6 +172,17 @@ class Runner:
     reference_escalation: Any = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
+    def _memory(self, model_dir: Path, config: Mapping[str, Any]) -> int:
+        slm = config.get("slm") or {}
+        length = self.context.max_model_len or int(
+            (slm.get("max_context") if isinstance(slm, Mapping) else None) or DEFAULT_CONTEXT
+        )
+        try:
+            return footprint_bytes(model_dir, length)
+        except (OSError, ParameterError) as exc:
+            log.warning("memory footprint of %s unknown: %s", model_dir.name, exc)
+            return 0
+
     def _open(
         self,
         artifact_dir: Path,
@@ -187,6 +204,7 @@ class Runner:
             slot=slot,
             databases=self.context.items.databases,
             item_databases=self.context.items.item_databases(),
+            limits=Limits.from_definition(self.context.definition, self.context.max_model_len),
         )
 
     def slm_phase(self, artifact: Artifact) -> None:
@@ -207,7 +225,7 @@ class Runner:
                 outcome.slm = slm.run(
                     self.context,
                     SlmClient(sandbox.slm_url),
-                    gpu=gpu,
+                    memory_bytes=self._memory(artifact.slm_dir, artifact.config),
                     parameters=artifact.slm_parameters,
                 )
             finally:
@@ -234,7 +252,7 @@ class Runner:
                 self.reference_slm = slm.run(
                     self.context,
                     client,
-                    gpu=gpu,
+                    memory_bytes=self._memory(self.context.reference.slm_dir, {}),
                     parameters=self.context.reference.slm_parameters,
                     items=self.context.items.originals(SLM)
                     + self.context.items.items(ROUTER)
@@ -276,7 +294,10 @@ class Runner:
                 )
                 try:
                     self.base_slm[name] = slm.run(
-                        self.context, SlmClient(base_sandbox.slm_url), gpu=gpu, parameters=0
+                        self.context,
+                        SlmClient(base_sandbox.slm_url),
+                        memory_bytes=self._memory(path, {}),
+                        parameters=0,
                     )
                 finally:
                     self.host.close(base_sandbox)
@@ -370,6 +391,13 @@ def score_all(
     known_public: set[str],
 ) -> dict[str, list[PoolScore]]:
     context = runner.context
+    rules = score.Rules.from_definition(context.definition)
+    budgets = context.budgets
+    low = int(budgets.get("min_parameters") or 0)
+    high = int(budgets.get("max_parameters") or DEFAULT_MAX_PARAMETERS)
+    memory_cap = int(
+        budgets.get("memory_bytes") or budgets.get("vram_bytes") or DEFAULT_MEMORY_BYTES
+    )
     scores: dict[str, list[PoolScore]] = {}
     items_by_source = {
         router.OWN: [i.item_id for i in context.items.items(ROUTER)],
@@ -392,25 +420,34 @@ def score_all(
             )
             outcome.provenance = prov
             base_run = runner.base_slm.get(str(prov.get("declared_base", "")))
-            budgets = dict(context.definition.get("budgets") or {})
-            gate = (
-                0 < artifact.slm_parameters <= 8_000_000_000
-                and outcome.slm.vram_peak_bytes <= int(budgets.get("vram_bytes") or 24 * 1024**3)
-                and (
-                    not budgets.get("ttft_ms")
-                    or outcome.slm.ttft_p95_ms <= float(budgets["ttft_ms"])
+            sized = artifact.slm_parameters > 0 and low <= artifact.slm_parameters <= high
+            memory_ok = outcome.slm.vram_peak_bytes <= memory_cap
+            if rules.per_item_envelope:
+                gate = sized
+                over = score.envelope_share(outcome.slm, budgets)
+                envelope_ok = memory_ok and over <= rules.violation_share
+            else:
+                gate = (
+                    sized
+                    and memory_ok
+                    and (
+                        not budgets.get("ttft_ms")
+                        or outcome.slm.ttft_p95_ms <= float(budgets["ttft_ms"])
+                    )
+                    and (
+                        not budgets.get("tpot_ms")
+                        or outcome.slm.tpot_p95_ms <= float(budgets["tpot_ms"])
+                    )
                 )
-                and (
-                    not budgets.get("tpot_ms")
-                    or outcome.slm.tpot_p95_ms <= float(budgets["tpot_ms"])
-                )
-            )
+                envelope_ok = True
             pool_score = score.slm_score(
                 outcome.slm,
                 runner.reference_slm,
                 gate_ok=gate,
                 provenance_ok=bool(prov.get("passed")),
                 base=base_run,
+                rules=rules,
+                envelope_ok=envelope_ok,
             )
             beats = pool_score.detail.get("beats_base_lb")
             if beats is not None and beats <= 0:
@@ -439,6 +476,7 @@ def score_all(
                     families=context.items.families,
                     items_by_source=items_by_source,
                     seed=context.seed,
+                    rules=rules,
                 )
             )
         if outcome.escalation is not None:
@@ -454,9 +492,9 @@ def score_all(
 
 
 def weights_for(
-    standings: Mapping[str, list[pools.Standing]], snapshot: Any
+    standings: Mapping[str, list[pools.Standing]], snapshot: Any, burn_to: str = ""
 ) -> tuple[dict[str, float], dict[str, float], Any]:
-    weights, burned = pools.combine(standings)
+    weights, burned = pools.combine(standings, burn_to=burn_to)
     uid_by_hotkey = snapshot.uid_by_hotkey
     by_uid = {uid_by_hotkey[h]: w for h, w in weights.items() if h in uid_by_hotkey}
     vector = (
@@ -480,9 +518,15 @@ def run_epoch(
     desk = TicketDesk(relay, config.arena_id, epoch_index)
     engine = docker or Docker()
     services = Services(host_ip(), config.host_services_port)
+    gpus = tuple(config.gpus or ("0",))
+    agent: probe_judge.ProbeAgent | None = None
+    if context.grader == compress.GRADER:
+        if len(gpus) < 2:
+            raise EpochError("context compression needs a second GPU for the probe agent")
+        agent, gpus = _judge(config, context, engine, gpus[-1]), gpus[:-1]
     services.start()
     host = SandboxHost(config, engine, services, host_ip())
-    runner = Runner(config, context, host, relay, GpuPool(config.gpus or ("0",)), desk)
+    runner = Runner(config, context, host, relay, GpuPool(gpus), desk)
     base_dirs: dict[str, Path] = {}
     for base in [str(b) for b in context.definition.get("allowed_bases") or []]:
         try:
@@ -506,6 +550,8 @@ def run_epoch(
             )
     finally:
         services.stop()
+        if agent is not None:
+            agent.stop()
         engine.sweep()
     known_public = provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json")
     scores = score_all(runner, artifacts, base_dirs, known_public)
@@ -528,7 +574,10 @@ def run_epoch(
         {h: a.artifact_sha for h, a in artifacts.items()},
         {h: a.commit_block for h, a in artifacts.items()},
     )
-    weights, burned, vector = weights_for(standings, chain.snapshot(refresh=True))
+    burn_to = (
+        _owner(chain) if score.Rules.from_definition(context.definition).burn_empty_pools else ""
+    )
+    weights, burned, vector = weights_for(standings, chain.snapshot(refresh=True), burn_to)
     signed = report.sign(
         report.build(
             context,
@@ -559,6 +608,50 @@ def run_epoch(
         burned=burned,
         report=signed.to_dict(),
     )
+
+
+def _owner(chain: Any) -> str:
+    reader = getattr(chain, "owner_hotkey", None)
+    if not callable(reader):
+        log.error("this chain client cannot name the subnet owner; empty pools are not burned")
+        return ""
+    try:
+        return str(reader() or "")
+    except Exception as exc:
+        log.error("the subnet owner hotkey could not be read; empty pools are not burned: %s", exc)
+        return ""
+
+
+def _judge(
+    config: EpochConfig, context: EpochContext, engine: Docker, gpu: str
+) -> probe_judge.ProbeAgent:
+    grading = context.grading
+    spec = grading.get("probe_agent") or {}
+    model = str(spec.get("model") or "")
+    if not model:
+        raise EpochError("the arena names no probe agent")
+    revision = str(spec.get("revision") or "main")
+    model_dir = collect.download(model, revision, config.cache_dir)
+    tokenizer = str(grading.get("tokenizer") or model)
+    tokenizer_dir = (
+        model_dir if tokenizer == model else collect.download(tokenizer, "main", config.cache_dir)
+    )
+    agent = probe_judge.ProbeAgent(
+        engine,
+        config.vllm_image,
+        model_dir,
+        gpu,
+        max_tokens=int(spec.get("max_tokens") or 64),
+    )
+    agent.start(config.slm_ready_seconds)
+    context.judge = compress.Judge(
+        count_tokens=probe_judge.token_counter(tokenizer_dir),
+        answer=agent.answer,
+        pass_threshold=float(grading.get("pass_threshold") or 0.8),
+        min_output_tokens=int(grading.get("min_output_tokens") or 300),
+        max_output_share=float(grading.get("max_output_share") or 0.1),
+    )
+    return agent
 
 
 def describe(reference: Reference) -> str:

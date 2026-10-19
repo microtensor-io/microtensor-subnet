@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import secrets
 import socket
@@ -20,7 +21,12 @@ from microtensor_subnet.validator.relay import TicketDesk
 from microtensor_subnet.validator.sandbox import tools
 from microtensor_subnet.validator.sandbox.docker import ContainerSpec, Docker, DockerError
 from microtensor_subnet.validator.sandbox.services import ArtifactSession, Services
-from microtensor_subnet.validator.sandbox.slm import SlmClient, vllm_command
+from microtensor_subnet.validator.sandbox.slm import (
+    MEMORY_SHARE,
+    SHARED_MEMORY_SHARE,
+    SlmClient,
+    vllm_command,
+)
 
 log = logging.getLogger("microtensor_subnet.validator.sandbox")
 
@@ -28,6 +34,7 @@ GATEWAY_PORT = 9000
 ROUTER_PORT_BASE = 9800
 MAIN_PORT = 8080
 READY_SECONDS = 180
+ROUTER_INPUT_CEILING = contract.CONFIG_LIMITS["router"]["max_input_tokens"]
 
 
 class SandboxError(RuntimeError):
@@ -84,6 +91,34 @@ def host_ip() -> str:
         probe.close()
 
 
+@dataclass(frozen=True, slots=True)
+class Limits:
+    max_model_len: int | None = None
+    router_max_parameters: int = contract.ROUTER_CPU_PARAMETERS
+    router_max_input_tokens: int = ROUTER_INPUT_CEILING
+    max_model_calls: int = 0
+    model_faults: bool = False
+
+    @property
+    def router_on_gpu(self) -> bool:
+        return self.router_max_parameters > contract.ROUTER_CPU_PARAMETERS
+
+    @classmethod
+    def from_definition(cls, definition: Mapping[str, Any], max_model_len: int | None) -> Limits:
+        limits = definition.get("limits") or {}
+        router = limits.get("router") or {} if isinstance(limits, Mapping) else {}
+        harness = limits.get("harness") or {} if isinstance(limits, Mapping) else {}
+        return cls(
+            max_model_len=max_model_len,
+            router_max_parameters=int(
+                router.get("max_parameters") or contract.ROUTER_CPU_PARAMETERS
+            ),
+            router_max_input_tokens=int(router.get("max_input_tokens") or ROUTER_INPUT_CEILING),
+            max_model_calls=int(harness.get("max_model_calls") or 0),
+            model_faults=harness.get("faults") == "model",
+        )
+
+
 @dataclass(slots=True)
 class Sandbox:
     key: str
@@ -111,16 +146,23 @@ class SandboxHost:
     host_ip: str
 
     def _slm_container(
-        self, key: str, model_dir: Path, gpu: str, network: str, config: dict[str, Any]
+        self,
+        key: str,
+        model_dir: Path,
+        gpu: str,
+        network: str,
+        config: dict[str, Any],
+        limits: Limits,
     ) -> str:
         name = f"mt-slm-{key}"
-        max_len = int((config.get("slm") or {}).get("max_context") or 8192)
+        max_len = limits.max_model_len or int((config.get("slm") or {}).get("max_context") or 8192)
+        share = SHARED_MEMORY_SHARE if limits.router_on_gpu else MEMORY_SHARE
         self.docker.start(
             ContainerSpec(
                 name=name,
                 image=self.config.vllm_image,
                 network=network,
-                command=vllm_command("/model", max_model_len=max_len),
+                command=vllm_command("/model", max_model_len=max_len, memory_share=share),
                 env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
                 volumes=((str(model_dir), "/model", "ro"),),
                 gpus=(gpu,),
@@ -131,9 +173,19 @@ class SandboxHost:
         return name
 
     def _router_process(
-        self, key: str, router_dir: Path, port: int, config: dict[str, Any]
+        self,
+        key: str,
+        router_dir: Path,
+        port: int,
+        config: dict[str, Any],
+        gpu: str,
+        limits: Limits,
     ) -> subprocess.Popen[bytes]:
-        max_input = int((config.get("router") or {}).get("max_input_tokens") or 4096)
+        wanted = int((config.get("router") or {}).get("max_input_tokens") or 4096)
+        max_input = min(wanted, limits.router_max_input_tokens)
+        env = dict(os.environ)
+        if limits.router_on_gpu:
+            env["CUDA_VISIBLE_DEVICES"] = gpu
         return subprocess.Popen(  # noqa: S603
             [
                 sys.executable,
@@ -147,9 +199,14 @@ class SandboxHost:
                 self.host_ip,
                 "--max-input-tokens",
                 str(max_input),
+                "--max-parameters",
+                str(limits.router_max_parameters),
+                "--device",
+                "cuda" if limits.router_on_gpu else "cpu",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            env=env,
         )
 
     def _gateway_container(self, key: str, network: str) -> str:
@@ -227,19 +284,21 @@ class SandboxHost:
         slot: int,
         databases: Mapping[str, bytes] | None = None,
         item_databases: Mapping[str, Sequence[str]] | None = None,
+        limits: Limits | None = None,
     ) -> Sandbox:
+        chosen = limits or Limits()
         key = secrets.token_hex(4)
         network = f"mt-net-{key}"
         self.docker.create_network(network)
         slm_name = gateway_name = main_name = ""
         router: subprocess.Popen[bytes] | None = None
         try:
-            slm_name = self._slm_container(key, slm_dir, gpu, network, config)
+            slm_name = self._slm_container(key, slm_dir, gpu, network, config, chosen)
             slm_ip = self.docker.address(slm_name, network)
             router_port = ROUTER_PORT_BASE + slot
             router_url = ""
             if router_dir is not None:
-                router = self._router_process(key, router_dir, router_port, config)
+                router = self._router_process(key, router_dir, router_port, config, gpu, chosen)
                 router_url = f"http://{self.host_ip}:{router_port}"
             gateway_name = self._gateway_container(key, network)
             gateway_ip = self.docker.address(gateway_name, network)
@@ -251,6 +310,8 @@ class SandboxHost:
                 desk=desk,
                 databases=dict(databases or {}),
                 item_databases={k: tuple(v) for k, v in (item_databases or {}).items()},
+                max_model_calls=chosen.max_model_calls,
+                model_faults=chosen.model_faults,
             )
             self.services.attach(key, session)
             self._wait_slm(session.slm_url)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -13,6 +12,8 @@ from microtensor_subnet.artifact import contract
 
 TIMEOUT_SECONDS: Final[float] = 300.0
 MODEL_NAME: Final[str] = "slm"
+MEMORY_SHARE: Final[float] = 0.9
+SHARED_MEMORY_SHARE: Final[float] = 0.75
 
 
 class SlmError(RuntimeError):
@@ -104,28 +105,13 @@ class SlmClient:
         )
 
 
-def gpu_memory_used(index: str) -> int:
-    argv = [
-        "nvidia-smi",
-        "--query-gpu=memory.used",
-        "--format=csv,noheader,nounits",
-        f"--id={index}",
-    ]
-    try:
-        found = subprocess.run(  # noqa: S603
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return 0
-    value = found.stdout.strip().splitlines()[0] if found.stdout.strip() else ""
-    return int(value) * 1024 * 1024 if value.isdigit() else 0
-
-
-def vllm_command(model_dir: str, *, max_model_len: int, quantization: str = "") -> list[str]:
+def vllm_command(
+    model_dir: str,
+    *,
+    max_model_len: int,
+    quantization: str = "",
+    memory_share: float = MEMORY_SHARE,
+) -> list[str]:
     argv = [
         "--model",
         model_dir,
@@ -141,7 +127,7 @@ def vllm_command(model_dir: str, *, max_model_len: int, quantization: str = "") 
         "0",
         "--disable-log-requests",
         "--gpu-memory-utilization",
-        "0.9",
+        str(memory_share),
     ]
     if quantization:
         argv += ["--quantization", quantization]

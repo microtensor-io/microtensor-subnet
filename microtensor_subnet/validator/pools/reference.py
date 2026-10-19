@@ -6,7 +6,6 @@ from typing import Any
 
 from microtensor_subnet.core.items import Item
 from microtensor_subnet.scoring.stats import percentile
-from microtensor_subnet.validator import grade
 from microtensor_subnet.validator.context import ESCALATION, SYSTEM, EpochContext, render_prompt
 from microtensor_subnet.validator.relay import REFERENCE, RelayError, TicketDesk
 from microtensor_subnet.validator.results import ItemRun, ReferenceRun
@@ -60,10 +59,7 @@ def _answer(
         )
     cost = desk.cost_for(opaque)
     desk.forget(opaque)
-    try:
-        verdict = grade.grade(context.grader, answer.text, item.label, context.items.databases)
-    except grade.GradeError as exc:
-        verdict = grade.Grade(0.0, False, str(exc))
+    verdict = context.grade(item, answer.text)
     return ItemRun(
         item.item_id,
         item.family,

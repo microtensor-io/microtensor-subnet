@@ -57,14 +57,7 @@ def decide(
 
 
 def _label(context: EpochContext, item: Item, draft: str) -> int:
-    try:
-        return (
-            1
-            if grade.grade(context.grader, draft, item.label, context.items.databases).success
-            else 0
-        )
-    except grade.GradeError:
-        return 0
+    return 1 if context.grade(item, draft).success else 0
 
 
 def build_sources(

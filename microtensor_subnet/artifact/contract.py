@@ -4,7 +4,8 @@ from typing import Final
 
 SCHEMA_VERSION: Final[int] = 1
 COMPONENTS: Final[tuple[str, ...]] = ("slm", "harness", "router", "escalation")
-HARDWARE_CLASSES: Final[tuple[str, ...]] = ("gpu_24gb",)
+HARDWARE_CLASSES: Final[tuple[str, ...]] = ("mt-1", "mt-2", "mt-3")
+DEFAULT_HARDWARE_CLASS: Final[str] = "mt-3"
 
 ARTIFACT_REPO_PREFIX: Final[str] = "microtensor_"
 SLM_REPO_PREFIX: Final[str] = "mt_slm_"
@@ -36,7 +37,8 @@ SLM_TRAINING_FILES: Final[tuple[str, ...]] = (
 SLM_METRICS_GLOB: Final[str] = "training/runs/*/metrics.jsonl"
 SLM_MIN_PARAMETERS: Final[int] = 1_000_000_000
 SLM_MAX_PARAMETERS: Final[int] = 8_000_000_000
-ROUTER_MAX_PARAMETERS: Final[int] = 100_000_000
+ROUTER_MAX_PARAMETERS: Final[int] = 1_500_000_000
+ROUTER_CPU_PARAMETERS: Final[int] = 100_000_000
 
 ENV_PORT: Final[str] = "MT_PORT"
 ENV_SLM_URL: Final[str] = "MT_SLM_URL"
