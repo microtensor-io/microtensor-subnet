@@ -456,6 +456,20 @@ class SubtensorClient:
         return False
 
     @_serialised
+    def owner_hotkey(self) -> str:
+        reader = getattr(self.subtensor, "get_subnet_owner_hotkey", None)
+        if callable(reader):
+            return str(with_retry("owner hotkey", lambda: reader(self._config.netuid)) or "")
+        substrate = getattr(self.subtensor, "substrate", None)
+        if substrate is None:
+            raise ChainError(UNADAPTED.format(what="owner hotkey reader"))
+        found = with_retry(
+            "owner hotkey",
+            lambda: substrate.query("SubtensorModule", "SubnetOwnerHotkey", [self._config.netuid]),
+        )
+        return str(getattr(found, "value", found) or "")
+
+    @_serialised
     def set_weights(self, vector: WeightVector) -> tuple[bool, str]:
         if vector.is_empty:
             return False, "refusing to submit an empty weight vector"

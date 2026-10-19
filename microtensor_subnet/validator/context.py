@@ -10,6 +10,7 @@ from typing import Any
 from microtensor_subnet.artifact.validate import Manifest
 from microtensor_subnet.chain.commitment import SubmissionCommitment
 from microtensor_subnet.core.items import Item
+from microtensor_subnet.validator import compress, grade
 
 SLM = "slm"
 HARNESS = "harness"
@@ -103,6 +104,7 @@ class EpochContext:
     sample_database: bytes = b""
     r_class: dict[str, float] = field(default_factory=dict)
     floors: tuple[float, ...] = (0.8, 0.9, 0.95, 0.99)
+    judge: compress.Judge | None = None
 
     @property
     def grader(self) -> str:
@@ -119,6 +121,42 @@ class EpochContext:
         block = self.definition.get("generation") or {}
         found = block.get("max_tokens") if isinstance(block, Mapping) else None
         return int(found or SQL_MAX_TOKENS)
+
+    @property
+    def budgets(self) -> dict[str, Any]:
+        found = self.definition.get("budgets") or {}
+        return dict(found) if isinstance(found, Mapping) else {}
+
+    @property
+    def max_model_len(self) -> int | None:
+        budgets = self.budgets
+        if budgets.get("max_input_tokens") and budgets.get("max_output_tokens"):
+            return int(budgets["max_input_tokens"]) + int(budgets["max_output_tokens"])
+        return None
+
+    @property
+    def harness_limits(self) -> dict[str, Any]:
+        limits = self.definition.get("limits") or {}
+        found = limits.get("harness") if isinstance(limits, Mapping) else None
+        return dict(found) if isinstance(found, Mapping) else {}
+
+    @property
+    def grading(self) -> dict[str, Any]:
+        found = self.definition.get("grading") or {}
+        return dict(found) if isinstance(found, Mapping) else {}
+
+    def grade(self, item: Item, output: Any) -> grade.Grade:
+        try:
+            return grade.grade(
+                self.grader,
+                output,
+                item.label,
+                self.items.databases,
+                task=item.task,
+                judge=self.judge,
+            )
+        except grade.GradeError as exc:
+            return grade.Grade(0.0, False, str(exc))
 
     @property
     def slm_prompt(self) -> str:

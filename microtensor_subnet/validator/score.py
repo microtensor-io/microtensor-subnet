@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from microtensor_subnet.core.reports import PoolScore
 from microtensor_subnet.scoring import pools
-from microtensor_subnet.scoring.stats import bootstrap_seed, ladder, paired_lb, wilson_lb
+from microtensor_subnet.scoring.stats import (
+    Z_ONE_SIDED_95,
+    bootstrap_seed,
+    ladder,
+    paired_lb,
+    wilson_lb,
+)
 from microtensor_subnet.validator.results import (
     ArtifactOutcome,
     EscalationRun,
@@ -31,6 +38,70 @@ LATENCY_WEIGHT: Final[float] = 0.3
 GAIN_CAP: Final[float] = math.log(10)
 MIN_ITEMS: Final[int] = 400
 DIGITS: Final[int] = 6
+WEIGHT_KEYS: Final[dict[str, str]] = {
+    "ttft": "ttft",
+    "memory": "vram",
+    "parameters": "n",
+    "tpot": "tpot",
+}
+FLOORS_BRIER: Final[str] = "floors_brier"
+BRIER_AUROC: Final[str] = "brier_auroc"
+
+
+@dataclass(frozen=True, slots=True)
+class Rules:
+    wilson_z: float = Z_ONE_SIDED_95
+    twin_tolerance: float = TWIN_TOLERANCE
+    twin_slope: float = 0.0
+    efficiency_form: str = "log"
+    efficiency_range: float = EFFICIENCY_RANGE
+    efficiency_weights: Mapping[str, float] = field(
+        default_factory=lambda: dict(EFFICIENCY_WEIGHTS)
+    )
+    edge_per_group: float = 0.0
+    edge_max: float = 0.0
+    per_item_envelope: bool = False
+    violation_share: float = 0.01
+    cap: float | None = 1.0
+    burn_empty_pools: bool = False
+    router_kind: str = FLOORS_BRIER
+    router_latency_ms: float = ROUTER_LATENCY_GATE_MS
+
+    @classmethod
+    def from_definition(cls, definition: Mapping[str, Any]) -> Rules:
+        block = _mapping(definition.get("scoring"))
+        twin = _mapping(block.get("twin"))
+        efficiency = _mapping(block.get("efficiency"))
+        edge = _mapping(block.get("edge_bonus"))
+        envelope = _mapping(definition.get("envelope"))
+        router = _mapping(_mapping(definition.get("limits")).get("router"))
+        weights = dict(EFFICIENCY_WEIGHTS)
+        for key, value in _mapping(efficiency.get("weights")).items():
+            if key in WEIGHT_KEYS:
+                weights[WEIGHT_KEYS[key]] = float(value)
+        applies = edge.get("applies", True) is not False
+        return cls(
+            wilson_z=float(block.get("wilson_z") or Z_ONE_SIDED_95),
+            twin_tolerance=float(twin.get("tolerance", TWIN_TOLERANCE)),
+            twin_slope=float(twin.get("slope") or 0.0),
+            efficiency_form=str(efficiency.get("form") or "log"),
+            efficiency_range=float(efficiency.get("range", EFFICIENCY_RANGE)),
+            efficiency_weights=weights,
+            edge_per_group=float(edge.get("per_group") or 0.0) if applies else 0.0,
+            edge_max=float(edge.get("max") or 0.0) if applies else 0.0,
+            per_item_envelope=block.get("envelope_rule") == "per_item",
+            violation_share=float(envelope.get("violation_share", 0.01)),
+            cap=(None if block.get("cap") is None else float(block["cap"]))
+            if "cap" in block
+            else 1.0,
+            burn_empty_pools=block.get("empty_pools") == "burn",
+            router_kind=str(block.get("router") or FLOORS_BRIER),
+            router_latency_ms=float(router.get("latency_gate_ms") or ROUTER_LATENCY_GATE_MS),
+        )
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _log_ratio(reference: float, measured: float) -> float:
@@ -39,15 +110,52 @@ def _log_ratio(reference: float, measured: float) -> float:
     return math.log(reference / measured)
 
 
-def efficiency(run: SlmRun, reference: SlmRun) -> float:
-    value = (
-        EFFICIENCY_WEIGHTS["tpot"] * _log_ratio(reference.tpot_p95_ms, run.tpot_p95_ms)
-        + EFFICIENCY_WEIGHTS["ttft"] * _log_ratio(reference.ttft_p95_ms, run.ttft_p95_ms)
-        + EFFICIENCY_WEIGHTS["vram"]
-        * _log_ratio(float(reference.vram_peak_bytes), float(run.vram_peak_bytes))
-        + EFFICIENCY_WEIGHTS["n"] * _log_ratio(float(reference.parameters), float(run.parameters))
-    )
+def _gain(reference: float, measured: float) -> float:
+    if reference <= 0 or measured <= 0:
+        return 0.0
+    return min(1.0, max(0.0, (reference - measured) / reference))
+
+
+def efficiency(run: SlmRun, reference: SlmRun, rules: Rules | None = None) -> float:
+    chosen = rules or Rules()
+    weights = chosen.efficiency_weights
+    pairs = {
+        "tpot": (reference.tpot_p95_ms, run.tpot_p95_ms),
+        "ttft": (reference.ttft_p95_ms, run.ttft_p95_ms),
+        "vram": (float(reference.vram_peak_bytes), float(run.vram_peak_bytes)),
+        "n": (float(reference.parameters), float(run.parameters)),
+    }
+    if chosen.efficiency_form == "linear":
+        return sum(weights[key] * _gain(*pair) for key, pair in pairs.items())
+    value = sum(weights[key] * _log_ratio(*pair) for key, pair in pairs.items())
     return max(-1.0, min(1.0, value))
+
+
+def twin_factor(run: SlmRun, rules: Rules) -> tuple[float, float]:
+    if not run.twins:
+        return 0.0, 1.0
+    excess = max(0.0, (run.pass_rate - run.twin_rate) - rules.twin_tolerance)
+    if rules.twin_slope > 0:
+        return excess, 1 - min(1.0, excess / rules.twin_slope)
+    return excess, 1 - excess
+
+
+def envelope_share(run: SlmRun, budgets: Mapping[str, Any]) -> float:
+    answered = [r for r in run.runs if r.answered]
+    if not answered:
+        return 1.0
+    ttft = float(budgets.get("ttft_ms") or 0)
+    tpot = float(budgets.get("tpot_ms") or 0)
+    rate = float(budgets.get("min_tokens_per_s") or 0)
+    slowest = 1000.0 / rate if rate > 0 else 0.0
+    over = 0
+    for r in answered:
+        late = bool(ttft) and r.ttft_ms > ttft
+        slow = r.completion_tokens > 1 and (
+            (bool(tpot) and r.tpot_ms > tpot) or (bool(slowest) and r.tpot_ms > slowest)
+        )
+        over += 1 if late or slow else 0
+    return over / len(answered)
 
 
 def _outcomes(runs: Sequence[Any]) -> tuple[list[float], list[str]]:
@@ -62,16 +170,20 @@ def slm_score(
     provenance_ok: bool,
     base: SlmRun | None,
     min_items: int = MIN_ITEMS,
+    rules: Rules | None = None,
+    envelope_ok: bool = True,
+    edge_groups: int = 0,
 ) -> PoolScore:
+    chosen = rules or Rules()
     n = len(run.runs)
     successes = sum(1 for r in run.runs if r.success)
-    lower = wilson_lb(successes, n)
-    twin_gap = max(0.0, (run.pass_rate - run.twin_rate) - TWIN_TOLERANCE) if run.twins else 0.0
-    eff = efficiency(run, reference)
-    score = (
-        lower * (1 - twin_gap) * (1 + EFFICIENCY_RANGE * eff) if gate_ok and provenance_ok else 0.0
-    )
-    score = max(0.0, min(1.0, score))
+    lower = wilson_lb(successes, n, chosen.wilson_z)
+    twin_gap, factor = twin_factor(run, chosen)
+    eff = efficiency(run, reference, chosen)
+    bonus = min(chosen.edge_max, chosen.edge_per_group * edge_groups)
+    passed = gate_ok and provenance_ok and envelope_ok
+    score = lower * factor * (1 + chosen.efficiency_range * eff + bonus) if passed else 0.0
+    score = max(0.0, score if chosen.cap is None else min(chosen.cap, score))
     _, families = _outcomes(run.runs)
     by_item = {r.item_id: r for r in reference.runs}
     paired = [1.0 if by_item[r.item_id].success else 0.0 for r in run.runs if r.item_id in by_item]
@@ -89,7 +201,7 @@ def slm_score(
         a = [1.0 if r.success else 0.0 for r in run.runs if r.item_id in base_by_item]
         f = [r.family for r in run.runs if r.item_id in base_by_item]
         beats_base = paired_lb(a, b, f).lower_bound if b else 0.0
-    eligible = gate_ok and provenance_ok and n >= min_items and versus_reference > 0
+    eligible = passed and n >= min_items and versus_reference > 0
     return PoolScore(
         pool=pools.SLM,
         score=round(score, DIGITS),
@@ -100,7 +212,9 @@ def slm_score(
         detail={
             "twin_rate": round(run.twin_rate, DIGITS),
             "twin_gap": round(twin_gap, DIGITS),
+            "twin_factor": round(factor, DIGITS),
             "efficiency": round(eff, DIGITS),
+            "edge_bonus": round(bonus, DIGITS),
             "ttft_p95_ms": round(run.ttft_p95_ms, 1),
             "tpot_p95_ms": round(run.tpot_p95_ms, 2),
             "vram_peak_bytes": run.vram_peak_bytes,
@@ -109,12 +223,23 @@ def slm_score(
             "beats_base_lb": beats_base,
             "gate": gate_ok,
             "provenance": provenance_ok,
+            "envelope": envelope_ok,
             "families": len(set(families)),
         },
     )
 
 
 def harness_score(run: HarnessRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
+    if not run.limits_ok:
+        return PoolScore(
+            pools.HARNESS,
+            0.0,
+            0.0,
+            run.miner.pass_rate,
+            len(run.miner.runs),
+            False,
+            {"reason": run.limits_reason},
+        )
     if not run.baselines:
         return PoolScore(
             pools.HARNESS,
@@ -165,9 +290,45 @@ def _loss(p: float, y: int, floors: Sequence[float]) -> float:
     return total + BRIER_WEIGHT * (p - y) ** 2
 
 
-def source_score(source: SourceRun, floors: Sequence[float]) -> float | None:
+def auroc(probabilities: Sequence[float], labels: Sequence[int]) -> float:
+    positives = sum(1 for y in labels if y == 1)
+    negatives = len(labels) - positives
+    if not positives or not negatives:
+        return 0.5
+    order = sorted(range(len(probabilities)), key=lambda i: probabilities[i])
+    ranks = [0.0] * len(order)
+    start = 0
+    while start < len(order):
+        end = start
+        while end + 1 < len(order) and probabilities[order[end + 1]] == probabilities[order[start]]:
+            end += 1
+        for position in range(start, end + 1):
+            ranks[order[position]] = (start + end) / 2 + 1
+        start = end + 1
+    rank_sum = sum(rank for rank, y in zip(ranks, labels, strict=True) if y == 1)
+    return (rank_sum - positives * (positives + 1) / 2) / (positives * negatives)
+
+
+def _brier_auroc(source: SourceRun) -> float | None:
+    count = len(source.labels)
+    mean_label = sum(source.labels) / count
+    base = sum((mean_label - y) ** 2 for y in source.labels) / count
+    if base <= 0:
+        return None
+    brier = (
+        sum((p - y) ** 2 for p, y in zip(source.probabilities, source.labels, strict=True)) / count
+    )
+    separation = auroc(source.probabilities, source.labels)
+    return 0.5 * max(0.0, 1 - brier / base) + 0.5 * max(0.0, 2 * separation - 1)
+
+
+def source_score(
+    source: SourceRun, floors: Sequence[float], kind: str = FLOORS_BRIER
+) -> float | None:
     if not source.labels:
         return None
+    if kind == BRIER_AUROC:
+        return _brier_auroc(source)
     mean_label = sum(source.labels) / len(source.labels)
     base = sum(_loss(mean_label, y, floors) for y in source.labels) / len(source.labels)
     if base <= 0:
@@ -178,8 +339,9 @@ def source_score(source: SourceRun, floors: Sequence[float]) -> float | None:
     return max(0.0, 1 - loss / base)
 
 
-def router_value(run: RouterRun, floors: Sequence[float]) -> float:
-    scores = [s for s in (source_score(src, floors) for src in run.sources) if s is not None]
+def router_value(run: RouterRun, floors: Sequence[float], kind: str = FLOORS_BRIER) -> float:
+    found = (source_score(src, floors, kind) for src in run.sources)
+    scores = [s for s in found if s is not None]
     if not scores:
         return 0.0
     return ROUTER_MEAN_WEIGHT * sum(scores) / len(scores) + ROUTER_MIN_WEIGHT * min(scores)
@@ -216,9 +378,12 @@ def router_score(
     items_by_source: Mapping[str, Sequence[str]],
     seed: str,
     min_drafts: int = MIN_ITEMS,
+    rules: Rules | None = None,
 ) -> PoolScore:
-    gate = run.loaded and run.latency_p95_ms < ROUTER_LATENCY_GATE_MS
-    value = router_value(run, floors) if gate else 0.0
+    chosen = rules or Rules()
+    kind = chosen.router_kind
+    gate = run.loaded and run.latency_p95_ms < chosen.router_latency_ms
+    value = router_value(run, floors, kind) if gate else 0.0
     total = sum(len(s.labels) for s in run.sources)
     margin = None
     if reference is not None and gate:
@@ -228,9 +393,11 @@ def router_score(
         rng = random.Random(bootstrap_seed(seed, "router"))  # noqa: S311
         draws: list[float] = []
         for _ in range(200):
-            chosen = [family_names[rng.randrange(len(family_names))] for _ in family_names]
-            mine = router_value(_resample(run, families, items_by_source, chosen), floors)
-            theirs = router_value(_resample(reference, families, items_by_source, chosen), floors)
+            picked = [family_names[rng.randrange(len(family_names))] for _ in family_names]
+            mine = router_value(_resample(run, families, items_by_source, picked), floors, kind)
+            theirs = router_value(
+                _resample(reference, families, items_by_source, picked), floors, kind
+            )
             draws.append(mine - theirs)
         draws.sort()
         margin = round(draws[max(0, int(0.05 * len(draws)) - 1)], DIGITS) if draws else 0.0
@@ -243,7 +410,7 @@ def router_score(
         eligible=gate and total >= min_drafts and (margin is not None and margin > 0),
         detail={
             "sources": {
-                s.source: round(source_score(s, floors) or 0.0, DIGITS) for s in run.sources
+                s.source: round(source_score(s, floors, kind) or 0.0, DIGITS) for s in run.sources
             },
             "latency_p95_ms": round(run.latency_p95_ms, 2),
             "gate": gate,

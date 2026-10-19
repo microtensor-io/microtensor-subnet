@@ -7,7 +7,7 @@ from typing import Any
 
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.core.items import Item
-from microtensor_subnet.validator import grade
+from microtensor_subnet.scoring.stats import percentile
 from microtensor_subnet.validator.context import HARNESS, EpochContext, render_prompt
 from microtensor_subnet.validator.results import Condition, HarnessRun, ItemRun
 from microtensor_subnet.validator.sandbox import Sandbox, SandboxHost, call_main
@@ -31,10 +31,7 @@ def _graded(
             latency_ms=latency,
             answered=False,
         )
-    try:
-        verdict = grade.grade(context.grader, output, item.label, context.items.databases)
-    except grade.GradeError as exc:
-        verdict = grade.Grade(0.0, False, str(exc))
+    verdict = context.grade(item, output)
     return ItemRun(
         item.item_id,
         item.family,
@@ -57,6 +54,7 @@ def run_condition(
     session = sandbox.session
     session.reset_counters()
     runs: list[ItemRun] = []
+    added: list[float] = []
     for item in items:
         with session.lock:
             session.current_item = item.item_id
@@ -68,10 +66,11 @@ def run_condition(
         )
         output = call.body.get("answer") if call.ok else None
         runs.append(_graded(context, item, output, call.latency_ms, call.ok, call.error))
+        added.append(max(0.0, call.latency_ms - session.model_ms(item.item_id)))
     with session.lock:
         tokens = session.tokens_in + session.tokens_out
         session.current_item = ""
-    return Condition(name=name, runs=runs, tokens=tokens)
+    return Condition(name=name, runs=runs, tokens=tokens, added_ms=added)
 
 
 def run_bare(
@@ -107,6 +106,10 @@ def run(
     chosen = list(items) if items is not None else context.items.items(HARNESS)
     miner = run_condition(context, sandbox, "H", chosen, timeout=timeout)
     baselines = [run_bare(context, SlmClient(sandbox.slm_url), chosen)]
+    limit = float(context.harness_limits.get("added_wall_p95_ms") or 0)
+    added = percentile(miner.added_ms, 0.95)
+    limits_ok = not limit or added <= limit
+    reason = "" if limits_ok else f"added wall time p95 {added:.0f} ms is over {limit:.0f} ms"
     variants: list[Path] = [context.reference.harness_dir, *context.reference.variant_dirs]
     for index, variant in enumerate(variants, start=1):
         try:
@@ -115,4 +118,4 @@ def run(
             log.warning("reference harness %d could not start: %s", index, exc)
             continue
         baselines.append(run_condition(context, sandbox, f"B{index}", chosen, timeout=timeout))
-    return HarnessRun(miner=miner, baselines=baselines)
+    return HarnessRun(miner=miner, baselines=baselines, limits_ok=limits_ok, limits_reason=reason)

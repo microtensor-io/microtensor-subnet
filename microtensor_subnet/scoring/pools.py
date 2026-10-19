@@ -51,6 +51,8 @@ def combine(
     pools: Mapping[str, Sequence[Standing]],
     shares: Mapping[str, float] = POOL_SHARES,
     schedule: Sequence[float] = RANK_PAYOUT,
+    *,
+    burn_to: str = "",
 ) -> tuple[dict[str, float], dict[str, float]]:
     weights: dict[str, float] = {}
     burned: dict[str, float] = {}
@@ -58,6 +60,8 @@ def combine(
         paid = pool_payout(pools.get(pool, ()), schedule)
         if not paid:
             burned[pool] = share
+            if burn_to:
+                weights[burn_to] = weights.get(burn_to, 0.0) + share
             continue
         for hotkey, fraction in paid.items():
             weights[hotkey] = weights.get(hotkey, 0.0) + share * fraction

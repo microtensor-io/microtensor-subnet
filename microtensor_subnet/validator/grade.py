@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from microtensor_subnet.scoring.sql import admissible, rows_key, run_queries
+from microtensor_subnet.validator import compress
 
 SQL_EXECUTION: Final[str] = "sqlite_execution"
 EXACT_TEXT: Final[str] = "exact_text"
 RUBRIC_TEXT: Final[str] = "rubric_text"
+CONTEXT_COMPRESSION: Final[str] = compress.GRADER
 WORD = re.compile(r"[A-Za-z][A-Za-z0-9'\-]*")
 FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 
@@ -145,8 +147,20 @@ def grade_rubric(output: Any, label: Mapping[str, Any]) -> Grade:
 
 
 def grade(
-    grader: str, output: Any, label: Mapping[str, Any], databases: Mapping[str, bytes]
+    grader: str,
+    output: Any,
+    label: Mapping[str, Any],
+    databases: Mapping[str, bytes],
+    *,
+    task: Mapping[str, Any] | None = None,
+    judge: compress.Judge | None = None,
 ) -> Grade:
+    if grader == CONTEXT_COMPRESSION:
+        try:
+            verdict = compress.grade(output, label, task or {}, judge)
+        except ValueError as exc:
+            raise GradeError(str(exc)) from exc
+        return Grade(verdict.score, verdict.success, verdict.reason)
     if grader == SQL_EXECUTION:
         return grade_sql(output, label, databases)
     if grader == EXACT_TEXT:

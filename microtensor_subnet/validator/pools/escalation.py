@@ -6,7 +6,6 @@ from typing import Any
 
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.core.items import Item
-from microtensor_subnet.validator import grade
 from microtensor_subnet.validator.context import ESCALATION, EpochContext
 from microtensor_subnet.validator.relay import REPAIR, RelayError, TicketDesk
 from microtensor_subnet.validator.results import EscalationRun, ItemRun, ReferenceRun
@@ -93,10 +92,7 @@ def run(
             )
             continue
         output: Any = call.body.get("answer")
-        try:
-            verdict = grade.grade(context.grader, output, item.label, context.items.databases)
-        except grade.GradeError as exc:
-            verdict = grade.Grade(0.0, False, str(exc))
+        verdict = context.grade(item, output)
         repairs.append(
             ItemRun(
                 item.item_id,

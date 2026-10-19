@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,10 @@ class ArtifactSession:
     databases: dict[str, bytes] = field(default_factory=dict)
     item_databases: dict[str, tuple[str, ...]] = field(default_factory=dict)
     current_item: str = ""
+    max_model_calls: int = 0
+    model_faults: bool = False
+    item_calls: dict[str, int] = field(default_factory=dict)
+    item_model_ms: dict[str, float] = field(default_factory=dict)
     tokens_in: int = 0
     tokens_out: int = 0
     slm_calls: int = 0
@@ -66,6 +71,20 @@ class ArtifactSession:
             self.tokens_out = 0
             self.slm_calls = 0
             self.tool_calls = 0
+            self.item_calls.clear()
+            self.item_model_ms.clear()
+
+    def model_ms(self, item_id: str) -> float:
+        with self.lock:
+            return self.item_model_ms.get(item_id, 0.0)
+
+    def admit_model_call(self, item_id: str) -> tuple[bool, int]:
+        with self.lock:
+            made = self.item_calls.get(item_id, 0)
+            if self.max_model_calls and made >= self.max_model_calls:
+                return False, made
+            self.item_calls[item_id] = made + 1
+            return True, made
 
 
 class Services:
@@ -201,12 +220,42 @@ class Services:
                 *,
                 slm: bool = False,
             ) -> None:
+                fault = ""
+                with session.lock:
+                    item_id = session.current_item
                 if slm:
                     body["temperature"] = 0
                     body["stream"] = False
                     body.setdefault("model", "slm")
+                    admitted, made = session.admit_model_call(item_id)
+                    if not admitted:
+                        self._json(429, {"error": "model call limit for this item reached"})
+                        return
+                    if session.model_faults and session.fault_plan and made == 0:
+                        fault = session.fault_plan.fault_for(item_id)
+                    if fault in ("timeout", "error"):
+                        with session.lock:
+                            session.faults_served += 1
+                        if fault == "timeout":
+                            threading.Event().wait(UPSTREAM_SECONDS / 10)
+                            self._json(504, {"error": "model timed out"})
+                        else:
+                            self._json(500, {"error": "internal model failure"})
+                        return
+                started = time.perf_counter()
                 with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
                     response = http.post(base.rstrip("/") + path, json=body)
+                if slm:
+                    spent = (time.perf_counter() - started) * 1000
+                    with session.lock:
+                        session.item_model_ms[item_id] = (
+                            session.item_model_ms.get(item_id, 0.0) + spent
+                        )
+                if slm and fault and response.status_code == 200:
+                    with session.lock:
+                        session.faults_served += 1
+                    self._send(200, tools.model_fault(fault, response.content))
+                    return
                 if slm and response.status_code == 200:
                     try:
                         usage = response.json().get("usage") or {}

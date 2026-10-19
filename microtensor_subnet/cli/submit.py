@@ -47,7 +47,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     manifest.add_argument("--slm", type=Path, help="slm repository root, when slm is submitted")
     manifest.add_argument("--slm-repo", default="", help="<user>/mt_slm_<arena>")
     manifest.add_argument("--slm-revision", default="", help="the slm repository's git commit sha")
-    manifest.add_argument("--hardware-class", default=contract.HARDWARE_CLASSES[0])
+    manifest.add_argument(
+        "--hardware-class",
+        default=contract.DEFAULT_HARDWARE_CLASS,
+        choices=contract.HARDWARE_CLASSES,
+    )
     add_common_arguments(manifest)
     manifest.set_defaults(handler=_manifest)
 

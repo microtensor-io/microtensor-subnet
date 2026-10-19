@@ -7,7 +7,7 @@ Netuid **576** on Bittensor testnet. One validator evaluates every submission of
 | | |
 |---|---|
 | OS | Ubuntu 22.04 or 24.04 |
-| GPU | 3 × 24 GB (RTX 4090, L4, A10G or better), CUDA 12 driver |
+| GPU | 3 × 24 GB (RTX 4090, L4, A10G or better), CUDA 12 driver. Arenas graded by a probe agent (context compression) take the last GPU in `--gpus` for it, so give them one more |
 | CPU | 16 cores |
 | RAM | 64 GB |
 | Disk | NVMe, 400 GB free. Models are cached per revision and pruned after each epoch |

@@ -49,6 +49,7 @@ class Condition:
     name: str
     runs: list[ItemRun]
     tokens: int
+    added_ms: list[float] = field(default_factory=list)
 
     @property
     def pass_rate(self) -> float:
@@ -59,6 +60,8 @@ class Condition:
 class HarnessRun:
     miner: Condition
     baselines: list[Condition]
+    limits_ok: bool = True
+    limits_reason: str = ""
 
     def best_baseline(self) -> Condition:
         return max(self.baselines, key=lambda c: (c.pass_rate, -c.tokens))
