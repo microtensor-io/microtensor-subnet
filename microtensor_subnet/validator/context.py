@@ -18,6 +18,8 @@ ESCALATION = "escalation"
 SYSTEM = "system"
 ADVERSARIAL = "adversarial"
 TESTS = (SLM, HARNESS, ROUTER, ESCALATION, SYSTEM)
+SQL_STOP = ("\n\n", ";")
+SQL_MAX_TOKENS = 256
 
 
 @dataclass(slots=True)
@@ -105,6 +107,18 @@ class EpochContext:
     @property
     def grader(self) -> str:
         return str(self.definition.get("grader") or "sqlite_execution")
+
+    @property
+    def stop(self) -> tuple[str, ...]:
+        block = self.definition.get("generation") or {}
+        found = block.get("stop", SQL_STOP) if isinstance(block, Mapping) else SQL_STOP
+        return tuple(str(s) for s in found)
+
+    @property
+    def max_tokens(self) -> int:
+        block = self.definition.get("generation") or {}
+        found = block.get("max_tokens") if isinstance(block, Mapping) else None
+        return int(found or SQL_MAX_TOKENS)
 
     @property
     def slm_prompt(self) -> str:
