@@ -62,6 +62,7 @@ class SlmClient:
         started = time.perf_counter()
         first: float | None = None
         text: list[str] = []
+        pieces = 0
         usage: dict[str, Any] = {}
         finish = ""
         try:
@@ -89,6 +90,8 @@ class SlmClient:
                         piece = str(choice.get("text") or "")
                         if piece and first is None:
                             first = time.perf_counter()
+                        if piece:
+                            pieces += 1
                         text.append(piece)
                         if choice.get("finish_reason"):
                             finish = str(choice["finish_reason"])
@@ -98,11 +101,32 @@ class SlmClient:
         return Generation(
             text="".join(text),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
-            completion_tokens=int(usage.get("completion_tokens") or 0),
+            completion_tokens=int(usage.get("completion_tokens") or pieces),
             ttft_ms=((first or ended) - started) * 1000,
             total_ms=(ended - started) * 1000,
             finish_reason=finish,
         )
+
+
+def llama_command(model_file: str, *, threads: int, max_model_len: int) -> list[str]:
+    return [
+        "-m",
+        model_file,
+        "--host",
+        "0.0.0.0",  # noqa: S104
+        "--port",
+        "8000",
+        "--alias",
+        MODEL_NAME,
+        "-t",
+        str(threads),
+        "-tb",
+        str(threads),
+        "-c",
+        str(max_model_len),
+        "-np",
+        "1",
+    ]
 
 
 def vllm_command(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -150,6 +151,8 @@ def gather(
                 arena_id=config.arena_id,
                 allowed_bases=[str(b) for b in definition.get("allowed_bases") or []],
                 allowed_licenses=[str(b) for b in definition.get("allowed_licenses") or []],
+                bounds=_bounds(definition),
+                formats=[str(f) for f in definition.get("allowed_formats") or []],
             )
         except collect.CollectError as exc:
             failures[candidate.hotkey] = str(exc)
@@ -183,6 +186,16 @@ class Runner:
             log.warning("memory footprint of %s unknown: %s", model_dir.name, exc)
             return 0
 
+    def _measured(self, sandbox: Sandbox, estimate: int) -> int:
+        if not self.limits.on_cpu:
+            return estimate
+        peak = int(self.host.docker.usage(sandbox.slm_container).get("memory_peak_bytes") or 0)
+        return peak or estimate
+
+    @property
+    def limits(self) -> Limits:
+        return Limits.from_definition(self.context.definition, self.context.max_model_len)
+
     def _open(
         self,
         artifact_dir: Path,
@@ -204,7 +217,7 @@ class Runner:
             slot=slot,
             databases=self.context.items.databases,
             item_databases=self.context.items.item_databases(),
-            limits=Limits.from_definition(self.context.definition, self.context.max_model_len),
+            limits=self.limits,
         )
 
     def slm_phase(self, artifact: Artifact) -> None:
@@ -228,6 +241,7 @@ class Runner:
                     memory_bytes=self._memory(artifact.slm_dir, artifact.config),
                     parameters=artifact.slm_parameters,
                 )
+                outcome.slm.vram_peak_bytes = self._measured(sandbox, outcome.slm.vram_peak_bytes)
             finally:
                 outcome.usage = self.host.close(sandbox)
         except (SandboxError, Exception) as exc:
@@ -257,6 +271,9 @@ class Runner:
                     items=self.context.items.originals(SLM)
                     + self.context.items.items(ROUTER)
                     + self.context.items.items(ESCALATION),
+                )
+                self.reference_slm.vram_peak_bytes = self._measured(
+                    sandbox, self.reference_slm.vram_peak_bytes
                 )
                 if sandbox.router_url:
                     self.reference_router = router.run(
@@ -298,6 +315,9 @@ class Runner:
                         SlmClient(base_sandbox.slm_url),
                         memory_bytes=self._memory(path, {}),
                         parameters=0,
+                    )
+                    self.base_slm[name].vram_peak_bytes = self._measured(
+                        base_sandbox, self.base_slm[name].vram_peak_bytes
                     )
                 finally:
                     self.host.close(base_sandbox)
@@ -517,6 +537,7 @@ def run_epoch(
     relay = RelayClient(config.relay_url, str(token.get("token", "")))
     desk = TicketDesk(relay, config.arena_id, epoch_index)
     engine = docker or Docker()
+    _check_host(context.definition)
     services = Services(host_ip(), config.host_services_port)
     gpus = tuple(config.gpus or ("0",))
     agent: probe_judge.ProbeAgent | None = None
@@ -533,8 +554,11 @@ def run_epoch(
             base_dirs[base] = collect.download(base, "main", config.cache_dir)
         except Exception as exc:
             log.warning("base %s could not be fetched: %s", base, exc)
+    measured_alone = runner.limits.on_cpu
     try:
-        with ThreadPoolExecutor(max_workers=max(1, config.concurrency)) as pool:
+        with ThreadPoolExecutor(
+            max_workers=1 if measured_alone else max(1, config.concurrency)
+        ) as pool:
             list(pool.map(runner.slm_phase, artifacts.values()))
         runner.reference_phase(base_dirs)
         peers = {h: o.slm.drafts() for h, o in runner.outcomes.items() if o.slm is not None}
@@ -608,6 +632,35 @@ def run_epoch(
         burned=burned,
         report=signed.to_dict(),
     )
+
+
+def _check_host(definition: Mapping[str, Any]) -> None:
+    envelope = definition.get("envelope") or {}
+    reference = envelope.get("reference") if isinstance(envelope, Mapping) else None
+    wanted = str((reference or {}).get("arch") or "")
+    if not wanted:
+        return
+    machine = platform.machine().lower()
+    host = (
+        "arm64"
+        if machine in ("arm64", "aarch64")
+        else "x86_64"
+        if machine
+        in (
+            "x86_64",
+            "amd64",
+        )
+        else machine
+    )
+    if host != wanted:
+        raise EpochError(f"this arena is measured on {wanted}; this host is {host}")
+
+
+def _bounds(definition: Mapping[str, Any]) -> tuple[int, int] | None:
+    budgets = definition.get("budgets") or {}
+    if not isinstance(budgets, Mapping) or not budgets.get("max_parameters"):
+        return None
+    return int(budgets.get("min_parameters") or 0), int(budgets["max_parameters"])
 
 
 def _owner(chain: Any) -> str:

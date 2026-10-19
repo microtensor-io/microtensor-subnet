@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from microtensor_subnet.artifact import contract
-from microtensor_subnet.artifact.params import ParameterError, count_parameters, safetensors_in
+from microtensor_subnet.artifact.params import (
+    ParameterError,
+    model_parameters,
+)
 from microtensor_subnet.artifact.validate import (
     ManifestError,
     check_artifact,
@@ -116,6 +119,8 @@ def materialise(
     arena_id: str,
     allowed_bases: list[str],
     allowed_licenses: list[str],
+    bounds: tuple[int, int] | None = None,
+    formats: list[str] | None = None,
 ) -> Artifact:
     commitment = candidate.commitment
     try:
@@ -140,13 +145,15 @@ def materialise(
             slm_dir = download(manifest.slm.repo, manifest.slm.revision, cache_dir)
         except Exception as exc:
             raise CollectError(f"slm repository could not be fetched: {exc}") from exc
-        more = check_slm_repo(slm_dir, manifest.slm, allowed_bases)
+        more = check_slm_repo(
+            slm_dir, manifest.slm, allowed_bases, bounds=bounds, formats=formats or ()
+        )
         findings.problems += more.problems
         licence = _licence(slm_dir)
         if allowed_licenses and licence not in [x.lower() for x in allowed_licenses]:
             findings.problems.append(f"slm licence {licence!r} is not allowed in this arena")
         try:
-            parameters = count_parameters(safetensors_in(slm_dir))
+            parameters = model_parameters(slm_dir)
         except ParameterError as exc:
             findings.problems.append(str(exc))
     if findings.problems:

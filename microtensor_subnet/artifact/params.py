@@ -7,6 +7,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from microtensor_subnet.artifact import gguf
+
 HEADER_PREFIX_BYTES = 8
 QUANT_SUFFIXES = (".qweight", ".qzeros", ".scales", ".g_idx")
 INT4_PACK = 8
@@ -92,6 +94,28 @@ def kv_cache_bytes(root: Path, max_len: int) -> int:
     return 2 * layers * kv_heads * head_dim * max_len * KV_BYTES
 
 
+def model_parameters(root: Path) -> int:
+    weights = safetensors_in(root)
+    if weights:
+        return count_parameters(weights)
+    found = gguf.gguf_in(root)
+    if len(found) != 1:
+        raise ParameterError("the model needs safetensors weights or exactly one GGUF file")
+    try:
+        return gguf.read(found[0]).parameters
+    except (OSError, gguf.GgufError) as exc:
+        raise ParameterError(str(exc)) from exc
+
+
 def footprint_bytes(root: Path, max_len: int) -> int:
-    weights = sum(path.stat().st_size for path in safetensors_in(root))
-    return weights + kv_cache_bytes(root, max_len)
+    weights = safetensors_in(root)
+    if weights:
+        return sum(path.stat().st_size for path in weights) + kv_cache_bytes(root, max_len)
+    found = gguf.gguf_in(root)
+    if not found:
+        raise ParameterError(f"no weights in {root.name}")
+    try:
+        header = gguf.read(found[0])
+    except (OSError, gguf.GgufError) as exc:
+        raise ParameterError(str(exc)) from exc
+    return found[0].stat().st_size + header.kv_cache_bytes(max_len)

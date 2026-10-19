@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 validator = [
+    "gguf>=0.10",
     "torch>=2.4",
     "transformers>=4.44",
     "safetensors>=0.4",

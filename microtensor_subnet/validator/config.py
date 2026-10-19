@@ -8,6 +8,7 @@ from microtensor_subnet.chain.config import ChainConfig
 from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
 
 VLLM_IMAGE: Final[str] = "vllm/vllm-openai:v0.10.1"
+LLAMA_IMAGE: Final[str] = "ghcr.io/ggml-org/llama.cpp:server"
 SANDBOX_IMAGE: Final[str] = "ghcr.io/microtensor-io/sandbox:1"
 GATEWAY_IMAGE: Final[str] = "ghcr.io/microtensor-io/validator:1"
 CONCURRENCY: Final[int] = 3
@@ -29,6 +30,7 @@ class EpochConfig:
     gpus: tuple[str, ...] = ()
     concurrency: int = CONCURRENCY
     vllm_image: str = VLLM_IMAGE
+    llama_image: str = LLAMA_IMAGE
     sandbox_image: str = SANDBOX_IMAGE
     gateway_image: str = GATEWAY_IMAGE
     sandbox_runtime: str = "runsc"
