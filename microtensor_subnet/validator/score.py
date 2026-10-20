@@ -66,6 +66,7 @@ class Rules:
     burn_empty_pools: bool = False
     router_kind: str = FLOORS_BRIER
     router_latency_ms: float = ROUTER_LATENCY_GATE_MS
+    min_items: int = MIN_ITEMS
 
     @classmethod
     def from_definition(cls, definition: Mapping[str, Any]) -> Rules:
@@ -97,6 +98,7 @@ class Rules:
             burn_empty_pools=block.get("empty_pools") == "burn",
             router_kind=str(block.get("router") or FLOORS_BRIER),
             router_latency_ms=float(router.get("latency_gate_ms") or ROUTER_LATENCY_GATE_MS),
+            min_items=int(block.get("min_items") or MIN_ITEMS),
         )
 
 
