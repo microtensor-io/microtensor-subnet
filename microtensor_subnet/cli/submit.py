@@ -232,7 +232,7 @@ def _status(args: argparse.Namespace) -> int:
         arena = _arena(args.server, args.arena)
     except ValueError as exc:
         return fail(str(exc))
-    print(f"arena      {arena.get('id')}  season {arena.get('season')}  {arena.get('state')}")
+    print(f"arena      {arena.get('id')}  {arena.get('network')}  {arena.get('state')}")
     current = arena.get("current_epoch")
     if current:
         print(

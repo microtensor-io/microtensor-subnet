@@ -87,7 +87,7 @@ cd microtensor-subnet/deploy
 cat > .env <<EOF
 MT_WALLET_NAME=<coldkey>
 MT_WALLET_HOTKEY=<hotkey>
-MT_ARENA=sql_gen_s1
+MT_ARENA=sql_gen
 MT_GPUS=0,1,2
 DOCKER_GID=$(getent group docker | cut -d: -f3)
 EOF
@@ -111,7 +111,7 @@ A submission that fails to build, crashes, times out or reaches for the network 
 ## Dry run
 
 ```bash
-docker compose -f docker-compose.validator.yml run --rm validator epoch run --arena sql_gen_s1 --dry-run --item-limit 20 --home /var/lib/microtensor
+docker compose -f docker-compose.validator.yml run --rm validator epoch run --arena sql_gen --dry-run --item-limit 20 --home /var/lib/microtensor
 ```
 
 Evaluates twenty items per test, posts no report and sets no weights. Use it after installation and after every image update.
