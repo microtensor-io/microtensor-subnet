@@ -17,12 +17,54 @@ FIELDS: Final[dict[str, type]] = {
 EXTENSIONS: Final[str] = (
     "py|pyi|js|ts|tsx|jsx|go|rs|java|rb|c|h|cc|cpp|hpp|toml|cfg|ini|yaml|yml|json|md|rst|txt|sh"
 )
-PATH = re.compile(rf"(?<![\w/.-])((?:[\w.-]+/)*[\w-]+\.(?:{EXTENSIONS}))(?![\w-])")
+NESTED_PATH = re.compile(rf"(?<![\w/.-])((?:[\w.-]+/)+[\w-]+\.(?:{EXTENSIONS}))(?![\w-])")
+FILE_NAME = re.compile(rf"(?<![\w/.-])([a-z0-9_][a-z0-9_-]*\.(?:{EXTENSIONS}))(?![\w-])")
 ERROR = re.compile(r"\b([A-Za-z_][\w.]*(?:Error|Exception))\b")
 TICKED = re.compile(r"`([^`\s]{2,80})`")
-CALL = re.compile(r"\b([A-Za-z_]\w*)\(")
-SNAKE = re.compile(r"\b([a-z][a-z0-9]*_[a-z0-9_]+)\b")
-CAMEL = re.compile(r"\b([A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*)\b")
+CALL = re.compile(r"\b([A-Za-z_][\w.]*)\(")
+CODE_MARKS = re.compile(r"[_./()]|[a-z][A-Z]")
+ALLOWED: Final[frozenset[str]] = frozenset(
+    {
+        "github",
+        "gitlab",
+        "python",
+        "python3",
+        "pytest",
+        "pip",
+        "pip3",
+        "npm",
+        "node.js",
+        "nodejs",
+        "docker",
+        "linux",
+        "ubuntu",
+        "macos",
+        "windows",
+        "json",
+        "yaml",
+        "toml",
+        "readme.md",
+        "setup.py",
+        "setup.cfg",
+        "pyproject.toml",
+        "requirements.txt",
+        "conftest.py",
+        "git",
+        "bash",
+        "conda",
+        "tox",
+        "venv",
+        "print",
+        "len",
+        "str",
+        "int",
+        "dict",
+        "list",
+    }
+)
+KINDS: Final[tuple[str, ...]] = ("read", "edit", "test", "run", "install", "other")
+CHOICE = re.compile(r"^\(?([a-d])(?:\)|\.|:|\s|$)")
+CHOICE_NAMED = re.compile(r"\b(?:option|answer|choice)\s*\(?([a-d])\b")
 FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 BOUNDARY_BEFORE: Final[str] = r"(?<![\w.-])"
 LOOSE_BEFORE: Final[str] = r"(?<![\w-])"
@@ -92,9 +134,12 @@ def values_text(found: Mapping[str, Any]) -> str:
 
 def identifiers(text: str) -> set[str]:
     found: set[str] = set()
-    for pattern in (PATH, ERROR, TICKED, CALL, SNAKE, CAMEL):
+    for pattern in (NESTED_PATH, FILE_NAME, ERROR, CALL):
         found.update(match for match in pattern.findall(text) if len(match) > 2)
-    return found
+    found.update(
+        match for match in TICKED.findall(text) if len(match) > 2 and CODE_MARKS.search(match)
+    )
+    return {name for name in found if normalise(name).rstrip("(") not in ALLOWED}
 
 
 def recall(text: str, facts: Sequence[Mapping[str, Any]]) -> float:
@@ -117,6 +162,35 @@ def hallucination(text: str, session: str) -> float:
     return invented / len(found)
 
 
+def _words(said: str) -> list[str]:
+    return re.sub(r"[^a-z0-9/._ -]", " ", said).split()
+
+
+def probe_score(probe: Mapping[str, Any], answer: str) -> float:
+    said = normalise(answer)
+    if len(said.split()) > MAX_ANSWER_WORDS:
+        return 0.0
+    kind = str(probe.get("type") or "exact")
+    expected = probe.get("answers")
+    if kind == "word":
+        words = re.findall(r"[a-z0-9]+", said)
+        return 1.0 if words and isinstance(expected, list) and words[0] in expected else 0.0
+    if kind == "choice":
+        found = CHOICE.match(said) or CHOICE_NAMED.search(said)
+        return 1.0 if found and isinstance(expected, list) and found.group(1) in expected else 0.0
+    if kind == "next_step":
+        truth = expected if isinstance(expected, Mapping) else {}
+        named = [w for w in _words(said) if w in KINDS]
+        kind_ok = bool(named) and named[0] == truth.get("kind")
+        files = list(truth.get("file") or [])
+        file_ok = any(mentioned(said, f) for f in files) if files else kind_ok
+        if kind_ok and file_ok:
+            return 1.0
+        return 0.5 if kind_ok or (files and file_ok) else 0.0
+    aliases = expected if isinstance(expected, list) else []
+    return 1.0 if any(mentioned(said, alias) for alias in aliases) else 0.0
+
+
 def continuation(
     found: Mapping[str, Any], probes: Sequence[Mapping[str, Any]], judge: Judge
 ) -> float:
@@ -124,14 +198,8 @@ def continuation(
         return 1.0
     summary = json.dumps(dict(found), ensure_ascii=False, indent=1)
     answers = judge.answer(summary, [str(p.get("question", "")) for p in probes])
-    correct = 0
-    for probe, answer in zip(probes, answers, strict=False):
-        said = normalise(answer)
-        if len(said.split()) > MAX_ANSWER_WORDS:
-            continue
-        if any(mentioned(said, alias) for alias in probe.get("answers") or []):
-            correct += 1
-    return correct / len(probes)
+    scores = [probe_score(p, a) for p, a in zip(probes, answers, strict=False)]
+    return sum(scores) / len(probes)
 
 
 def grade(
@@ -147,7 +215,9 @@ def grade(
     input_tokens = int(label.get("input_tokens") or 0) or judge.count_tokens(
         str(task.get("system", "")) + session
     )
-    budget = max(judge.min_output_tokens, int(judge.max_output_share * input_tokens))
+    budget = int(label.get("budget_tokens") or 0) or max(
+        judge.min_output_tokens, int(judge.max_output_share * input_tokens)
+    )
     spent = judge.count_tokens(raw)
     if spent > budget:
         return Verdict(0.0, False, f"{spent} output tokens, over {budget}")
