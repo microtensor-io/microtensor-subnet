@@ -74,8 +74,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     commit.add_argument("--arena", required=True)
     commit.add_argument("--hf-user", required=True, help="the hugging face user or org")
     commit.add_argument("--artifact-sha", required=True, help="artifact repository commit sha")
-    commit.add_argument("--fee-block", type=int, required=True)
-    commit.add_argument("--fee-index", type=int, required=True)
+    commit.add_argument("--fee-block", type=int, default=0, help="0 when the arena is free")
+    commit.add_argument("--fee-index", type=int, default=0, help="0 when the arena is free")
     add_chain_arguments(commit)
     add_common_arguments(commit)
     commit.set_defaults(handler=_commit)
@@ -165,7 +165,11 @@ def _pay(args: argparse.Namespace) -> int:
     fee_tao = float(definition.get("fee_tao") or 0.0)
     pay_to = str(definition.get("fee_coldkey") or "")
     if fee_tao <= 0 or not pay_to:
-        return fail("the arena publishes no fee; nothing to pay")
+        print(
+            f"{args.arena} charges no fee; commit with mt submit commit --arena {args.arena} "
+            "--hf-user <user> --artifact-sha <sha>"
+        )
+        return 0
     config = chain_config(args)
     wallet = open_wallet(config)
     print(f"arena      {args.arena}")

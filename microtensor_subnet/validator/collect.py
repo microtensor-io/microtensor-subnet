@@ -74,6 +74,8 @@ def candidates(
 
 
 def fee_ok(client: Any, candidate: Candidate, *, pay_to: str, fee_tao: float) -> str:
+    if fee_tao <= 0 or not pay_to:
+        return ""
     try:
         event = client.transfer_at(candidate.commitment.fee_block, candidate.commitment.fee_index)
     except ChainError as exc:
