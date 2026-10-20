@@ -8,8 +8,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from microtensor_subnet.artifact import contract
-from microtensor_subnet.artifact.params import ParameterError, count_parameters, safetensors_in
+from microtensor_subnet.artifact import contract, gguf
+from microtensor_subnet.artifact.params import (
+    ParameterError,
+    count_parameters,
+    model_parameters,
+    safetensors_in,
+)
 
 _SHA = re.compile(r"^(sha256:)?[0-9a-f]{64}$")
 _GIT = re.compile(r"^[0-9a-f]{40}$")
@@ -275,10 +280,22 @@ def _looks_secret(path: Path) -> bool:
     return any(marker in head for marker in _SECRET_MARKERS)
 
 
-def check_slm_repo(root: Path, pin: SlmPin | None, allowed_bases: Iterable[str] = ()) -> Findings:
+def check_slm_repo(
+    root: Path,
+    pin: SlmPin | None,
+    allowed_bases: Iterable[str] = (),
+    *,
+    bounds: tuple[int, int] | None = None,
+    formats: Iterable[str] = (),
+) -> Findings:
     findings = Findings()
     present = set(tree_files(root))
-    for name in contract.SLM_REQUIRED_FILES:
+    weights = safetensors_in(root)
+    ggufs = gguf.gguf_in(root)
+    required = (
+        contract.SLM_GGUF_REQUIRED_FILES if ggufs and not weights else contract.SLM_REQUIRED_FILES
+    )
+    for name in required:
         if name not in present:
             findings.problems.append(f"{name} is missing from the slm repository")
     for name in contract.SLM_TRAINING_FILES:
@@ -286,20 +303,21 @@ def check_slm_repo(root: Path, pin: SlmPin | None, allowed_bases: Iterable[str] 
             findings.problems.append(f"{name} is required for the archive")
     if not list(root.glob(contract.SLM_METRICS_GLOB)):
         findings.problems.append("training/runs/<id>/metrics.jsonl is required for the archive")
-    weights = safetensors_in(root)
-    if not weights:
-        findings.problems.append("no model.safetensors (or shards) in the slm repository root")
+    low, high = bounds or (contract.SLM_MIN_PARAMETERS, contract.SLM_MAX_PARAMETERS)
+    if not weights and not ggufs:
+        findings.problems.append("no model.safetensors (or shards) or model.gguf in the root")
     else:
         try:
-            parameters = count_parameters(weights)
+            parameters = model_parameters(root)
             findings.notes.append(f"slm parameters {parameters}")
-            if not contract.SLM_MIN_PARAMETERS <= parameters <= contract.SLM_MAX_PARAMETERS:
+            if not low <= parameters <= high:
                 findings.problems.append(
-                    f"slm has {parameters} parameters; the arena allows "
-                    f"{contract.SLM_MIN_PARAMETERS} to {contract.SLM_MAX_PARAMETERS}"
+                    f"slm has {parameters} parameters; the arena allows {low} to {high}"
                 )
         except ParameterError as exc:
             findings.problems.append(str(exc))
+    if ggufs and not weights:
+        findings.problems += _gguf_problems(ggufs[0], [f.upper() for f in formats])
     if pin is not None:
         for name, digest in pin.files.items():
             if name not in present:
@@ -316,6 +334,20 @@ def check_slm_repo(root: Path, pin: SlmPin | None, allowed_bases: Iterable[str] 
         if base.lower() not in bases:
             findings.problems.append(f"base model {base!r} is not on the arena's allowed list")
     return findings
+
+
+def _gguf_problems(path: Path, formats: list[str]) -> list[str]:
+    try:
+        header = gguf.read(path)
+    except (OSError, gguf.GgufError) as exc:
+        return [str(exc)]
+    problems: list[str] = []
+    low = header.below_four_bits
+    if low:
+        problems.append(f"{len(low)} tensors are below 4 bit, for example {low[0]}")
+    if formats and header.file_type.upper() not in formats:
+        problems.append(f"GGUF type {header.file_type or 'unknown'} is not one of {formats}")
+    return problems
 
 
 def build_manifest(

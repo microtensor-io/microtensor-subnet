@@ -6,7 +6,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from microtensor_subnet.artifact.params import ParameterError, count_parameters, safetensors_in
+from microtensor_subnet.artifact.params import (
+    ParameterError,
+    model_parameters,
+)
 from microtensor_subnet.core.hashing import canonical_json
 from microtensor_subnet.core.items import (
     ItemError,
@@ -140,7 +143,7 @@ def reference_components(
         raise ReleaseError("the arena names no reference slm")
     slm_dir = download(slm_repo, slm_revision, cache_dir)
     try:
-        parameters = count_parameters(safetensors_in(slm_dir))
+        parameters = model_parameters(slm_dir)
     except ParameterError as exc:
         raise ReleaseError(f"the reference slm has no readable weights: {exc}") from exc
     harness = trees.get("harness")

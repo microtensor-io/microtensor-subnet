@@ -38,6 +38,8 @@ class ContainerSpec:
     tmpfs: Sequence[str] = ()
     shm_size: str = ""
     ipc_none: bool = False
+    cpuset: str = ""
+    ports: Sequence[tuple[str, int]] = ()
 
 
 class Runner(Protocol):
@@ -71,6 +73,10 @@ def _flags(spec: ContainerSpec) -> list[str]:
         argv += ["--runtime", spec.runtime]
     if spec.cpus:
         argv += ["--cpus", f"{spec.cpus:g}"]
+    if spec.cpuset:
+        argv += ["--cpuset-cpus", spec.cpuset]
+    for host, port in spec.ports:
+        argv += ["-p", f"{host}:{port}"]
     if spec.memory:
         argv += ["--memory", spec.memory, "--memory-swap", spec.memory]
     if spec.pids:

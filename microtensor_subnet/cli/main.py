@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from microtensor_subnet.cli import envelope as envelope_cmd
 from microtensor_subnet.cli import epoch as epoch_cmd
 from microtensor_subnet.cli import operator as operator_cmd
 from microtensor_subnet.cli import submit as submit_cmd
@@ -25,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     submit_cmd.register(subparsers)
     epoch_cmd.register(subparsers)
     operator_cmd.register(subparsers)
+    envelope_cmd.register(subparsers)
     return parser
 
 

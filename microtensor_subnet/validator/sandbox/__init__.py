@@ -17,6 +17,7 @@ from typing import Any, Protocol
 import httpx
 
 from microtensor_subnet.artifact import contract
+from microtensor_subnet.artifact.gguf import gguf_in
 from microtensor_subnet.validator.relay import TicketDesk
 from microtensor_subnet.validator.sandbox import tools
 from microtensor_subnet.validator.sandbox.docker import ContainerSpec, Docker, DockerError
@@ -25,6 +26,7 @@ from microtensor_subnet.validator.sandbox.slm import (
     MEMORY_SHARE,
     SHARED_MEMORY_SHARE,
     SlmClient,
+    llama_command,
     vllm_command,
 )
 
@@ -44,6 +46,9 @@ class SandboxError(RuntimeError):
 class SandboxConfig(Protocol):
     @property
     def vllm_image(self) -> str: ...
+
+    @property
+    def llama_image(self) -> str: ...
 
     @property
     def sandbox_image(self) -> str: ...
@@ -98,6 +103,13 @@ class Limits:
     router_max_input_tokens: int = ROUTER_INPUT_CEILING
     max_model_calls: int = 0
     model_faults: bool = False
+    device: str = "gpu"
+    cpu_threads: int = 0
+    memory_cap_gb: float = 0.0
+
+    @property
+    def on_cpu(self) -> bool:
+        return self.device == "cpu"
 
     @property
     def router_on_gpu(self) -> bool:
@@ -108,6 +120,10 @@ class Limits:
         limits = definition.get("limits") or {}
         router = limits.get("router") or {} if isinstance(limits, Mapping) else {}
         harness = limits.get("harness") or {} if isinstance(limits, Mapping) else {}
+        envelope = definition.get("envelope") or {}
+        envelope = envelope if isinstance(envelope, Mapping) else {}
+        reference = envelope.get("reference") or {}
+        reference = reference if isinstance(reference, Mapping) else {}
         return cls(
             max_model_len=max_model_len,
             router_max_parameters=int(
@@ -116,7 +132,36 @@ class Limits:
             router_max_input_tokens=int(router.get("max_input_tokens") or ROUTER_INPUT_CEILING),
             max_model_calls=int(harness.get("max_model_calls") or 0),
             model_faults=harness.get("faults") == "model",
+            device=str(envelope.get("device") or "gpu"),
+            cpu_threads=int(reference.get("threads") or 0),
+            memory_cap_gb=float(reference.get("memory_cap_gb") or 0),
         )
+
+
+def cpu_container(
+    name: str,
+    image: str,
+    model_dir: Path,
+    max_len: int,
+    limits: Limits,
+    network: str,
+    ports: Sequence[tuple[str, int]] = (),
+) -> ContainerSpec:
+    found = gguf_in(model_dir)
+    if not found:
+        raise SandboxError("a CPU envelope needs one GGUF file in the model repository")
+    threads = max(1, limits.cpu_threads)
+    return ContainerSpec(
+        name=name,
+        image=image,
+        network=network,
+        command=llama_command(f"/model/{found[0].name}", threads=threads, max_model_len=max_len),
+        volumes=((str(model_dir), "/model", "ro"),),
+        cpus=float(threads),
+        cpuset=f"0-{threads - 1}",
+        memory=f"{limits.memory_cap_gb:g}g" if limits.memory_cap_gb else "",
+        ports=ports,
+    )
 
 
 @dataclass(slots=True)
@@ -156,6 +201,11 @@ class SandboxHost:
     ) -> str:
         name = f"mt-slm-{key}"
         max_len = limits.max_model_len or int((config.get("slm") or {}).get("max_context") or 8192)
+        if limits.on_cpu:
+            self.docker.start(
+                cpu_container(name, self.config.llama_image, model_dir, max_len, limits, network)
+            )
+            return name
         share = SHARED_MEMORY_SHARE if limits.router_on_gpu else MEMORY_SHARE
         self.docker.start(
             ContainerSpec(

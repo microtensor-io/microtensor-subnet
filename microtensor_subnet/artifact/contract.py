@@ -30,12 +30,13 @@ SLM_REQUIRED_FILES: Final[tuple[str, ...]] = (
     "tokenizer.json",
     "tokenizer_config.json",
 )
+SLM_GGUF_REQUIRED_FILES: Final[tuple[str, ...]] = ("README.md", "LICENSE")
 SLM_TRAINING_FILES: Final[tuple[str, ...]] = (
     "training/recipe.json",
     "training/data/sources.json",
 )
 SLM_METRICS_GLOB: Final[str] = "training/runs/*/metrics.jsonl"
-SLM_MIN_PARAMETERS: Final[int] = 1_000_000_000
+SLM_MIN_PARAMETERS: Final[int] = 100_000_000
 SLM_MAX_PARAMETERS: Final[int] = 8_000_000_000
 ROUTER_MAX_PARAMETERS: Final[int] = 1_500_000_000
 ROUTER_CPU_PARAMETERS: Final[int] = 100_000_000

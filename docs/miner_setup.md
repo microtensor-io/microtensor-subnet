@@ -14,6 +14,6 @@ Validators score your weights under the arena's own prompt, and provenance fails
 2. Harness: set the adapter prompt, the verifier and retries, measure again.
 3. Distil: frontier answers with reasoning on schemas and question shapes like the arena's, filtered by the grader, fine tuned from the base (LoRA or full) and recorded under `training/`.
 4. Reinforce: reward a query that returns the reference result on every database state; or preference pairs of a right teacher answer against a wrong draft.
-5. Check: hold out whole domains, rename and revalue as the twin rule does, measure latency and memory inside your arena's envelope group (https://www.microtensor.cloud/docs/certified-inference/system/envelope-groups), train the router on the result.
+5. Check: hold out whole domains, rename and revalue as the twin rule does, measure latency and memory inside your arena's envelope group with `mt envelope check --arena <arena> --slm ./slm_repo --items <dev items>` (https://www.microtensor.cloud/docs/certified-inference/system/envelope-groups), train the router on the result.
 
 Items are fresh every epoch and twins deduct memorisation, so train the skill, not the sample databases. Full page: https://www.microtensor.cloud/docs/certified-inference/guides/training
