@@ -99,7 +99,7 @@ The loop polls the chain every ten minutes. When an arena's evaluation window op
 
 ## What one epoch does with a submission
 
-1. Verifies the fee on chain and every file hash in `manifest.json`.
+1. Verifies the fee on chain, when the epoch's roster records one, and every file hash in `manifest.json`.
 2. Serves the miner's model with vLLM on one GPU, isolated on an internal network.
 3. Serves the miner's router from the validator process.
 4. Starts the miner's `main.py` in the sandbox with four service URLs and nothing else.

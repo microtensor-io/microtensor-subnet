@@ -99,6 +99,13 @@ def load_context(
     ref = items.reference_components(trees, definition, config.cache_dir)
     snapshot = client.ledger_snapshot(config.arena_id, epoch_index)
     roster_doc = client.roster(config.arena_id, epoch_index)
+    charged = dict(dict(dict(roster_doc or {}).get("body") or {}).get("fee") or {})
+    if charged:
+        definition = {
+            **definition,
+            "fee_tao": float(charged.get("tao") or 0.0),
+            "fee_coldkey": str(charged.get("pay_to") or ""),
+        }
     sample = next(iter(epoch_items.databases.values()), b"")
     sample_sha = str(definition.get("sample_database") or "")
     if sample_sha and sample_sha in epoch_items.databases:

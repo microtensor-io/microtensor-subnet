@@ -25,8 +25,8 @@ Nothing a miner claims is used. The artifact is fetched from Hugging Face at the
 
 ## How an epoch works
 
-1. **Commit.** A miner pays the arena fee and commits one line on chain: arena, Hugging Face user, artifact commit, fee block and extrinsic index.
-2. **Roster and snapshot.** At commit close the server verifies every fee and publishes a signed roster and a signed snapshot of previous bests.
+1. **Commit.** A miner pays the arena fee, if the arena charges one, and commits one line on chain: arena, Hugging Face user, artifact commit, fee block and extrinsic index (0 and 0 for a free arena). The operator sets each arena's fee and can change it at any time; each epoch's roster records the fee it ran under.
+2. **Roster and snapshot.** At commit close the server verifies every fee it charges and publishes a signed roster and a signed snapshot of previous bests.
 3. **Release.** Once the open block is final the server seals the epoch's encrypted item bundle to every permitted validator and publishes the seed, the hash of the open block hash and the arena id.
 4. **Evaluation.** Each validator serves the miner's model with vLLM, serves the miner's router, runs the miner's `main.py` in the sandbox, and runs the SLM, harness, router, escalation and system tests.
 5. **Report.** Each validator signs one report per epoch and sets weights from its own scores.
