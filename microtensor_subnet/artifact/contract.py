@@ -4,8 +4,8 @@ from typing import Final
 
 SCHEMA_VERSION: Final[int] = 1
 COMPONENTS: Final[tuple[str, ...]] = ("slm", "harness", "router", "escalation")
-HARDWARE_CLASSES: Final[tuple[str, ...]] = ("mt-1", "mt-2", "mt-3")
-DEFAULT_HARDWARE_CLASS: Final[str] = "mt-3"
+HARDWARE_CLASSES: Final[tuple[str, ...]] = ("mt-1", "mt-2", "mt-3", "mt-4", "mt-5")
+DEFAULT_HARDWARE_CLASS: Final[str] = "mt-5"
 
 ARTIFACT_REPO_PREFIX: Final[str] = "microtensor_"
 SLM_REPO_PREFIX: Final[str] = "mt_slm_"
