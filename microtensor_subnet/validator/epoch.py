@@ -67,12 +67,23 @@ class Outcome:
 
 def _window(arena: Mapping[str, Any], index: int) -> Epoch:
     timing = dict(arena.get("timing") or {})
+    segments = [dict(s) for s in timing.get("segments") or []] or [
+        {
+            "from_epoch": 0,
+            "start_block": timing["genesis_block"],
+            "epoch_blocks": timing["epoch_blocks"],
+            "commit_blocks": timing["commit_blocks"],
+            "settle_margin": timing["settle_margin"],
+        }
+    ]
+    seg = [s for s in segments if int(s["from_epoch"]) <= index][-1]
+    length = int(seg["epoch_blocks"])
     return Epoch(
         index=index,
-        start_block=int(timing["genesis_block"]) + index * int(timing["epoch_blocks"]),
-        length=int(timing["epoch_blocks"]),
-        commit_blocks=int(timing["commit_blocks"]),
-        settle_margin=int(timing["settle_margin"]),
+        start_block=int(seg["start_block"]) + (index - int(seg["from_epoch"])) * length,
+        length=length,
+        commit_blocks=int(seg["commit_blocks"]),
+        settle_margin=int(seg["settle_margin"]),
     )
 
 
