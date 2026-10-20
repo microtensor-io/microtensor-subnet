@@ -466,6 +466,7 @@ def score_all(
                 gate_ok=gate,
                 provenance_ok=bool(prov.get("passed")),
                 base=base_run,
+                min_items=rules.min_items,
                 rules=rules,
                 envelope_ok=envelope_ok,
             )
@@ -486,7 +487,7 @@ def score_all(
                 )
             found.append(pool_score)
         if outcome.harness is not None:
-            found.append(score.harness_score(outcome.harness))
+            found.append(score.harness_score(outcome.harness, min_items=rules.min_items))
         if outcome.router is not None:
             found.append(
                 score.router_score(
@@ -502,11 +503,14 @@ def score_all(
         if outcome.escalation is not None:
             found.append(
                 score.escalation_score(
-                    outcome.escalation, runner.reference_escalation, seed=context.seed
+                    outcome.escalation,
+                    runner.reference_escalation,
+                    seed=context.seed,
+                    min_items=rules.min_items,
                 )
             )
         if outcome.system is not None:
-            found.append(score.system_score(outcome.system))
+            found.append(score.system_score(outcome.system, min_items=rules.min_items))
         scores[hotkey] = found
     return scores
 
