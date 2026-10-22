@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Final
@@ -200,12 +201,16 @@ def decode_all(raw_by_hotkey: dict[str, str]) -> dict[str, Commitment]:
 
 
 SUBMISSION_TAG: Final[str] = "mt2"
+SEALED_TAG: Final[str] = "mt3"
+REVEAL_MESSAGE_TAG: Final[str] = "mt-reveal"
 ARTIFACT_REPO_PREFIX: Final[str] = "microtensor_"
 SLM_REPO_PREFIX: Final[str] = "mt_slm_"
 
 _ARENA = re.compile(r"^[a-z0-9][a-z0-9_]{0,15}$")
 _HF_USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_SALT = re.compile(r"^[0-9a-f]{16,64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +278,89 @@ class SubmissionCommitment:
             )
         except (CommitmentError, ValueError):
             return None
+
+
+def seal_digest(arena_id: str, hf_user: str, artifact_sha: str, salt: str) -> str:
+    plain = f"{arena_id}|{hf_user}|{artifact_sha.lower()}|{salt}"
+    return hashlib.sha256(plain.encode()).hexdigest()
+
+
+def reveal_message(
+    arena_id: str, epoch_index: int, hotkey: str, hf_user: str, artifact_sha: str, salt: str
+) -> bytes:
+    return FIELD_SEPARATOR.join(
+        (
+            REVEAL_MESSAGE_TAG,
+            arena_id,
+            str(epoch_index),
+            hotkey,
+            hf_user,
+            artifact_sha.lower(),
+            salt,
+        )
+    ).encode()
+
+
+@dataclass(frozen=True, slots=True)
+class SealedCommitment:
+    arena_id: str
+    digest: str
+    fee_block: int
+    fee_index: int
+
+    def __post_init__(self) -> None:
+        if not _ARENA.match(self.arena_id):
+            raise CommitmentError(f"arena id {self.arena_id!r} is not a valid identifier")
+        if not _DIGEST.match(self.digest):
+            raise CommitmentError("the sealed digest must be 64 hex characters")
+        if self.fee_block < 0 or self.fee_index < 0:
+            raise CommitmentError("the fee reference must name a block and an extrinsic index")
+
+    @classmethod
+    def seal(
+        cls,
+        arena_id: str,
+        hf_user: str,
+        artifact_sha: str,
+        salt: str,
+        fee_block: int,
+        fee_index: int,
+    ) -> SealedCommitment:
+        if not _HF_USER.match(hf_user):
+            raise CommitmentError(f"hugging face user {hf_user!r} is not a valid name")
+        if not _GIT_SHA.match(artifact_sha.lower()):
+            raise CommitmentError("the artifact revision must be a 40 hex git commit sha")
+        if not _SALT.match(salt):
+            raise CommitmentError("the salt must be 16 to 64 hex characters")
+        digest = seal_digest(arena_id, hf_user, artifact_sha, salt)
+        return cls(arena_id, digest, fee_block, fee_index)
+
+    def matches(self, hf_user: str, artifact_sha: str, salt: str) -> bool:
+        return seal_digest(self.arena_id, hf_user, artifact_sha, salt) == self.digest
+
+    def encode(self) -> str:
+        return FIELD_SEPARATOR.join(
+            (SEALED_TAG, self.arena_id, self.digest, str(self.fee_block), str(self.fee_index))
+        )
+
+    @classmethod
+    def decode(cls, raw: str) -> SealedCommitment | None:
+        parts = (raw or "").strip().split(FIELD_SEPARATOR)
+        if len(parts) != 5 or parts[0] != SEALED_TAG:
+            return None
+        try:
+            return cls(parts[1], parts[2].lower(), int(parts[3]), int(parts[4]))
+        except (CommitmentError, ValueError):
+            return None
+
+
+def decode_sealed(raw_by_hotkey: dict[str, str]) -> dict[str, SealedCommitment]:
+    decoded: dict[str, SealedCommitment] = {}
+    for hotkey, raw in raw_by_hotkey.items():
+        commitment = SealedCommitment.decode(raw)
+        if commitment is not None:
+            decoded[hotkey] = commitment
+    return decoded
 
 
 def decode_submissions(raw_by_hotkey: dict[str, str]) -> dict[str, SubmissionCommitment]:

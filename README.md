@@ -25,12 +25,13 @@ Nothing a miner claims is used. The artifact is fetched from Hugging Face at the
 
 ## How an epoch works
 
-1. **Commit.** A miner pays the arena fee, if the arena charges one, and commits one line on chain: arena, Hugging Face user, artifact commit, fee block and extrinsic index (0 and 0 for a free arena). The operator sets each arena's fee and can change it at any time; each epoch's roster records the fee it ran under.
-2. **Roster and snapshot.** At commit close the server verifies every fee it charges and publishes a signed roster and a signed snapshot of previous bests.
-3. **Release.** Once the open block is final the server seals the epoch's encrypted item bundle to every permitted validator and publishes the seed, the hash of the open block hash and the arena id.
-4. **Evaluation.** Each validator serves the miner's model with vLLM, serves the miner's router, runs the miner's `main.py` in the sandbox, and runs the SLM, harness, router, escalation and system tests.
-5. **Report.** Each validator signs one report per epoch and sets weights from its own scores.
-6. **Ledger and archive.** The server publishes the stake weighted median across agreeing reports, applies the ladder, and mirrors the SLM pool winner privately to the archive.
+1. **Commit, sealed.** A miner pays the arena fee, if the arena charges one, and commits one line on chain: arena, a digest of (Hugging Face user, artifact commit, secret salt), fee block and extrinsic index (0 and 0 for a free arena). The repositories stay private, so nothing can be copied during the window. `mt submit commit --open` still publishes the repository in the clear.
+2. **Reveal.** When the commit window closes a reveal window opens. The miner makes both repositories public and runs `mt submit reveal`, which sends the user, commit and salt signed by the hotkey. The server checks the digest; a missing or mismatched reveal is rejected, and validators recheck the digest themselves from the roster. A model or artifact whose weights duplicate an earlier commitment is rejected as a copy.
+3. **Roster and snapshot.** At commit close the server verifies every fee it charges and publishes a signed roster and a signed snapshot of previous bests.
+4. **Release.** Once the open block is final the server seals the epoch's encrypted item bundle to every permitted validator and publishes the seed, the hash of the open block hash and the arena id.
+5. **Evaluation.** Each validator serves the miner's model with vLLM, serves the miner's router, runs the miner's `main.py` in the sandbox, and runs the SLM, harness, router, escalation and system tests.
+6. **Report.** Each validator signs one report per epoch and sets weights from its own scores.
+7. **Ledger and archive.** The server publishes the stake weighted median across agreeing reports, applies the ladder, and mirrors the SLM pool winner privately to the archive.
 
 Five pools pay 20% each by rank (40 / 25 / 15 / 12 / 8). Every score is a one sided lower bound; a published score only moves when a new result beats the previous best for the same artifact by 0.01.
 
