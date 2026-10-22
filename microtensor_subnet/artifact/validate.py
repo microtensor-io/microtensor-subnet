@@ -117,6 +117,9 @@ def _digests(raw: Any, where: str) -> dict[str, str]:
     return found
 
 
+UNTRACKED_DIRS = frozenset({".git", ".cache"})
+
+
 def sha256_of(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as handle:
@@ -130,8 +133,16 @@ def tree_files(root: Path, *, skip: Iterable[str] = ()) -> list[str]:
     return sorted(
         p.relative_to(root).as_posix()
         for p in root.rglob("*")
-        if p.is_file() and ".git" not in p.parts and p.relative_to(root).as_posix() not in skipped
+        if p.is_file()
+        and not UNTRACKED_DIRS & set(p.parts)
+        and p.relative_to(root).as_posix() not in skipped
     )
+
+
+def tracked(files: dict[str, str]) -> dict[str, str]:
+    return {
+        name: digest for name, digest in files.items() if not UNTRACKED_DIRS & set(name.split("/"))
+    }
 
 
 def hash_tree(root: Path, *, skip: Iterable[str] = ()) -> dict[str, str]:
@@ -176,7 +187,7 @@ def check_artifact(root: Path, manifest: Manifest) -> Findings:
     for name in required:
         if name not in present:
             findings.problems.append(f"{name} is required by the components submitted")
-    listed = set(manifest.files)
+    listed = set(tracked(manifest.files))
     for name in sorted(present - listed):
         findings.problems.append(f"{name} is in the repository but not in manifest.files")
     for name in sorted(listed - present):
@@ -319,7 +330,7 @@ def check_slm_repo(
     if ggufs and not weights:
         findings.problems += _gguf_problems(ggufs[0], [f.upper() for f in formats])
     if pin is not None:
-        for name, digest in pin.files.items():
+        for name, digest in tracked(pin.files).items():
             if name not in present:
                 findings.problems.append(f"pinned slm file {name} is missing")
             elif sha256_of(root / name) != digest:
