@@ -20,7 +20,12 @@ from microtensor_subnet.artifact.validate import (
     manifest_sha256,
 )
 from microtensor_subnet.chain.client import ChainError
-from microtensor_subnet.chain.commitment import SubmissionCommitment, decode_submissions
+from microtensor_subnet.chain.commitment import (
+    CommitmentError,
+    SubmissionCommitment,
+    decode_sealed,
+    decode_submissions,
+)
 from microtensor_subnet.validator.context import Artifact
 
 log = logging.getLogger("microtensor_subnet.validator.collect")
@@ -50,6 +55,23 @@ def candidates(
     hotkeys = [n.hotkey for n in snapshot.neurons]
     raw = client.commitments(hotkeys)
     decoded = decode_submissions(raw)
+    for hotkey, sealed in decode_sealed(raw).items():
+        entry = (roster or {}).get(hotkey) or {}
+        if str(entry.get("reveal_state") or "") != "unsealed":
+            log.info("%s is sealed and not revealed on the roster", hotkey)
+            continue
+        hf_user = str(entry.get("hf_user") or "")
+        artifact_sha = str(entry.get("artifact_sha") or "").lower()
+        salt = str(entry.get("salt") or "")
+        if not sealed.matches(hf_user, artifact_sha, salt):
+            log.info("%s revealed values do not match the sealed digest", hotkey)
+            continue
+        try:
+            decoded[hotkey] = SubmissionCommitment(
+                sealed.arena_id, hf_user, artifact_sha, sealed.fee_block, sealed.fee_index
+            )
+        except CommitmentError as exc:
+            log.info("%s revealed values are invalid: %s", hotkey, exc)
     blocks = client.commitment_blocks(list(decoded))
     coldkeys = snapshot.coldkeys() if hasattr(snapshot, "coldkeys") else {}
     found: list[Candidate] = []

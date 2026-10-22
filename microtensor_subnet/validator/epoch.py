@@ -174,7 +174,30 @@ def gather(
             )
         except collect.CollectError as exc:
             failures[candidate.hotkey] = str(exc)
+    for hotkey, reason in duplicates(artifacts).items():
+        failures[hotkey] = reason
+        artifacts.pop(hotkey, None)
     return artifacts, failures
+
+
+def duplicates(artifacts: Mapping[str, Artifact]) -> dict[str, str]:
+    seen_weights: dict[str, str] = {}
+    seen_manifests: dict[str, str] = {}
+    found: dict[str, str] = {}
+    for hotkey, artifact in sorted(artifacts.items(), key=lambda kv: (kv[1].commit_block, kv[0])):
+        if artifact.manifest_sha in seen_manifests:
+            first = seen_manifests[artifact.manifest_sha]
+            found[hotkey] = f"artifact duplicates the earlier commitment by {first}"
+            continue
+        weights = provenance.digest_of_dir(artifact.slm_dir) if artifact.slm_dir else ""
+        if weights and weights in seen_weights:
+            first = seen_weights[weights]
+            found[hotkey] = f"model weights duplicate the earlier commitment by {first}"
+            continue
+        seen_manifests[artifact.manifest_sha] = hotkey
+        if weights:
+            seen_weights[weights] = hotkey
+    return found
 
 
 @dataclass(slots=True)

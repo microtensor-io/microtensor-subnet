@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,8 +21,13 @@ from microtensor_subnet.artifact.validate import (
     write_manifest,
 )
 from microtensor_subnet.chain.client import ChainError
-from microtensor_subnet.chain.commitment import CommitmentError, SubmissionCommitment
-from microtensor_subnet.chain.wallet import coldkey_address, hotkey_address
+from microtensor_subnet.chain.commitment import (
+    CommitmentError,
+    SealedCommitment,
+    SubmissionCommitment,
+    reveal_message,
+)
+from microtensor_subnet.chain.wallet import coldkey_address, hotkey_address, sign_bytes
 from microtensor_subnet.cli.common import (
     add_chain_arguments,
     add_common_arguments,
@@ -76,9 +82,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     commit.add_argument("--artifact-sha", required=True, help="artifact repository commit sha")
     commit.add_argument("--fee-block", type=int, default=0, help="0 when the arena is free")
     commit.add_argument("--fee-index", type=int, default=0, help="0 when the arena is free")
+    commit.add_argument(
+        "--open", action="store_true", help="commit the repository in the open instead of sealed"
+    )
     add_chain_arguments(commit)
     add_common_arguments(commit)
     commit.set_defaults(handler=_commit)
+
+    reveal = inner.add_parser("reveal", help="reveal a sealed commitment once the window closes")
+    reveal.add_argument("--arena", required=True)
+    reveal.add_argument("--epoch", type=int, default=None, help="defaults to the latest epoch")
+    reveal.add_argument("--server", default=PUBLIC_SERVER_URL)
+    add_chain_arguments(reveal)
+    add_common_arguments(reveal)
+    reveal.set_defaults(handler=_reveal)
 
     status = inner.add_parser("status", help="where the arena and your submission stand")
     status.add_argument("--arena", required=True)
@@ -198,15 +215,42 @@ def _pay(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reveal_path(home: Path, arena_id: str) -> Path:
+    return Path(home) / "reveals" / f"{arena_id}.json"
+
+
+def _post(base: str, path: str, body: dict[str, Any]) -> Any:
+    url = base.rstrip("/") + path
+    if urllib.parse.urlparse(url).scheme not in ("http", "https"):
+        raise ValueError(f"the server URL must be http or https: {base!r}")
+    request = urllib.request.Request(  # noqa: S310
+        url, data=json.dumps(body).encode(), headers={"content-type": "application/json"}
+    )
+    with urllib.request.urlopen(request, timeout=60) as answer:  # noqa: S310
+        return json.loads(answer.read())
+
+
 def _commit(args: argparse.Namespace) -> int:
+    artifact_sha = str(args.artifact_sha).lower()
+    salt = secrets.token_hex(16)
     try:
-        commitment = SubmissionCommitment(
-            arena_id=args.arena,
-            hf_user=args.hf_user,
-            artifact_sha=str(args.artifact_sha).lower(),
-            fee_block=int(args.fee_block),
-            fee_index=int(args.fee_index),
-        )
+        if args.open:
+            commitment: SubmissionCommitment | SealedCommitment = SubmissionCommitment(
+                arena_id=args.arena,
+                hf_user=args.hf_user,
+                artifact_sha=artifact_sha,
+                fee_block=int(args.fee_block),
+                fee_index=int(args.fee_index),
+            )
+        else:
+            commitment = SealedCommitment.seal(
+                args.arena,
+                args.hf_user,
+                artifact_sha,
+                salt,
+                int(args.fee_block),
+                int(args.fee_index),
+            )
         payload = commitment.encode()
     except CommitmentError as exc:
         return fail(str(exc))
@@ -219,11 +263,77 @@ def _commit(args: argparse.Namespace) -> int:
         return fail(str(exc))
     if not ok:
         return fail("the chain refused the commitment")
+    hotkey = hotkey_address(wallet)
     print(f"committed  {payload}")
-    print(f"hotkey     {hotkey_address(wallet)}")
-    print(
-        f"artifact   https://huggingface.co/{commitment.artifact_repo}/tree/{commitment.artifact_sha}"
+    print(f"hotkey     {hotkey}")
+    if isinstance(commitment, SealedCommitment):
+        path = _reveal_path(args.home, args.arena)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "arena_id": args.arena,
+                    "hotkey": hotkey,
+                    "hf_user": args.hf_user,
+                    "artifact_sha": artifact_sha,
+                    "salt": salt,
+                    "digest": commitment.digest,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"sealed     {commitment.digest}")
+        print(f"reveal     saved to {path}; keep the repositories private until the window closes,")
+        print(f"           then run: mt submit reveal --arena {args.arena}")
+    else:
+        print(
+            f"artifact   https://huggingface.co/{commitment.artifact_repo}/tree/{commitment.artifact_sha}"
+        )
+    return 0
+
+
+def _reveal(args: argparse.Namespace) -> int:
+    path = _reveal_path(args.home, args.arena)
+    if not path.is_file():
+        return fail(f"no sealed commitment saved at {path}; commit first")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    hotkey = hotkey_address(wallet)
+    if saved.get("hotkey") and saved["hotkey"] != hotkey:
+        return fail(f"the saved commitment belongs to {saved['hotkey']}, not this hotkey")
+    epoch = args.epoch
+    if epoch is None:
+        try:
+            epochs = _get(args.server, f"/v2/arenas/{args.arena}/epochs").get("epochs") or []
+        except (urllib.error.URLError, ValueError) as exc:
+            return fail(f"could not read the arena's epochs: {exc}")
+        if not epochs:
+            return fail("the arena has no epoch to reveal into yet")
+        epoch = int(epochs[0]["epoch_index"])
+    message = reveal_message(
+        args.arena, epoch, hotkey, saved["hf_user"], saved["artifact_sha"], saved["salt"]
     )
+    body = {
+        "hotkey": hotkey,
+        "hf_user": saved["hf_user"],
+        "artifact_sha": saved["artifact_sha"],
+        "salt": saved["salt"],
+        "signature": sign_bytes(wallet, message),
+    }
+    try:
+        found = _post(args.server, f"/v2/arenas/{args.arena}/epochs/{epoch}/reveal", body)
+    except urllib.error.HTTPError as exc:
+        return fail(f"the server refused the reveal: {exc.read().decode('utf-8', 'replace')[:300]}")
+    except (urllib.error.URLError, ValueError) as exc:
+        return fail(f"the reveal could not be sent: {exc}")
+    print(f"revealed   epoch {epoch}  {found.get('reveal_state')}")
+    print(
+        f"artifact   https://huggingface.co/{found.get('artifact_repo')}/tree/{saved['artifact_sha']}"
+    )
+    if found.get("reveal_state") == "unsealed":
+        print("make both repositories public now; validators fetch them at release")
     return 0
 
 
