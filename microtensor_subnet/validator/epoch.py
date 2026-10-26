@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from microtensor_subnet.artifact.params import ParameterError, footprint_bytes
 from microtensor_subnet.chain.epochs import Epoch, epoch_seed
@@ -43,9 +43,10 @@ from microtensor_subnet.validator.sandbox import judge as probe_judge
 from microtensor_subnet.validator.sandbox import tools as tool_faults
 from microtensor_subnet.validator.sandbox.docker import Docker
 from microtensor_subnet.validator.sandbox.services import Services
-from microtensor_subnet.validator.sandbox.slm import SlmClient
+from microtensor_subnet.validator.sandbox.slm import MEMORY_SHARE, SlmClient
 
 log = logging.getLogger("microtensor_subnet.validator.epoch")
+JUDGE_SHARED_SHARE: Final[float] = 0.5
 DEFAULT_CONTEXT = 8192
 DEFAULT_MEMORY_BYTES = 24 * 1024**3
 DEFAULT_MAX_PARAMETERS = 8_000_000_000
@@ -587,9 +588,12 @@ def run_epoch(
     gpus = tuple(config.gpus or ("0",))
     agent: probe_judge.ProbeAgent | None = None
     if context.grader == compress.GRADER:
-        if len(gpus) < 2:
-            raise EpochError("context compression needs a second GPU for the probe agent")
-        agent, gpus = _judge(config, context, engine, gpus[-1]), gpus[:-1]
+        if config.judge_share_gpu:
+            agent = _judge(config, context, engine, gpus[-1], memory_share=JUDGE_SHARED_SHARE)
+        else:
+            if len(gpus) < 2:
+                raise EpochError("context compression needs a second GPU for the probe agent")
+            agent, gpus = _judge(config, context, engine, gpus[-1]), gpus[:-1]
     services.start()
     host = SandboxHost(config, engine, services, host_ip())
     runner = Runner(config, context, host, relay, GpuPool(gpus), desk)
@@ -721,7 +725,12 @@ def _owner(chain: Any) -> str:
 
 
 def _judge(
-    config: EpochConfig, context: EpochContext, engine: Docker, gpu: str
+    config: EpochConfig,
+    context: EpochContext,
+    engine: Docker,
+    gpu: str,
+    *,
+    memory_share: float = MEMORY_SHARE,
 ) -> probe_judge.ProbeAgent:
     grading = context.grading
     spec = grading.get("probe_agent") or {}
@@ -729,6 +738,11 @@ def _judge(
     if not model:
         raise EpochError("the arena names no probe agent")
     revision = str(spec.get("revision") or "main")
+    if config.judge_model:
+        if config.chain.network != "test":
+            raise EpochError("a probe agent override is only allowed on testnet")
+        log.warning("testnet probe agent override: %s instead of %s", config.judge_model, model)
+        model, revision = config.judge_model, config.judge_revision or "main"
     model_dir = collect.download(model, revision, config.cache_dir)
     tokenizer = str(grading.get("tokenizer") or model)
     tokenizer_dir = (
@@ -740,6 +754,7 @@ def _judge(
         model_dir,
         gpu,
         max_tokens=int(spec.get("max_tokens") or 64),
+        memory_share=memory_share,
     )
     agent.start(config.slm_ready_seconds)
     context.judge = compress.Judge(

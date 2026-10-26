@@ -42,6 +42,10 @@ class EpochConfig:
     slm_ready_seconds: int = SLM_READY_SECONDS
     host_services_port: int = 9701
     allow_unsandboxed: bool = False
+    judge_share_gpu: bool = False
+    judge_model: str = ""
+    judge_revision: str = ""
+    slm_memory_share: float = 0.0
     dry_run: bool = False
     item_limit: int = 0
     extra: dict[str, str] = field(default_factory=dict)

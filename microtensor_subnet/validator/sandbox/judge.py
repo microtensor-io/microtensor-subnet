@@ -11,7 +11,12 @@ from typing import Any, Final
 import httpx
 
 from microtensor_subnet.validator.sandbox.docker import ContainerSpec, Docker
-from microtensor_subnet.validator.sandbox.slm import MODEL_NAME, SlmClient, vllm_command
+from microtensor_subnet.validator.sandbox.slm import (
+    MEMORY_SHARE,
+    MODEL_NAME,
+    SlmClient,
+    vllm_command,
+)
 
 PROMPT: Final[str] = (
     "You read a summary of a coding agent's session and answer one question about that session "
@@ -36,6 +41,7 @@ class ProbeAgent:
     model_dir: Path
     gpu: str
     max_tokens: int = 64
+    memory_share: float = MEMORY_SHARE
     name: str = ""
     network: str = ""
     url: str = ""
@@ -50,7 +56,9 @@ class ProbeAgent:
                 name=self.name,
                 image=self.image,
                 network=self.network,
-                command=vllm_command("/model", max_model_len=MAX_MODEL_LEN),
+                command=vllm_command(
+                    "/model", max_model_len=MAX_MODEL_LEN, memory_share=self.memory_share
+                ),
                 env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
                 volumes=((str(self.model_dir), "/model", "ro"),),
                 gpus=(self.gpu,),

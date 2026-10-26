@@ -116,6 +116,20 @@ docker compose -f docker-compose.validator.yml run --rm validator epoch run --ar
 
 Evaluates twenty items per test, posts no report and sets no weights. Use it after installation and after every image update.
 
+## Testnet on one GPU
+
+The published mechanism gives the context compression probe agent its own card. On testnet a validator may run everything on one GPU and swap the probe agent for a quantised build of the same model so both fit:
+
+```
+MT_GPUS=0
+MT_SANDBOX_RUNTIME=runc
+MT_JUDGE_SHARE_GPU=1
+MT_JUDGE_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct-AWQ
+MT_SLM_MEMORY_SHARE=0.38
+```
+
+The probe agent then takes half the card and the model under test the share you set. `MT_JUDGE_MODEL` is refused on mainnet; `MT_SANDBOX_RUNTIME=runc` runs miner code in a plain container, which is acceptable only on testnet.
+
 ## Updating
 
 ```bash

@@ -17,6 +17,10 @@ services:
       MT_RELAY_URL: "${MT_RELAY_URL:-https://api.microtensor.cloud}"
       MT_GPUS: "${MT_GPUS:-0,1,2}"
       MT_SANDBOX_RUNTIME: "${MT_SANDBOX_RUNTIME:-runsc}"
+      MT_JUDGE_SHARE_GPU: "${MT_JUDGE_SHARE_GPU:-}"
+      MT_JUDGE_MODEL: "${MT_JUDGE_MODEL:-}"
+      MT_JUDGE_REVISION: "${MT_JUDGE_REVISION:-}"
+      MT_SLM_MEMORY_SHARE: "${MT_SLM_MEMORY_SHARE:-0}"
       HF_HOME: /var/lib/microtensor/cache/hf
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
