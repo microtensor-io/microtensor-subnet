@@ -60,6 +60,9 @@ class SandboxConfig(Protocol):
     def sandbox_runtime(self) -> str: ...
 
     @property
+    def slm_memory_share(self) -> float: ...
+
+    @property
     def sandbox_cpus(self) -> float: ...
 
     @property
@@ -206,7 +209,9 @@ class SandboxHost:
                 cpu_container(name, self.config.llama_image, model_dir, max_len, limits, network)
             )
             return name
-        share = SHARED_MEMORY_SHARE if limits.router_on_gpu else MEMORY_SHARE
+        share = self.config.slm_memory_share or (
+            SHARED_MEMORY_SHARE if limits.router_on_gpu else MEMORY_SHARE
+        )
         self.docker.start(
             ContainerSpec(
                 name=name,

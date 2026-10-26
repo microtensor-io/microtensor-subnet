@@ -95,6 +95,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     run.add_argument("--concurrency", type=int, default=3)
     run.add_argument("--sandbox-runtime", default=os.environ.get("MT_SANDBOX_RUNTIME", "runsc"))
+    _add_gpu_sharing(run)
     run.add_argument("--item-limit", type=int, default=0, help="development only")
     run.add_argument("--dry-run", action="store_true", help="evaluate and report, set no weights")
     add_chain_arguments(run)
@@ -110,6 +111,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     loop.add_argument("--concurrency", type=int, default=3)
     loop.add_argument("--sandbox-runtime", default=os.environ.get("MT_SANDBOX_RUNTIME", "runsc"))
+    _add_gpu_sharing(loop)
     loop.add_argument("--poll-seconds", type=int, default=600)
     loop.add_argument("--once", action="store_true", help="one poll, then exit")
     loop.add_argument("--item-limit", type=int, default=0, help="development only")
@@ -488,6 +490,27 @@ def _probe(args: argparse.Namespace) -> int:
             close_reference(docker, reference)
 
 
+def _add_gpu_sharing(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--judge-share-gpu",
+        action="store_true",
+        default=os.environ.get("MT_JUDGE_SHARE_GPU", "") == "1",
+        help="run the probe agent on the same GPU as the model under test",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=os.environ.get("MT_JUDGE_MODEL", ""),
+        help="testnet only: a different probe agent repository",
+    )
+    parser.add_argument("--judge-revision", default=os.environ.get("MT_JUDGE_REVISION", ""))
+    parser.add_argument(
+        "--slm-memory-share",
+        type=float,
+        default=float(os.environ.get("MT_SLM_MEMORY_SHARE", "0") or 0),
+        help="vLLM memory share for the model under test; 0 picks the default",
+    )
+
+
 def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
     return EpochConfig(
         chain=config,
@@ -500,6 +523,10 @@ def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
         sandbox_runtime=args.sandbox_runtime,
         dry_run=args.dry_run,
         item_limit=args.item_limit,
+        judge_share_gpu=bool(getattr(args, "judge_share_gpu", False)),
+        judge_model=str(getattr(args, "judge_model", "") or ""),
+        judge_revision=str(getattr(args, "judge_revision", "") or ""),
+        slm_memory_share=float(getattr(args, "slm_memory_share", 0.0) or 0.0),
     )
 
 
