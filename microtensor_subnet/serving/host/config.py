@@ -32,6 +32,7 @@ class HostConfig:
     sandbox_image: str = SANDBOX_IMAGE
     gateway_image: str = GATEWAY_IMAGE
     sandbox_runtime: str = "runsc"
+    slm_memory_share: float = 0.0
     sandbox_cpus: float = SANDBOX_CPUS
     sandbox_memory: str = SANDBOX_MEMORY
     sandbox_pids: int = SANDBOX_PIDS
