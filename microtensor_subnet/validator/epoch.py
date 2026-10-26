@@ -43,7 +43,7 @@ from microtensor_subnet.validator.sandbox import judge as probe_judge
 from microtensor_subnet.validator.sandbox import tools as tool_faults
 from microtensor_subnet.validator.sandbox.docker import Docker
 from microtensor_subnet.validator.sandbox.services import Services
-from microtensor_subnet.validator.sandbox.slm import SlmClient
+from microtensor_subnet.validator.sandbox.slm import MEMORY_SHARE, SlmClient
 
 log = logging.getLogger("microtensor_subnet.validator.epoch")
 JUDGE_SHARED_SHARE: Final[float] = 0.5
@@ -730,7 +730,7 @@ def _judge(
     engine: Docker,
     gpu: str,
     *,
-    memory_share: float = probe_judge.MEMORY_SHARE,
+    memory_share: float = MEMORY_SHARE,
 ) -> probe_judge.ProbeAgent:
     grading = context.grading
     spec = grading.get("probe_agent") or {}
