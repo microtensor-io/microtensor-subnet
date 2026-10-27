@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -229,10 +230,26 @@ def _relay_token(args: argparse.Namespace) -> int:
     return 0
 
 
+def _show_logs() -> None:
+    package = logging.getLogger("microtensor_subnet")
+    if not any(getattr(h, "_mt_visible", False) for h in package.handlers):
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        handler._mt_visible = True  # type: ignore[attr-defined]
+        package.addHandler(handler)
+    package.setLevel(logging.INFO)
+    package.propagate = False
+    package.disabled = False
+    for name, found in list(logging.Logger.manager.loggerDict.items()):
+        if isinstance(found, logging.Logger) and name.startswith("microtensor_subnet"):
+            found.disabled = False
+
+
 def _run(args: argparse.Namespace) -> int:
     config = chain_config(args)
     wallet = open_wallet(config)
     client = open_client(config, wallet)
+    _show_logs()
     server = ServerClient(args.server, hotkey_address(wallet), wallet)
     try:
         block = client.block()
@@ -558,6 +575,7 @@ def _loop(args: argparse.Namespace) -> int:
     config = chain_config(args)
     wallet = open_wallet(config)
     client = open_client(config, wallet)
+    _show_logs()
     server = ServerClient(args.server, hotkey_address(wallet), wallet)
     state = Path(args.home) / "state"
     state.mkdir(parents=True, exist_ok=True)

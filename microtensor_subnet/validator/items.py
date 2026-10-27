@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -133,8 +135,43 @@ def unpack(
     ), trees
 
 
+TESTNET = "test"
+TEMPLATE_REPO = "https://github.com/microtensor-io/microtensor-miner-template"
+TEMPLATE_FILES = ("main.py", "config.json", "requirements.txt")
+TEMPLATE_DIRS = ("harness", "escalation")
+
+
+def template_harness(task: str, cache_dir: Path) -> Path:
+    clone = cache_dir / "reference-template"
+    if not (clone / "main.py").is_file():
+        shutil.rmtree(clone, ignore_errors=True)
+        try:
+            subprocess.run(  # noqa: S603
+                ["git", "clone", "--quiet", "--depth", "1", TEMPLATE_REPO, str(clone)],  # noqa: S607
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            reason = f"the reference harness could not be built from the template: {exc}"
+            raise ReleaseError(reason) from exc
+    into = cache_dir / f"reference-harness-{task or 'generic'}"
+    shutil.rmtree(into, ignore_errors=True)
+    into.mkdir(parents=True)
+    for name in TEMPLATE_FILES:
+        shutil.copy2(clone / name, into / name)
+    for name in TEMPLATE_DIRS:
+        shutil.copytree(clone / name, into / name, ignore=shutil.ignore_patterns("__pycache__"))
+    if task and (into / "harness" / "prompts" / task).is_dir():
+        config = json.loads((into / "config.json").read_text(encoding="utf-8"))
+        config["adapter"] = task
+        (into / "config.json").write_text(json.dumps(config, indent=2) + chr(10), encoding="utf-8")
+    log.warning("testnet: the bundle has no reference harness; built one from the miner template")
+    return into
+
+
 def reference_components(
-    trees: dict[str, Path], definition: dict[str, Any], cache_dir: Path
+    trees: dict[str, Path], definition: dict[str, Any], cache_dir: Path, network: str = ""
 ) -> Reference:
     references = dict(definition.get("references") or {})
     slm_repo = str(references.get("slm", ""))
@@ -147,6 +184,8 @@ def reference_components(
     except ParameterError as exc:
         raise ReleaseError(f"the reference slm has no readable weights: {exc}") from exc
     harness = trees.get("harness")
+    if harness is None and network == TESTNET:
+        harness = template_harness(str(definition.get("task") or ""), cache_dir)
     if harness is None:
         raise ReleaseError("the bundle carries no reference harness")
     variants = tuple(path for name, path in sorted(trees.items()) if name.startswith("variant-"))
