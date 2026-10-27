@@ -18,6 +18,8 @@ services:
       MT_GPUS: "${MT_GPUS:-0,1,2}"
       MT_SLM_MEMORY_SHARE: "${MT_SLM_MEMORY_SHARE:-0}"
       HF_HOME: /var/lib/microtensor/cache/hf
+      HF_HUB_DISABLE_XET: "${HF_HUB_DISABLE_XET:-}"
+      HF_TOKEN: "${HF_TOKEN:-}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/microtensor:/var/lib/microtensor
