@@ -4,7 +4,9 @@ Netuid **576** on Bittensor testnet. An inference operator holds the certified s
 
 ## What you run
 
-Each held system is the four part artifact its miner submitted and validators certified: a small model served by vLLM, a router served as a classifier, and the miner's harness and repair code running in a gVisor sandbox with no network beyond four service URLs. Your host runs the same stack a validator runs, one system per GPU, and dials out to the gateway over a websocket. Nothing listens on a public port.
+Each held system is the four part artifact its miner submitted and validators certified: a small model served by vLLM, a router served as a classifier, and the miner's harness and repair code running in a sandbox with no network beyond four service URLs. Your host runs the same stack a validator runs, one system per GPU, and dials out to the gateway over a websocket. Nothing listens on a public port.
+
+The sandbox is a locked down Docker container: no network except the gateway to the four service URLs, CPU, memory and process limits, a read only root file system, the artifact and the model mounted read only, every capability dropped and no privilege escalation. No extra container runtime is needed.
 
 ## Requirements
 
@@ -14,11 +16,11 @@ Each held system is the four part artifact its miner submitted and validators ce
 | GPU | one 24 GB card per held system (RTX 4090, L4, A10G or better), CUDA 12 driver; general models state their own class |
 | CPU and RAM | 8 cores and 32 GB per held system |
 | Disk | NVMe, 100 GB per held system, under `/var/lib/microtensor` |
-| Software | Docker 27 or newer, NVIDIA Container Toolkit, gVisor (`runsc`) registered as a Docker runtime |
+| Software | Docker 27 or newer, NVIDIA Container Toolkit |
 | Network | outbound 443 only; one system downloads once per epoch |
 | Stake | 1 TAO collateral to the pool coldkey |
 
-Host preparation (Docker, the NVIDIA toolkit, gVisor, `/var/lib/microtensor`) is the same as for a validator: follow steps 1 of [validator_setup.md](validator_setup.md) and confirm `docker run --rm --runtime=runsc hello-world` and the CUDA check both pass.
+Host preparation (Docker, the NVIDIA toolkit, `/var/lib/microtensor`) is the same as for a validator: follow step 1 of [validator_setup.md](validator_setup.md) and confirm the CUDA check passes.
 
 ## 1. Register and post collateral
 
@@ -113,6 +115,5 @@ Serving pays from the serving pool by metered, billed usage per operator and mod
 ## Troubleshooting
 
 - `the docker socket is not reachable`: mount `/var/run/docker.sock` and set `DOCKER_GID`.
-- `gVisor (runsc) is not registered`: `sudo runsc install && sudo systemctl restart docker`.
 - `the model server did not become ready`: the card is too small for the model or another process holds it; `nvidia-smi` on the host.
 - `this operator does not hold that system`: the gateway routed a model the plan dropped; it recovers at the next review.

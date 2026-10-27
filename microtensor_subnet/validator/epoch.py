@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import platform
+import shutil
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -29,7 +31,7 @@ from microtensor_subnet.validator.context import (
     Reference,
 )
 from microtensor_subnet.validator.pools import escalation, harness, reference, router, slm, system
-from microtensor_subnet.validator.relay import RelayClient, TicketDesk
+from microtensor_subnet.validator.relay import RelayClient, RelayError, TicketDesk
 from microtensor_subnet.validator.results import ArtifactOutcome, ReferenceRun, RouterRun, SlmRun
 from microtensor_subnet.validator.sandbox import (
     GpuPool,
@@ -41,15 +43,18 @@ from microtensor_subnet.validator.sandbox import (
 )
 from microtensor_subnet.validator.sandbox import judge as probe_judge
 from microtensor_subnet.validator.sandbox import tools as tool_faults
-from microtensor_subnet.validator.sandbox.docker import Docker
+from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
 from microtensor_subnet.validator.sandbox.services import Services
-from microtensor_subnet.validator.sandbox.slm import MEMORY_SHARE, SlmClient
+from microtensor_subnet.validator.sandbox.slm import SlmClient
 
 log = logging.getLogger("microtensor_subnet.validator.epoch")
-JUDGE_SHARED_SHARE: Final[float] = 0.5
 DEFAULT_CONTEXT = 8192
 DEFAULT_MEMORY_BYTES = 24 * 1024**3
 DEFAULT_MAX_PARAMETERS = 8_000_000_000
+RECORDS_DIR: Final[str] = "records"
+ROUTERS_DIR: Final[str] = "routers"
+REPORT_FILE: Final[str] = "report.json"
+KEPT_AT_CLOSE: Final[frozenset[str]] = frozenset({REPORT_FILE, probe_sets.PROBE_DIR})
 
 
 class EpochError(RuntimeError):
@@ -64,6 +69,55 @@ class Outcome:
     weights: dict[str, float] = field(default_factory=dict)
     burned: dict[str, float] = field(default_factory=dict)
     report: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class MinerRecord:
+    hotkey: str
+    coldkey: str
+    artifact_sha: str
+    commit_block: int
+    artifact: Artifact | None = None
+    weights_digest: str = ""
+    scores: list[PoolScore] = field(default_factory=list)
+    provenance: dict[str, Any] = field(default_factory=dict)
+    failure: str = ""
+    drafts: dict[str, tuple[str, bool]] | None = None
+    router_dir: Path | None = None
+    posted: bool = False
+
+    def wire(self) -> dict[str, Any]:
+        return {
+            "hotkey": self.hotkey,
+            "coldkey": self.coldkey,
+            "artifact_sha": self.artifact_sha,
+            "manifest_sha": self.artifact.manifest_sha if self.artifact else "",
+            "weights_digest": self.weights_digest,
+            "commit_block": self.commit_block,
+            "scores": [s.to_dict() for s in self.scores],
+            "provenance": dict(self.provenance),
+            "failure": self.failure,
+            "drafts": {i: [text, ok] for i, (text, ok) in (self.drafts or {}).items()},
+            "posted": self.posted,
+        }
+
+
+class Turns:
+    def __init__(self) -> None:
+        self._next = 0
+        self._done: set[int] = set()
+        self._cond = threading.Condition()
+
+    def wait(self, position: int) -> None:
+        with self._cond:
+            self._cond.wait_for(lambda: self._next >= position)
+
+    def done(self, position: int) -> None:
+        with self._cond:
+            self._done.add(position)
+            while self._next in self._done:
+                self._next += 1
+            self._cond.notify_all()
 
 
 def _window(arena: Mapping[str, Any], index: int) -> Epoch:
@@ -144,63 +198,6 @@ def load_context(
     )
 
 
-def gather(
-    config: EpochConfig, chain: Any, context: EpochContext, *, commit_close: int
-) -> tuple[dict[str, Artifact], dict[str, str]]:
-    definition = context.definition
-    found = collect.candidates(
-        chain, config.arena_id, commit_close_block=commit_close, roster=context.roster or None
-    )
-    artifacts: dict[str, Artifact] = {}
-    failures: dict[str, str] = {}
-    for candidate in found:
-        reason = collect.fee_ok(
-            chain,
-            candidate,
-            pay_to=str(definition.get("fee_coldkey", "")),
-            fee_tao=float(definition.get("fee_tao") or 0.0),
-        )
-        if reason:
-            failures[candidate.hotkey] = reason
-            continue
-        try:
-            artifacts[candidate.hotkey] = collect.materialise(
-                candidate,
-                cache_dir=config.cache_dir,
-                arena_id=config.arena_id,
-                allowed_bases=[str(b) for b in definition.get("allowed_bases") or []],
-                allowed_licenses=[str(b) for b in definition.get("allowed_licenses") or []],
-                bounds=_bounds(definition),
-                formats=[str(f) for f in definition.get("allowed_formats") or []],
-            )
-        except collect.CollectError as exc:
-            failures[candidate.hotkey] = str(exc)
-    for hotkey, reason in duplicates(artifacts).items():
-        failures[hotkey] = reason
-        artifacts.pop(hotkey, None)
-    return artifacts, failures
-
-
-def duplicates(artifacts: Mapping[str, Artifact]) -> dict[str, str]:
-    seen_weights: dict[str, str] = {}
-    seen_manifests: dict[str, str] = {}
-    found: dict[str, str] = {}
-    for hotkey, artifact in sorted(artifacts.items(), key=lambda kv: (kv[1].commit_block, kv[0])):
-        if artifact.manifest_sha in seen_manifests:
-            first = seen_manifests[artifact.manifest_sha]
-            found[hotkey] = f"artifact duplicates the earlier commitment by {first}"
-            continue
-        weights = provenance.digest_of_dir(artifact.slm_dir) if artifact.slm_dir else ""
-        if weights and weights in seen_weights:
-            first = seen_weights[weights]
-            found[hotkey] = f"model weights duplicate the earlier commitment by {first}"
-            continue
-        seen_manifests[artifact.manifest_sha] = hotkey
-        if weights:
-            seen_weights[weights] = hotkey
-    return found
-
-
 @dataclass(slots=True)
 class Runner:
     config: EpochConfig
@@ -209,7 +206,21 @@ class Runner:
     relay: RelayClient
     gpus: GpuPool
     desk: TicketDesk
+    client: ServerClient
+    wallet: Any
+    hotkey: str
+    slot_count: int = 1
+    agent: probe_judge.ProbeAgent | None = None
+    base_dirs: dict[str, Path] = field(default_factory=dict)
+    known_public: set[str] = field(default_factory=set)
+    protected: set[Path] = field(default_factory=set)
     outcomes: dict[str, ArtifactOutcome] = field(default_factory=dict)
+    records: dict[str, MinerRecord] = field(default_factory=dict)
+    holding: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+    seen_manifests: dict[str, str] = field(default_factory=dict)
+    seen_weights: dict[str, str] = field(default_factory=dict)
+    turns: Turns = field(default_factory=Turns)
+    no_reference: dict[str, str] = field(default_factory=dict)
     reference_slm: SlmRun | None = None
     base_slm: dict[str, SlmRun] = field(default_factory=dict)
     reference_run: ReferenceRun | None = None
@@ -262,37 +273,7 @@ class Runner:
             limits=self.limits,
         )
 
-    def slm_phase(self, artifact: Artifact) -> None:
-        outcome = self.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
-        if artifact.slm_dir is None:
-            return
-        slot, gpu = self.gpus.take()
-        try:
-            sandbox = self._open(
-                self.context.reference.harness_dir,
-                artifact.slm_dir,
-                None,
-                artifact.config,
-                slot,
-                gpu,
-            )
-            try:
-                outcome.slm = slm.run(
-                    self.context,
-                    SlmClient(sandbox.slm_url),
-                    memory_bytes=self._memory(artifact.slm_dir, artifact.config),
-                    parameters=artifact.slm_parameters,
-                )
-                outcome.slm.vram_peak_bytes = self._measured(sandbox, outcome.slm.vram_peak_bytes)
-            finally:
-                outcome.usage = self.host.close(sandbox)
-        except (SandboxError, Exception) as exc:
-            outcome.failure = f"slm test: {exc}"
-            log.warning("%s slm test failed: %s", artifact.hotkey, exc)
-        finally:
-            self.gpus.give(slot, gpu)
-
-    def reference_phase(self, base_dirs: Mapping[str, Path]) -> None:
+    def reference_phase(self) -> None:
         slot, gpu = self.gpus.take()
         try:
             sandbox = self._open(
@@ -321,9 +302,9 @@ class Runner:
                     self.reference_router = router.run(
                         self.context,
                         sandbox.router_url,
-                        self._sources(self.reference_slm.drafts(), {}, {}),
+                        self.sources_for(self.reference_slm.drafts(), {}, {}),
                     )
-                self.reference_run = reference.run(self.context, self.desk)
+                self.reference_run = self._frontier_redo()
                 if (
                     self.context.reference.escalation_dir is not None
                     and self.reference_run is not None
@@ -344,7 +325,7 @@ class Runner:
                     )
             finally:
                 self.host.close(sandbox)
-            for name, path in base_dirs.items():
+            for name, path in self.base_dirs.items():
                 if path == self.context.reference.slm_dir and self.reference_slm is not None:
                     self.base_slm[name] = self.reference_slm
                     continue
@@ -366,7 +347,21 @@ class Runner:
         finally:
             self.gpus.give(slot, gpu)
 
-    def _sources(
+    def _frontier_redo(self) -> ReferenceRun | None:
+        try:
+            found = reference.run(self.context, self.desk)
+        except Exception as exc:
+            reason = f"the frontier redo failed: {exc}"
+        else:
+            rows = [*found.system_answers.values(), *found.redo_answers.values()]
+            if not rows or any(r.answered for r in rows):
+                return found
+            reason = f"the frontier redo answered no item: {rows[0].reason}"
+        log.warning("the escalation and system pools have no reference this epoch: %s", reason)
+        self.no_reference = {pools.ESCALATION: reason, pools.SYSTEM: reason}
+        return None
+
+    def sources_for(
         self,
         own: Mapping[str, tuple[str, bool]],
         peers: Mapping[str, Mapping[str, tuple[str, bool]]],
@@ -377,14 +372,50 @@ class Runner:
             self.context, own=own, reference=reference_drafts, peers=peers, peer_coldkeys=coldkeys
         )
 
-    def full_phase(
-        self,
-        artifact: Artifact,
-        peers: Mapping[str, Mapping[str, tuple[str, bool]]],
-        coldkeys: Mapping[str, str],
-    ) -> None:
+    def claim(self, artifact: Artifact, weights: str) -> str:
+        first = self.seen_manifests.get(artifact.manifest_sha)
+        if first is not None:
+            return f"artifact duplicates the earlier commitment by {first}"
+        first = self.seen_weights.get(weights) if weights else None
+        if first is not None:
+            return f"model weights duplicate the earlier commitment by {first}"
+        self.seen_manifests[artifact.manifest_sha] = artifact.hotkey
+        if weights:
+            self.seen_weights[weights] = artifact.hotkey
+        return ""
+
+    def slm_phase(self, artifact: Artifact, slot: int, gpu: str) -> None:
         outcome = self.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
-        if outcome.failure or self.reference_run is None or self.reference_slm is None:
+        if artifact.slm_dir is None:
+            return
+        try:
+            sandbox = self._open(
+                self.context.reference.harness_dir,
+                artifact.slm_dir,
+                None,
+                artifact.config,
+                slot,
+                gpu,
+            )
+            try:
+                outcome.slm = slm.run(
+                    self.context,
+                    SlmClient(sandbox.slm_url),
+                    memory_bytes=self._memory(artifact.slm_dir, artifact.config),
+                    parameters=artifact.slm_parameters,
+                )
+                outcome.slm.vram_peak_bytes = self._measured(sandbox, outcome.slm.vram_peak_bytes)
+            finally:
+                outcome.usage = self.host.close(sandbox)
+        except (SandboxError, Exception) as exc:
+            outcome.failure = f"slm test: {exc}"
+            log.warning("%s slm test failed: %s", artifact.hotkey, exc)
+
+    def full_phase(self, artifact: Artifact, slot: int, gpu: str) -> None:
+        outcome = self.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
+        if outcome.failure or self.reference_slm is None:
+            return
+        if self.reference_run is None and "harness" not in artifact.has:
             return
         slm_dir = artifact.slm_dir or self.context.reference.slm_dir
         router_dir = (
@@ -400,21 +431,15 @@ class Runner:
         token_price = self.context.token_price(
             artifact.slm_parameters or self.context.reference.slm_parameters
         )
-        slot, gpu = self.gpus.take()
         try:
             sandbox = self._open(artifact_dir, slm_dir, router_dir, artifact.config, slot, gpu)
             try:
-                own = (outcome.slm or self.reference_slm).drafts()
                 if "harness" in artifact.has:
                     outcome.harness = harness.run(
                         self.context, self.host, sandbox, timeout=self.config.request_seconds
                     )
                     self.host.restart_main(sandbox, artifact_dir)
-                if "router" in artifact.has and sandbox.router_url:
-                    outcome.router = router.run(
-                        self.context, sandbox.router_url, self._sources(own, peers, coldkeys)
-                    )
-                if "escalation" in artifact.has:
+                if "escalation" in artifact.has and self.reference_run is not None:
                     drafts = escalation.wrong_drafts(
                         self.context, self.reference_run, self.reference_slm.drafts()
                     )
@@ -428,30 +453,301 @@ class Runner:
                         timeout=self.config.request_seconds,
                         token_price=token_price,
                     )
-                outcome.system = system.run(
-                    self.context,
-                    sandbox,
-                    self.desk,
-                    miner=artifact.hotkey,
-                    reference=self.reference_run,
-                    timeout=self.config.request_seconds,
-                    token_price=token_price,
-                )
+                if self.reference_run is not None:
+                    outcome.system = system.run(
+                        self.context,
+                        sandbox,
+                        self.desk,
+                        miner=artifact.hotkey,
+                        reference=self.reference_run,
+                        timeout=self.config.request_seconds,
+                        token_price=token_price,
+                    )
             finally:
                 outcome.usage = self.host.close(sandbox)
         except (SandboxError, Exception) as exc:
             outcome.failure = f"evaluation: {exc}"
             log.warning("%s evaluation failed: %s", artifact.hotkey, exc)
+
+    def router_run(self, record: MinerRecord, sources: Mapping[str, Any]) -> RouterRun:
+        if record.router_dir is None or record.artifact is None:
+            return RouterRun(sources=[], loaded=False, reason="no router was kept")
+        slot, gpu = self.gpus.take()
+        process = None
+        try:
+            process, url = self.host.open_router(
+                record.router_dir,
+                slot=slot,
+                gpu=gpu,
+                config=record.artifact.config,
+                limits=self.limits,
+            )
+            return router.run(self.context, url, sources)
+        except Exception as exc:
+            log.warning("%s router did not run: %s", record.hotkey, exc)
+            return RouterRun(sources=[], loaded=False, reason=f"router failed: {exc}")
         finally:
+            if process is not None:
+                self.host.close_router(process)
             self.gpus.give(slot, gpu)
 
+    def close(self) -> None:
+        self.host.services.stop()
+        if self.agent is not None:
+            self.agent.stop()
+        self.host.docker.sweep()
 
-def score_all(
-    runner: Runner,
-    artifacts: Mapping[str, Artifact],
-    base_dirs: Mapping[str, Path],
-    known_public: set[str],
-) -> dict[str, list[PoolScore]]:
+
+def set_up_baselines(
+    config: EpochConfig,
+    client: ServerClient,
+    context: EpochContext,
+    engine: Docker,
+    *,
+    wallet: Any,
+    hotkey: str,
+) -> Runner:
+    limits = Limits.from_definition(context.definition, context.max_model_len)
+    placement: probe_judge.Placement | None = None
+    try:
+        _check_host(context.definition)
+        pull_images(engine, config, limits, compression=context.grader == compress.GRADER)
+        if context.grader == compress.GRADER:
+            placement = place_probe(engine, config, context)
+    except (DockerError, probe_judge.JudgeError) as exc:
+        raise EpochError(str(exc)) from exc
+    gpus = placement.slots if placement is not None else tuple(config.gpus or ("0",))
+    if placement is not None and placement.slm_memory_share and not config.slm_memory_share:
+        config = replace(config, slm_memory_share=placement.slm_memory_share)
+    base_dirs = cached_bases(config, context)
+    token = client.relay_token()
+    relay = RelayClient(config.relay_url, str(token.get("token", "")))
+    desk = TicketDesk(relay, config.arena_id, context.epoch_index)
+    agent: probe_judge.ProbeAgent | None = None
+    try:
+        if placement is not None:
+            agent = start_probe_agent(config, context, engine, placement)
+        address = host_ip()
+        services = Services(address, config.host_services_port)
+        services.start()
+    except (DockerError, probe_judge.JudgeError, collect.CollectError) as exc:
+        if agent is not None:
+            agent.stop()
+        raise EpochError(str(exc)) from exc
+    except Exception:
+        if agent is not None:
+            agent.stop()
+        raise
+    runner = Runner(
+        config,
+        context,
+        SandboxHost(config, engine, services, address),
+        relay,
+        GpuPool(gpus),
+        desk,
+        client,
+        wallet,
+        hotkey,
+        slot_count=len(gpus),
+        agent=agent,
+        base_dirs=base_dirs,
+        known_public=provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json"),
+        protected={
+            context.reference.slm_dir,
+            *base_dirs.values(),
+            *([agent.model_dir] if agent is not None else []),
+        },
+    )
+    try:
+        runner.reference_phase()
+    except Exception:
+        runner.close()
+        raise
+    return runner
+
+
+def pull_images(engine: Docker, config: EpochConfig, limits: Limits, *, compression: bool) -> None:
+    wanted = [
+        config.llama_image if limits.on_cpu else config.vllm_image,
+        config.sandbox_image,
+        config.gateway_image,
+    ]
+    if compression:
+        wanted.append(config.vllm_image)
+    for image in dict.fromkeys(wanted):
+        engine.ensure_image(image)
+
+
+def place_probe(
+    engine: Docker, config: EpochConfig, context: EpochContext
+) -> probe_judge.Placement:
+    memory = engine.gpu_memory(config.cuda_image, tuple(config.gpus or ("0",)))
+    spec = context.grading.get("probe_agent") or {}
+    placement = probe_judge.place(memory, spec, config.chain.network)
+    log.info(
+        "probe agent %s on GPU %s at memory share %.2f; miners on %s",
+        placement.model,
+        placement.gpu,
+        placement.memory_share,
+        ",".join(placement.slots),
+    )
+    if placement.quantization:
+        log.warning("testnet: the probe agent runs the quantised build %s", placement.model)
+    return placement
+
+
+def start_probe_agent(
+    config: EpochConfig, context: EpochContext, engine: Docker, placement: probe_judge.Placement
+) -> probe_judge.ProbeAgent:
+    grading = context.grading
+    spec = grading.get("probe_agent") or {}
+    named = str(spec.get("model") or "")
+    model_dir = collect.download(placement.model, placement.revision, config.cache_dir)
+    tokenizer = str(grading.get("tokenizer") or named)
+    tokenizer_dir = (
+        model_dir if tokenizer == named else collect.download(tokenizer, "main", config.cache_dir)
+    )
+    agent = probe_judge.ProbeAgent(
+        engine,
+        config.vllm_image,
+        model_dir,
+        placement.gpu,
+        max_tokens=int(spec.get("max_tokens") or 64),
+        memory_share=placement.memory_share,
+        quantization=placement.quantization,
+    )
+    agent.start(config.slm_ready_seconds)
+    context.judge = compress.Judge(
+        count_tokens=probe_judge.token_counter(tokenizer_dir),
+        answer=agent.answer,
+        pass_threshold=float(grading.get("pass_threshold") or 0.8),
+        min_output_tokens=int(grading.get("min_output_tokens") or 300),
+        max_output_share=float(grading.get("max_output_share") or 0.1),
+    )
+    return agent
+
+
+def cached_bases(config: EpochConfig, context: EpochContext) -> dict[str, Path]:
+    found: dict[str, Path] = {}
+    for base in [str(b) for b in context.definition.get("allowed_bases") or []]:
+        try:
+            found[base] = collect.download(base, "main", config.cache_dir)
+        except Exception as exc:
+            log.warning("base %s could not be fetched: %s", base, exc)
+    return found
+
+
+def build_queue(
+    config: EpochConfig, chain: Any, context: EpochContext
+) -> tuple[list[collect.Candidate], dict[str, str]]:
+    definition = context.definition
+    failures: dict[str, str] = {}
+    found = collect.candidates(
+        chain,
+        config.arena_id,
+        commit_close_block=context.open_block,
+        roster=context.roster or None,
+        dropped=failures,
+    )
+    queue: list[collect.Candidate] = []
+    for candidate in found:
+        reason = collect.fee_ok(
+            chain,
+            candidate,
+            pay_to=str(definition.get("fee_coldkey", "")),
+            fee_tao=float(definition.get("fee_tao") or 0.0),
+        )
+        if reason:
+            failures[candidate.hotkey] = reason
+            continue
+        queue.append(candidate)
+    queue.sort(key=lambda c: (c.commit_block, c.hotkey))
+    return queue, failures
+
+
+def miner_loop(runner: Runner, queue: Sequence[collect.Candidate]) -> None:
+    workers = (
+        1 if runner.limits.on_cpu else max(1, min(runner.config.concurrency, runner.slot_count))
+    )
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(lambda pair: process_miner(runner, *pair), enumerate(queue)))
+
+
+def process_miner(runner: Runner, position: int, candidate: collect.Candidate) -> MinerRecord:
+    record = MinerRecord(
+        candidate.hotkey,
+        candidate.coldkey,
+        candidate.commitment.artifact_sha,
+        candidate.commit_block,
+    )
+    with runner.lock:
+        runner.records[candidate.hotkey] = record
+    slot, gpu = runner.gpus.take()
+    try:
+        artifact = fetch_and_check(runner, position, candidate, record)
+        if artifact is not None:
+            outcome = evaluate(runner, artifact, slot, gpu)
+            record.drafts = outcome.slm.drafts() if outcome.slm is not None else None
+            record.failure = outcome.failure
+            if not outcome.failure:
+                record.scores = score_miner(runner, artifact, outcome)
+                record.provenance = dict(outcome.provenance)
+    except Exception as exc:
+        record.failure = record.failure or f"evaluation: {exc}"
+        log.warning("%s failed: %s", candidate.hotkey, exc)
+    finally:
+        runner.turns.done(position)
+        runner.gpus.give(slot, gpu)
+        send_and_clear(runner, candidate, record)
+    return record
+
+
+def fetch_and_check(
+    runner: Runner, position: int, candidate: collect.Candidate, record: MinerRecord
+) -> Artifact | None:
+    definition = runner.context.definition
+
+    def hold(path: Path) -> None:
+        with runner.lock:
+            runner.holding[candidate.hotkey] = (*runner.holding.get(candidate.hotkey, ()), path)
+
+    try:
+        artifact = collect.materialise(
+            candidate,
+            cache_dir=runner.config.cache_dir,
+            arena_id=runner.config.arena_id,
+            allowed_bases=[str(b) for b in definition.get("allowed_bases") or []],
+            allowed_licenses=[str(b) for b in definition.get("allowed_licenses") or []],
+            bounds=_bounds(definition),
+            formats=[str(f) for f in definition.get("allowed_formats") or []],
+            hold=hold,
+        )
+        with runner.lock:
+            runner.holding[candidate.hotkey] = _paths_of(artifact)
+        record.artifact = artifact
+        record.weights_digest = (
+            provenance.digest_of_dir(artifact.slm_dir) if artifact.slm_dir else ""
+        )
+        runner.turns.wait(position)
+        reason = runner.claim(artifact, record.weights_digest)
+    except collect.CollectError as exc:
+        reason = str(exc) or "the artifact could not be fetched"
+    finally:
+        runner.turns.done(position)
+    if reason:
+        record.failure = reason
+        log.info("%s refused: %s", candidate.hotkey, reason)
+        return None
+    return artifact
+
+
+def evaluate(runner: Runner, artifact: Artifact, slot: int, gpu: str) -> ArtifactOutcome:
+    runner.slm_phase(artifact, slot, gpu)
+    runner.full_phase(artifact, slot, gpu)
+    return runner.outcomes[artifact.hotkey]
+
+
+def score_miner(runner: Runner, artifact: Artifact, outcome: ArtifactOutcome) -> list[PoolScore]:
     context = runner.context
     rules = score.Rules.from_definition(context.definition)
     budgets = context.budgets
@@ -460,101 +756,268 @@ def score_all(
     memory_cap = int(
         budgets.get("memory_bytes") or budgets.get("vram_bytes") or DEFAULT_MEMORY_BYTES
     )
-    scores: dict[str, list[PoolScore]] = {}
+    found: list[PoolScore] = []
+    if (
+        outcome.slm is not None
+        and runner.reference_slm is not None
+        and artifact.slm_dir is not None
+    ):
+        prov = provenance.check(
+            artifact.slm_dir, base_dirs=runner.base_dirs, known_public=runner.known_public
+        )
+        outcome.provenance = prov
+        base_run = runner.base_slm.get(str(prov.get("declared_base", "")))
+        sized = artifact.slm_parameters > 0 and low <= artifact.slm_parameters <= high
+        memory_ok = outcome.slm.vram_peak_bytes <= memory_cap
+        if rules.per_item_envelope:
+            gate = sized
+            over = score.envelope_share(outcome.slm, budgets)
+            envelope_ok = memory_ok and over <= rules.violation_share
+        else:
+            gate = (
+                sized
+                and memory_ok
+                and (
+                    not budgets.get("ttft_ms")
+                    or outcome.slm.ttft_p95_ms <= float(budgets["ttft_ms"])
+                )
+                and (
+                    not budgets.get("tpot_ms")
+                    or outcome.slm.tpot_p95_ms <= float(budgets["tpot_ms"])
+                )
+            )
+            envelope_ok = True
+        pool_score = score.slm_score(
+            outcome.slm,
+            runner.reference_slm,
+            gate_ok=gate,
+            provenance_ok=bool(prov.get("passed")),
+            base=base_run,
+            min_items=rules.min_items,
+            rules=rules,
+            envelope_ok=envelope_ok,
+        )
+        beats = pool_score.detail.get("beats_base_lb")
+        if beats is not None and beats <= 0:
+            pool_score = PoolScore(
+                pool_score.pool,
+                0.0,
+                pool_score.lower_bound,
+                pool_score.point,
+                pool_score.n,
+                False,
+                {
+                    **pool_score.detail,
+                    "provenance": False,
+                    "reason": "does not beat its declared base",
+                },
+            )
+        found.append(pool_score)
+    if outcome.harness is not None:
+        found.append(score.harness_score(outcome.harness, min_items=rules.min_items))
+    if outcome.escalation is not None:
+        found.append(
+            score.escalation_score(
+                outcome.escalation,
+                runner.reference_escalation,
+                seed=context.seed,
+                min_items=rules.min_items,
+            )
+        )
+    if outcome.system is not None:
+        found.append(score.system_score(outcome.system, min_items=rules.min_items))
+    for pool, reason in runner.no_reference.items():
+        if pool == pools.SYSTEM or pool in artifact.has:
+            found.append(
+                PoolScore(pool, 0.0, 0.0, 0.0, 0, False, {"reason": f"no reference: {reason}"})
+            )
+    return found
+
+
+def score_router(runner: Runner, run: RouterRun) -> PoolScore:
+    context = runner.context
+    routed = [i.item_id for i in context.items.items(ROUTER)]
     items_by_source = {
-        router.OWN: [i.item_id for i in context.items.items(ROUTER)],
-        router.REFERENCE: [i.item_id for i in context.items.items(ROUTER)],
-        router.PEER: [i.item_id for i in context.items.items(ROUTER)],
+        router.OWN: routed,
+        router.REFERENCE: routed,
+        router.PEER: routed,
         router.ADVERSARIAL: [str(r.get("item_id", "")) for r in context.items.adversarial],
     }
-    for hotkey, artifact in artifacts.items():
-        outcome = runner.outcomes.get(hotkey)
-        if outcome is None or outcome.failure:
+    return score.router_score(
+        run,
+        runner.reference_router,
+        floors=context.floors,
+        families=context.items.families,
+        items_by_source=items_by_source,
+        seed=context.seed,
+        rules=score.Rules.from_definition(context.definition),
+    )
+
+
+def send_and_clear(runner: Runner, candidate: collect.Candidate, record: MinerRecord) -> None:
+    try:
+        post_result(runner, record)
+        save_record(runner, record)
+    except Exception as exc:
+        log.warning("%s record not kept: %s", record.hotkey, exc)
+    try:
+        clear_miner(runner, candidate, record)
+    except Exception as exc:
+        log.warning("%s files not cleared: %s", record.hotkey, exc)
+
+
+def post_result(runner: Runner, record: MinerRecord) -> bool:
+    if runner.config.dry_run:
+        log.info("%s dry run, result not posted", record.hotkey)
+        return False
+    try:
+        body = report.artifact_body(
+            runner.context,
+            validator=runner.hotkey,
+            miner=record.hotkey,
+            artifact_sha=record.artifact_sha,
+            scores=record.scores,
+            provenance=record.provenance or _unchecked(record),
+            failure=record.failure,
+        )
+        runner.client.submit_artifact_result(report.sign_artifact(body, runner.wallet))
+    except Exception as exc:
+        record.posted = False
+        log.warning("%s result not accepted, kept for the retry at close: %s", record.hotkey, exc)
+        return False
+    record.posted = True
+    return True
+
+
+def save_record(runner: Runner, record: MinerRecord) -> None:
+    folder = runner.context.work_dir / RECORDS_DIR
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{record.hotkey}.json").write_text(
+            json.dumps(record.wire(), sort_keys=True), encoding="utf-8"
+        )
+    except OSError as exc:
+        log.warning("%s record not written: %s", record.hotkey, exc)
+
+
+def clear_miner(runner: Runner, candidate: collect.Candidate, record: MinerRecord) -> None:
+    artifact = record.artifact
+    if artifact is None:
+        paths: Sequence[Path] = collect.fetched_paths(candidate, runner.config.cache_dir)
+    else:
+        paths = _paths_of(artifact)
+        if not record.failure and "router" in artifact.has:
+            record.router_dir = _keep_router(runner, artifact)
+    with runner.lock:
+        runner.holding.pop(record.hotkey, None)
+        held = {path for kept in runner.holding.values() for path in kept}
+    for path in paths:
+        if path not in held and path not in runner.protected:
+            _remove(path)
+
+
+def retry_unposted(runner: Runner) -> None:
+    if runner.config.dry_run:
+        return
+    for record in runner.records.values():
+        if not record.posted and post_result(runner, record):
+            save_record(runner, record)
+
+
+def router_pass(runner: Runner) -> None:
+    reference_drafts = runner.reference_slm.drafts() if runner.reference_slm else {}
+    peers = {h: r.drafts for h, r in runner.records.items() if r.drafts is not None}
+    coldkeys = {h: r.coldkey for h, r in runner.records.items()}
+    for hotkey, record in runner.records.items():
+        if record.router_dir is None:
             continue
-        found: list[PoolScore] = []
-        if (
-            outcome.slm is not None
-            and runner.reference_slm is not None
-            and artifact.slm_dir is not None
-        ):
-            prov = provenance.check(
-                artifact.slm_dir, base_dirs=base_dirs, known_public=known_public
-            )
-            outcome.provenance = prov
-            base_run = runner.base_slm.get(str(prov.get("declared_base", "")))
-            sized = artifact.slm_parameters > 0 and low <= artifact.slm_parameters <= high
-            memory_ok = outcome.slm.vram_peak_bytes <= memory_cap
-            if rules.per_item_envelope:
-                gate = sized
-                over = score.envelope_share(outcome.slm, budgets)
-                envelope_ok = memory_ok and over <= rules.violation_share
-            else:
-                gate = (
-                    sized
-                    and memory_ok
-                    and (
-                        not budgets.get("ttft_ms")
-                        or outcome.slm.ttft_p95_ms <= float(budgets["ttft_ms"])
-                    )
-                    and (
-                        not budgets.get("tpot_ms")
-                        or outcome.slm.tpot_p95_ms <= float(budgets["tpot_ms"])
-                    )
-                )
-                envelope_ok = True
-            pool_score = score.slm_score(
-                outcome.slm,
-                runner.reference_slm,
-                gate_ok=gate,
-                provenance_ok=bool(prov.get("passed")),
-                base=base_run,
-                min_items=rules.min_items,
-                rules=rules,
-                envelope_ok=envelope_ok,
-            )
-            beats = pool_score.detail.get("beats_base_lb")
-            if beats is not None and beats <= 0:
-                pool_score = PoolScore(
-                    pool_score.pool,
-                    0.0,
-                    pool_score.lower_bound,
-                    pool_score.point,
-                    pool_score.n,
-                    False,
-                    {
-                        **pool_score.detail,
-                        "provenance": False,
-                        "reason": "does not beat its declared base",
-                    },
-                )
-            found.append(pool_score)
-        if outcome.harness is not None:
-            found.append(score.harness_score(outcome.harness, min_items=rules.min_items))
-        if outcome.router is not None:
-            found.append(
-                score.router_score(
-                    outcome.router,
-                    runner.reference_router,
-                    floors=context.floors,
-                    families=context.items.families,
-                    items_by_source=items_by_source,
-                    seed=context.seed,
-                    rules=rules,
-                )
-            )
-        if outcome.escalation is not None:
-            found.append(
-                score.escalation_score(
-                    outcome.escalation,
-                    runner.reference_escalation,
-                    seed=context.seed,
-                    min_items=rules.min_items,
-                )
-            )
-        if outcome.system is not None:
-            found.append(score.system_score(outcome.system, min_items=rules.min_items))
-        scores[hotkey] = found
-    return scores
+        try:
+            if not record.failure:
+                own = record.drafts if record.drafts is not None else reference_drafts
+                others = {h: d for h, d in peers.items() if h != hotkey}
+                run = runner.router_run(record, runner.sources_for(own, others, coldkeys))
+                kept = [s for s in record.scores if s.pool != pools.ROUTER]
+                record.scores = [*kept, score_router(runner, run)]
+                post_result(runner, record)
+                save_record(runner, record)
+        except Exception as exc:
+            log.warning("%s router pass failed: %s", hotkey, exc)
+        finally:
+            _remove(record.router_dir)
+            record.router_dir = None
+
+
+def rank_and_set_weights(
+    config: EpochConfig, chain: Any, runner: Runner, scores: Mapping[str, list[PoolScore]]
+) -> tuple[dict[str, float], dict[str, float]]:
+    context = runner.context
+    standings = score.standings_for(
+        runner.outcomes,
+        scores,
+        context.previous_best,
+        {h: r.artifact_sha for h, r in runner.records.items()},
+        {h: r.commit_block for h, r in runner.records.items()},
+    )
+    burn_to = (
+        _owner(chain) if score.Rules.from_definition(context.definition).burn_empty_pools else ""
+    )
+    weights, burned, vector = weights_for(standings, chain.snapshot(refresh=True), burn_to)
+    if vector is not None and not config.dry_run:
+        ok, reason = chain.set_weights(vector)
+        if not ok:
+            log.error("weights rejected: %s", reason)
+    return weights, burned
+
+
+def final_report(
+    runner: Runner, failures: Mapping[str, str], scores: Mapping[str, list[PoolScore]]
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    context = runner.context
+    artifacts = {h: r.artifact for h, r in runner.records.items() if r.artifact is not None}
+    try:
+        spent = [r.body for r in runner.relay.receipts(context.arena_id, context.epoch_index)]
+    except RelayError as exc:
+        log.warning("relay receipts not read: %s", exc)
+        spent = []
+    receipts = {h: list(spent) for h in artifacts}
+    signed = report.sign(
+        report.build(
+            context,
+            validator_hotkey=runner.hotkey,
+            artifacts=artifacts,
+            scores=scores,
+            failures=failures,
+            receipts=receipts,
+        ),
+        runner.wallet,
+    ).to_dict()
+    if runner.config.dry_run:
+        log.info("dry run, the epoch report is not posted")
+    else:
+        try:
+            runner.client.submit_report(signed)
+        except ServerError as exc:
+            log.warning("report not accepted by the server: %s", exc)
+    try:
+        probe_sets.write(context, runner.outcomes, artifacts)
+    except OSError as exc:
+        log.warning("probe sets not written: %s", exc)
+    context.work_dir.mkdir(parents=True, exist_ok=True)
+    (context.work_dir / REPORT_FILE).write_text(json.dumps(signed, indent=2), encoding="utf-8")
+    clear_work_folder(context.work_dir)
+    return signed, receipts
+
+
+def clear_work_folder(work_dir: Path) -> None:
+    if not work_dir.is_dir():
+        return
+    for child in work_dir.iterdir():
+        if child.name in KEPT_AT_CLOSE:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
 
 
 def weights_for(
@@ -575,112 +1038,66 @@ def run_epoch(
     hotkey = hotkey_address(wallet)
     client = ServerClient(config.server_url, hotkey, wallet)
     context = load_context(config, client, chain, epoch_index=epoch_index, hotkey=hotkey)
-    arena = client.arena(config.arena_id) or {}
-    window = _window(arena, epoch_index)
-    artifacts, failures = gather(config, chain, context, commit_close=window.open_block)
-    log.info("epoch %d: %d artifacts, %d refused", epoch_index, len(artifacts), len(failures))
-    token = client.relay_token()
-    relay = RelayClient(config.relay_url, str(token.get("token", "")))
-    desk = TicketDesk(relay, config.arena_id, epoch_index)
-    engine = docker or Docker()
-    _check_host(context.definition)
-    services = Services(host_ip(), config.host_services_port)
-    gpus = tuple(config.gpus or ("0",))
-    agent: probe_judge.ProbeAgent | None = None
-    if context.grader == compress.GRADER:
-        if config.judge_share_gpu:
-            agent = _judge(config, context, engine, gpus[-1], memory_share=JUDGE_SHARED_SHARE)
-        else:
-            if len(gpus) < 2:
-                raise EpochError("context compression needs a second GPU for the probe agent")
-            agent, gpus = _judge(config, context, engine, gpus[-1]), gpus[:-1]
-    services.start()
-    host = SandboxHost(config, engine, services, host_ip())
-    runner = Runner(config, context, host, relay, GpuPool(gpus), desk)
-    base_dirs: dict[str, Path] = {}
-    for base in [str(b) for b in context.definition.get("allowed_bases") or []]:
-        try:
-            base_dirs[base] = collect.download(base, "main", config.cache_dir)
-        except Exception as exc:
-            log.warning("base %s could not be fetched: %s", base, exc)
-    measured_alone = runner.limits.on_cpu
+    runner = set_up_baselines(
+        config, client, context, docker or Docker(), wallet=wallet, hotkey=hotkey
+    )
     try:
-        with ThreadPoolExecutor(
-            max_workers=1 if measured_alone else max(1, config.concurrency)
-        ) as pool:
-            list(pool.map(runner.slm_phase, artifacts.values()))
-        runner.reference_phase(base_dirs)
-        peers = {h: o.slm.drafts() for h, o in runner.outcomes.items() if o.slm is not None}
-        coldkeys = {h: a.coldkey for h, a in artifacts.items()}
-        with ThreadPoolExecutor(max_workers=max(1, config.concurrency)) as pool:
-            list(
-                pool.map(
-                    lambda a: runner.full_phase(
-                        a, {h: d for h, d in peers.items() if h != a.hotkey}, coldkeys
-                    ),
-                    artifacts.values(),
-                )
-            )
+        queue, failures = build_queue(config, chain, context)
+        log.info("epoch %d: %d queued, %d refused", epoch_index, len(queue), len(failures))
+        miner_loop(runner, queue)
+        router_pass(runner)
+        retry_unposted(runner)
     finally:
-        services.stop()
-        if agent is not None:
-            agent.stop()
-        engine.sweep()
-    known_public = provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json")
-    scores = score_all(runner, artifacts, base_dirs, known_public)
-    try:
-        probe_sets.write(context, runner.outcomes, artifacts)
-    except OSError as exc:
-        log.warning("probe sets not written: %s", exc)
-    for hotkey_, outcome in runner.outcomes.items():
-        if outcome.failure:
-            failures[hotkey_] = outcome.failure
-    receipts = (
-        {h: [r.body for r in relay.receipts(config.arena_id, epoch_index)] for h in artifacts}
-        if artifacts
-        else {}
-    )
-    standings = score.standings_for(
-        runner.outcomes,
-        scores,
-        context.previous_best,
-        {h: a.artifact_sha for h, a in artifacts.items()},
-        {h: a.commit_block for h, a in artifacts.items()},
-    )
-    burn_to = (
-        _owner(chain) if score.Rules.from_definition(context.definition).burn_empty_pools else ""
-    )
-    weights, burned, vector = weights_for(standings, chain.snapshot(refresh=True), burn_to)
-    signed = report.sign(
-        report.build(
-            context,
-            validator_hotkey=hotkey,
-            artifacts=artifacts,
-            scores=scores,
-            failures=failures,
-            receipts=receipts,
-        ),
-        wallet,
-    )
-    try:
-        client.submit_report(signed.to_dict())
-    except ServerError as exc:
-        log.warning("report not accepted by the server: %s", exc)
-    (context.work_dir / "report.json").write_text(
-        json.dumps(signed.to_dict(), indent=2), encoding="utf-8"
-    )
-    if vector is not None and not config.dry_run:
-        ok, reason = chain.set_weights(vector)
-        if not ok:
-            log.error("weights rejected: %s", reason)
+        runner.close()
+    for hotkey_, record in runner.records.items():
+        if record.failure:
+            failures[hotkey_] = record.failure
+    scores = {h: list(r.scores) for h, r in runner.records.items() if not r.failure}
+    weights, burned = rank_and_set_weights(config, chain, runner, scores)
+    signed, receipts = final_report(runner, failures, scores)
     return Outcome(
         scores=scores,
         failures=failures,
         receipts=receipts,
         weights=weights,
         burned=burned,
-        report=signed.to_dict(),
+        report=signed,
     )
+
+
+def _paths_of(artifact: Artifact) -> tuple[Path, ...]:
+    return (artifact.artifact_dir, *([artifact.slm_dir] if artifact.slm_dir else []))
+
+
+def _unchecked(record: MinerRecord) -> dict[str, Any]:
+    if record.failure:
+        return {"passed": False, "reason": "not checked, the miner failed before scoring"}
+    return {"passed": False, "reason": "not checked, the artifact carries no slm"}
+
+
+def _keep_router(runner: Runner, artifact: Artifact) -> Path | None:
+    source = artifact.artifact_dir / "router"
+    if not source.is_dir():
+        return None
+    target = runner.context.work_dir / ROUTERS_DIR / artifact.hotkey
+    try:
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+    except OSError as exc:
+        log.warning("%s router folder not kept: %s", artifact.hotkey, exc)
+        return None
+    return target
+
+
+def _remove(path: Path | None) -> None:
+    if path is None:
+        return
+    shutil.rmtree(path, ignore_errors=True)
+    with contextlib.suppress(OSError):
+        if path.parent.is_dir() and not any(path.parent.iterdir()):
+            path.parent.rmdir()
 
 
 def _check_host(definition: Mapping[str, Any]) -> None:
@@ -722,49 +1139,6 @@ def _owner(chain: Any) -> str:
     except Exception as exc:
         log.error("the subnet owner hotkey could not be read; empty pools are not burned: %s", exc)
         return ""
-
-
-def _judge(
-    config: EpochConfig,
-    context: EpochContext,
-    engine: Docker,
-    gpu: str,
-    *,
-    memory_share: float = MEMORY_SHARE,
-) -> probe_judge.ProbeAgent:
-    grading = context.grading
-    spec = grading.get("probe_agent") or {}
-    model = str(spec.get("model") or "")
-    if not model:
-        raise EpochError("the arena names no probe agent")
-    revision = str(spec.get("revision") or "main")
-    if config.judge_model:
-        if config.chain.network != "test":
-            raise EpochError("a probe agent override is only allowed on testnet")
-        log.warning("testnet probe agent override: %s instead of %s", config.judge_model, model)
-        model, revision = config.judge_model, config.judge_revision or "main"
-    model_dir = collect.download(model, revision, config.cache_dir)
-    tokenizer = str(grading.get("tokenizer") or model)
-    tokenizer_dir = (
-        model_dir if tokenizer == model else collect.download(tokenizer, "main", config.cache_dir)
-    )
-    agent = probe_judge.ProbeAgent(
-        engine,
-        config.vllm_image,
-        model_dir,
-        gpu,
-        max_tokens=int(spec.get("max_tokens") or 64),
-        memory_share=memory_share,
-    )
-    agent.start(config.slm_ready_seconds)
-    context.judge = compress.Judge(
-        count_tokens=probe_judge.token_counter(tokenizer_dir),
-        answer=agent.answer,
-        pass_threshold=float(grading.get("pass_threshold") or 0.8),
-        min_output_tokens=int(grading.get("min_output_tokens") or 300),
-        max_output_share=float(grading.get("max_output_share") or 0.1),
-    )
-    return agent
 
 
 def describe(reference: Reference) -> str:

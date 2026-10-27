@@ -12,6 +12,10 @@ log = logging.getLogger("microtensor_subnet.validator.sandbox.docker")
 
 DOCKER = "docker"
 COMMAND_SECONDS = 120.0
+PULL_SECONDS = 3600.0
+PULL_ATTEMPTS = 3
+PULL_PAUSE_SECONDS = 15.0
+GPU_QUERY = ("nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits")
 
 
 class DockerError(RuntimeError):
@@ -206,6 +210,44 @@ class Docker:
             elif len(parts) == 1 and parts[0].isdigit():
                 usage.setdefault("memory_peak_bytes", int(parts[0]))
         return usage
+
+    def has_image(self, image: str) -> bool:
+        try:
+            self.runner.run(["image", "inspect", "--format", "{{.Id}}", image])
+        except DockerError:
+            return False
+        return True
+
+    def ensure_image(
+        self, image: str, *, attempts: int = PULL_ATTEMPTS, pause: float = PULL_PAUSE_SECONDS
+    ) -> None:
+        if self.has_image(image):
+            return
+        last = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                self.runner.run(["pull", image], timeout=PULL_SECONDS)
+            except DockerError as exc:
+                last = str(exc)
+                log.warning("pull %d of %d for %s failed: %s", attempt, attempts, image, exc)
+                if attempt < attempts:
+                    time.sleep(pause)
+                continue
+            log.info("pulled %s", image)
+            return
+        raise DockerError(f"the image {image} could not be pulled after {attempts} tries: {last}")
+
+    def gpu_memory(self, image: str, wanted: Sequence[str]) -> dict[str, int]:
+        self.ensure_image(image)
+        raw = self.runner.run(
+            ["run", "--rm", "--network", "none", "--gpus", "all", image, *GPU_QUERY]
+        )
+        seen: dict[str, int] = {}
+        for line in raw.splitlines():
+            index, _, memory = line.partition(",")
+            if index.strip() and memory.strip().isdigit():
+                seen[index.strip()] = int(memory.strip())
+        return {gpu: seen[gpu] for gpu in wanted if gpu in seen}
 
     def wait_running(self, name: str, seconds: float) -> bool:
         deadline = time.monotonic() + seconds

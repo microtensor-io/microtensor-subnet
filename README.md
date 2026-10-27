@@ -21,7 +21,7 @@ Bittensor subnet 576 (testnet)
 
 Microtensor pays for specialised small language models and the machinery around them. A miner ships a system in four parts: a small model trained for one task, a harness that drives it with tools, a router that decides when the small model's answer can be trusted, and an escalation path that repairs a wrong answer with a frontier model. Validators run every part themselves on their own GPUs, against hidden items they decrypt only once an epoch opens, and score each part in its own pool.
 
-Nothing a miner claims is used. The artifact is fetched from Hugging Face at the revision committed on chain and executed inside a gVisor sandbox that reaches only the validator's own services.
+Nothing a miner claims is used. The artifact is fetched from Hugging Face at the revision committed on chain and executed inside a locked down Docker container that reaches only the validator's own services: an internal network to the gateway and nothing else, CPU, memory and process limits, read only mounts and every capability dropped.
 
 ## How an epoch works
 

@@ -462,6 +462,30 @@ class SandboxHost:
         )
         return usage
 
+    def open_router(
+        self,
+        router_dir: Path,
+        *,
+        slot: int,
+        gpu: str,
+        config: dict[str, Any],
+        limits: Limits | None = None,
+    ) -> tuple[subprocess.Popen[bytes], str]:
+        port = ROUTER_PORT_BASE + slot
+        process = self._router_process("", router_dir, port, config, gpu, limits or Limits())
+        url = f"http://{self.host_ip}:{port}"
+        try:
+            self._wait_router(process, url)
+        except Exception:
+            self.close_router(process)
+            raise
+        return process, url
+
+    def close_router(self, process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=30)
+
     def restart_main(self, sandbox: Sandbox, artifact_dir: Path) -> None:
         self.docker.kill(sandbox.main_container)
         gateway_ip = self.docker.address(sandbox.gateway_container, sandbox.network)
