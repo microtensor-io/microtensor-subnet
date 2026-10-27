@@ -192,6 +192,7 @@ class SandboxHost:
     docker: Docker
     services: Services
     host_ip: str
+    quantised: dict[Path, str] = field(default_factory=dict)
 
     def _slm_container(
         self,
@@ -217,7 +218,12 @@ class SandboxHost:
                 name=name,
                 image=self.config.vllm_image,
                 network=network,
-                command=vllm_command("/model", max_model_len=max_len, memory_share=share),
+                command=vllm_command(
+                    "/model",
+                    max_model_len=max_len,
+                    memory_share=share,
+                    quantization=self.quantised.get(model_dir, ""),
+                ),
                 env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
                 volumes=((str(model_dir), "/model", "ro"),),
                 gpus=(gpu,),
