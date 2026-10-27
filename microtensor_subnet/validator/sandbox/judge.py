@@ -30,8 +30,12 @@ SHARED_CARD_BYTES: Final[int] = 40 * 1000**3
 MIB: Final[int] = 1024**2
 SHARED_PROBE_SHARE: Final[float] = 0.45
 SHARED_SLM_SHARE: Final[float] = 0.45
-QUANTISED_PROBE_SHARE: Final[float] = 0.4
-QUANTISED_SLM_SHARE: Final[float] = 0.5
+SMALL_PROBE: Final[tuple[str, str]] = (
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "7ae557604adf67be50417f59c2c2f167def9a775",
+)
+SMALL_PROBE_SHARE: Final[float] = 0.15
+SMALL_CARD_SLM_SHARE: Final[float] = 0.8
 NEEDS_ROOM: Final[str] = (
     "context compression needs a second GPU or a 40 GB card for the probe agent"
 )
@@ -61,9 +65,12 @@ class Placement:
     memory_share: float
     slm_memory_share: float
     slots: tuple[str, ...]
+    reference: tuple[str, str, str] | None = None
 
 
-def place(gpus: Mapping[str, int], spec: Mapping[str, Any], network: str) -> Placement:
+def place(
+    gpus: Mapping[str, int], spec: Mapping[str, Any], network: str, reference_model: str = ""
+) -> Placement:
     model = str(spec.get("model") or "")
     if not model:
         raise JudgeError("the arena names no probe agent")
@@ -78,17 +85,16 @@ def place(gpus: Mapping[str, int], spec: Mapping[str, Any], network: str) -> Pla
         return Placement(gpu, model, revision, "", SHARED_PROBE_SHARE, SHARED_SLM_SHARE, (gpu,))
     if network != TESTNET:
         raise JudgeError(NEEDS_ROOM)
-    quantised = QUANTISED_PROBE_MODELS.get(model)
-    if quantised is None:
-        raise JudgeError(f"{NEEDS_ROOM}; no quantised build of {model} is known")
+    quantised = QUANTISED_PROBE_MODELS.get(reference_model)
     return Placement(
         gpu,
-        quantised[0],
-        quantised[1],
-        QUANTISATION,
-        QUANTISED_PROBE_SHARE,
-        QUANTISED_SLM_SHARE,
+        SMALL_PROBE[0],
+        SMALL_PROBE[1],
+        "",
+        SMALL_PROBE_SHARE,
+        SMALL_CARD_SLM_SHARE,
         (gpu,),
+        reference=(quantised[0], quantised[1], QUANTISATION) if quantised else None,
     )
 
 

@@ -214,6 +214,7 @@ class Runner:
     base_dirs: dict[str, Path] = field(default_factory=dict)
     known_public: set[str] = field(default_factory=set)
     protected: set[Path] = field(default_factory=set)
+    reference_slm_dir: Path | None = None
     outcomes: dict[str, ArtifactOutcome] = field(default_factory=dict)
     records: dict[str, MinerRecord] = field(default_factory=dict)
     holding: dict[str, tuple[Path, ...]] = field(default_factory=dict)
@@ -275,10 +276,11 @@ class Runner:
 
     def reference_phase(self) -> None:
         slot, gpu = self.gpus.take()
+        reference_dir = self.reference_slm_dir or self.context.reference.slm_dir
         try:
             sandbox = self._open(
                 self.context.reference.harness_dir,
-                self.context.reference.slm_dir,
+                reference_dir,
                 self.context.reference.router_dir,
                 dict(self.context.definition.get("reference_config") or {}),
                 slot,
@@ -289,7 +291,7 @@ class Runner:
                 self.reference_slm = slm.run(
                     self.context,
                     client,
-                    memory_bytes=self._memory(self.context.reference.slm_dir, {}),
+                    memory_bytes=self._memory(reference_dir, {}),
                     parameters=self.context.reference.slm_parameters,
                     items=self.context.items.originals(SLM)
                     + self.context.items.items(ROUTER)
@@ -520,6 +522,16 @@ def set_up_baselines(
     if placement is not None and placement.slm_memory_share and not config.slm_memory_share:
         config = replace(config, slm_memory_share=placement.slm_memory_share)
     base_dirs = cached_bases(config, context)
+    quantised: dict[Path, str] = {}
+    reference_dir: Path | None = None
+    if placement is not None and placement.reference is not None:
+        try:
+            reference_dir = collect.download(
+                placement.reference[0], placement.reference[1], config.cache_dir
+            )
+        except Exception as exc:
+            raise EpochError(f"the quantised reference could not be fetched: {exc}") from exc
+        quantised[reference_dir] = placement.reference[2]
     token = client.relay_token()
     relay = RelayClient(config.relay_url, str(token.get("token", "")))
     desk = TicketDesk(relay, config.arena_id, context.epoch_index)
@@ -541,7 +553,7 @@ def set_up_baselines(
     runner = Runner(
         config,
         context,
-        SandboxHost(config, engine, services, address),
+        SandboxHost(config, engine, services, address, quantised=quantised),
         relay,
         GpuPool(gpus),
         desk,
@@ -552,8 +564,10 @@ def set_up_baselines(
         agent=agent,
         base_dirs=base_dirs,
         known_public=provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json"),
+        reference_slm_dir=reference_dir,
         protected={
             context.reference.slm_dir,
+            *([reference_dir] if reference_dir is not None else []),
             *base_dirs.values(),
             *([agent.model_dir] if agent is not None else []),
         },
@@ -583,7 +597,8 @@ def place_probe(
 ) -> probe_judge.Placement:
     memory = engine.gpu_memory(config.cuda_image, tuple(config.gpus or ("0",)))
     spec = context.grading.get("probe_agent") or {}
-    placement = probe_judge.place(memory, spec, config.chain.network)
+    reference_model = str((context.definition.get("references") or {}).get("slm") or "")
+    placement = probe_judge.place(memory, spec, config.chain.network, reference_model)
     log.info(
         "probe agent %s on GPU %s at memory share %.2f; miners on %s",
         placement.model,
@@ -591,8 +606,12 @@ def place_probe(
         placement.memory_share,
         ",".join(placement.slots),
     )
-    if placement.quantization:
-        log.warning("testnet: the probe agent runs the quantised build %s", placement.model)
+    if placement.reference is not None:
+        log.warning(
+            "testnet small card: probe agent %s, reference runs the quantised build %s",
+            placement.model,
+            placement.reference[0],
+        )
     return placement
 
 
@@ -627,9 +646,58 @@ def start_probe_agent(
     return agent
 
 
+def declared_bases(config: EpochConfig, context: EpochContext) -> set[str]:
+    from huggingface_hub import hf_hub_download
+
+    found: set[str] = set()
+    for entry in (context.roster or {}).values():
+        repo = str(entry.get("artifact_repo") or "")
+        sha = str(entry.get("artifact_sha") or "")
+        if not repo or not sha:
+            continue
+        try:
+            manifest = json.loads(
+                Path(
+                    hf_hub_download(
+                        repo,
+                        "manifest.json",
+                        revision=sha,
+                        cache_dir=config.cache_dir / "manifests",
+                    )
+                ).read_text(encoding="utf-8")
+            )
+            pin = manifest.get("slm") or {}
+            recipe = json.loads(
+                Path(
+                    hf_hub_download(
+                        str(pin.get("repo") or ""),
+                        "training/recipe.json",
+                        revision=str(pin.get("revision") or "main"),
+                        cache_dir=config.cache_dir / "manifests",
+                    )
+                ).read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            log.warning("declared base of %s not read: %s", entry.get("hotkey"), exc)
+            return set()
+        base = str(recipe.get("base_model") or "")
+        if base:
+            found.add(base)
+    return found
+
+
 def cached_bases(config: EpochConfig, context: EpochContext) -> dict[str, Path]:
     found: dict[str, Path] = {}
-    for base in [str(b) for b in context.definition.get("allowed_bases") or []]:
+    allowed = [str(b) for b in context.definition.get("allowed_bases") or []]
+    wanted = (
+        declared_bases(config, context) & set(allowed) if config.chain.network == "test" else set()
+    )
+    if wanted:
+        log.info(
+            "testnet: only the declared bases are fetched and run: %s", ", ".join(sorted(wanted))
+        )
+        allowed = [b for b in allowed if b in wanted]
+    for base in allowed:
         try:
             found[base] = collect.download(base, "main", config.cache_dir)
         except Exception as exc:
