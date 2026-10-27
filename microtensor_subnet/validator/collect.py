@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,7 +50,9 @@ def candidates(
     *,
     commit_close_block: int,
     roster: Mapping[str, Mapping[str, Any]] | None = None,
+    dropped: dict[str, str] | None = None,
 ) -> list[Candidate]:
+    refused = dropped if dropped is not None else {}
     snapshot = client.snapshot(refresh=True)
     hotkeys = [n.hotkey for n in snapshot.neurons]
     raw = client.commitments(hotkeys)
@@ -59,12 +61,16 @@ def candidates(
         entry = (roster or {}).get(hotkey) or {}
         if str(entry.get("reveal_state") or "") != "unsealed":
             log.info("%s is sealed and not revealed on the roster", hotkey)
+            if sealed.arena_id == arena_id:
+                refused[hotkey] = "sealed and not revealed on the roster"
             continue
         hf_user = str(entry.get("hf_user") or "")
         artifact_sha = str(entry.get("artifact_sha") or "").lower()
         salt = str(entry.get("salt") or "")
         if not sealed.matches(hf_user, artifact_sha, salt):
             log.info("%s revealed values do not match the sealed digest", hotkey)
+            if sealed.arena_id == arena_id:
+                refused[hotkey] = "revealed values do not match the sealed digest"
             continue
         try:
             decoded[hotkey] = SubmissionCommitment(
@@ -72,23 +78,32 @@ def candidates(
             )
         except CommitmentError as exc:
             log.info("%s revealed values are invalid: %s", hotkey, exc)
+            if sealed.arena_id == arena_id:
+                refused[hotkey] = f"revealed values are invalid: {exc}"
     blocks = client.commitment_blocks(list(decoded))
     coldkeys = snapshot.coldkeys() if hasattr(snapshot, "coldkeys") else {}
     found: list[Candidate] = []
     seen_fees: set[tuple[int, int]] = set()
-    for hotkey, commitment in sorted(decoded.items()):
+    ordered = sorted(
+        decoded.items(),
+        key=lambda pair: (int(blocks.get(pair[0], commit_close_block)), pair[0]),
+    )
+    for hotkey, commitment in ordered:
         if commitment.arena_id != arena_id:
             continue
         block = int(blocks.get(hotkey, commit_close_block))
         if block >= commit_close_block:
             log.info("%s committed at block %d, after the commit window closed", hotkey, block)
+            refused[hotkey] = f"committed at block {block}, after the commit window closed"
             continue
         if roster is not None and hotkey not in roster:
             log.info("%s is not on the signed roster", hotkey)
+            refused[hotkey] = "not on the signed roster"
             continue
         key = (commitment.fee_block, commitment.fee_index)
         if key in seen_fees:
             log.info("%s cites a fee transfer another commitment already cited", hotkey)
+            refused[hotkey] = "cites a fee transfer another commitment already cited"
             continue
         seen_fees.add(key)
         found.append(Candidate(hotkey, str(coldkeys.get(hotkey, "")), commitment, block))
@@ -113,12 +128,29 @@ def fee_ok(client: Any, candidate: Candidate, *, pay_to: str, fee_tao: float) ->
     return ""
 
 
+def cache_path(repo: str, revision: str, into: Path) -> Path:
+    return into / repo.replace("/", "__") / revision
+
+
+def fetched_paths(candidate: Candidate, cache_dir: Path) -> list[Path]:
+    commitment = candidate.commitment
+    artifact_dir = cache_path(commitment.artifact_repo, commitment.artifact_sha, cache_dir)
+    found = [artifact_dir]
+    try:
+        manifest = load_manifest(artifact_dir)
+    except Exception:
+        return found
+    if manifest.slm is not None and manifest.slm.repo == commitment.slm_repo:
+        found.append(cache_path(manifest.slm.repo, manifest.slm.revision, cache_dir))
+    return found
+
+
 def download(repo: str, revision: str, into: Path) -> Path:
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
         raise CollectError("huggingface_hub is required to download submissions") from exc
-    target = into / repo.replace("/", "__") / revision
+    target = cache_path(repo, revision, into)
     if (target / ".complete").is_file():
         return target
     target.mkdir(parents=True, exist_ok=True)
@@ -145,8 +177,11 @@ def materialise(
     allowed_licenses: list[str],
     bounds: tuple[int, int] | None = None,
     formats: list[str] | None = None,
+    hold: Callable[[Path], None] | None = None,
 ) -> Artifact:
     commitment = candidate.commitment
+    if hold is not None:
+        hold(cache_path(commitment.artifact_repo, commitment.artifact_sha, cache_dir))
     try:
         artifact_dir = download(commitment.artifact_repo, commitment.artifact_sha, cache_dir)
     except Exception as exc:
@@ -165,6 +200,8 @@ def materialise(
             raise CollectError(
                 "manifest pins an slm repository that does not follow the convention"
             )
+        if hold is not None:
+            hold(cache_path(manifest.slm.repo, manifest.slm.revision, cache_dir))
         try:
             slm_dir = download(manifest.slm.repo, manifest.slm.revision, cache_dir)
         except Exception as exc:

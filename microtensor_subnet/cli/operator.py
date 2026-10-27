@@ -84,7 +84,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     serve.add_argument("--gateway", default=GATEWAY_URL)
     serve.add_argument("--worker", default="", help="a name when one hotkey runs several hosts")
-    serve.add_argument("--sandbox-runtime", default="runsc")
+    serve.add_argument("--sandbox-runtime", default=os.environ.get("MT_SANDBOX_RUNTIME", ""))
     serve.add_argument("--request-seconds", type=float, default=120.0)
     serve.add_argument("--review-seconds", type=float, default=REVIEW_SECONDS)
     serve.add_argument(

@@ -31,7 +31,7 @@ class HostConfig:
     vllm_image: str = VLLM_IMAGE
     sandbox_image: str = SANDBOX_IMAGE
     gateway_image: str = GATEWAY_IMAGE
-    sandbox_runtime: str = "runsc"
+    sandbox_runtime: str = ""
     slm_memory_share: float = 0.0
     sandbox_cpus: float = SANDBOX_CPUS
     sandbox_memory: str = SANDBOX_MEMORY

@@ -1,6 +1,6 @@
 # Mechanism
 
-Miners ship a specialised small model, a harness, a router and an escalation path as two Hugging Face repositories and commit the revision on chain with a fee. Each epoch, validators decrypt a hidden item bundle, run every submission inside a gVisor sandbox on their own GPUs, and score each part in its own pool against the arena's reference components. Scores are one sided lower bounds; a ladder keeps each miner's best per artifact; validators set weights themselves and the server publishes the consensus ledger.
+Miners ship a specialised small model, a harness, a router and an escalation path as two Hugging Face repositories and commit the revision on chain with a fee. Each epoch, validators decrypt a hidden item bundle, run every submission inside a locked down Docker container on their own GPUs (an internal network to the gateway only, CPU, memory and process limits, read only mounts, every capability dropped), and score each part in its own pool against the arena's reference components. Scores are one sided lower bounds; a ladder keeps each miner's best per artifact; validators set weights themselves and the server publishes the consensus ledger.
 
 The documentation lives on the site:
 

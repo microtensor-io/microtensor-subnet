@@ -248,7 +248,10 @@ def check(
 
 
 def digest_of_dir(root: Path) -> str:
+    files = safetensors_in(root) or gguf_in(root)
+    if not files:
+        return ""
     h = hashlib.sha256()
-    for path in safetensors_in(root):
+    for path in files:
         h.update(sha256_of(path).encode())
     return h.hexdigest()

@@ -115,3 +115,9 @@ class ServerClient:
     def submit_report(self, report: dict[str, Any]) -> dict[str, Any]:
         found = self._request("POST", "/v2/reports", report, signed=True)
         return dict(found or {})
+
+    def submit_artifact_result(self, body: dict[str, Any]) -> dict[str, Any]:
+        found = self._request("POST", "/v2/reports/artifact", body, signed=True)
+        if not isinstance(found, dict) or not found.get("accepted"):
+            raise ServerError(f"POST /v2/reports/artifact was not accepted: {found!r}"[:300])
+        return dict(found)

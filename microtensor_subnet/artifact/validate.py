@@ -164,11 +164,17 @@ def load_manifest(root: Path) -> Manifest:
     if not path.is_file():
         raise ManifestError(f"{contract.MANIFEST_FILE} is missing")
     try:
-        return Manifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
-        if isinstance(exc, ManifestError):
-            raise
         raise ManifestError(f"{contract.MANIFEST_FILE} is not valid json: {exc}") from exc
+    if not isinstance(raw, Mapping):
+        raise ManifestError(f"{contract.MANIFEST_FILE} must be a json object")
+    try:
+        return Manifest.from_dict(raw)
+    except ManifestError:
+        raise
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ManifestError(f"{contract.MANIFEST_FILE} is malformed: {exc}") from exc
 
 
 def check_artifact(root: Path, manifest: Manifest) -> Findings:

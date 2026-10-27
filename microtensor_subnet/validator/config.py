@@ -11,6 +11,7 @@ VLLM_IMAGE: Final[str] = "vllm/vllm-openai:v0.10.1"
 LLAMA_IMAGE: Final[str] = "ghcr.io/ggml-org/llama.cpp:server"
 SANDBOX_IMAGE: Final[str] = "ghcr.io/microtensor-io/sandbox:1"
 GATEWAY_IMAGE: Final[str] = "ghcr.io/microtensor-io/validator:1"
+CUDA_IMAGE: Final[str] = "nvidia/cuda:12.4.1-base-ubuntu22.04"
 CONCURRENCY: Final[int] = 3
 SANDBOX_CPUS: Final[float] = 4.0
 SANDBOX_MEMORY: Final[str] = "8g"
@@ -33,7 +34,8 @@ class EpochConfig:
     llama_image: str = LLAMA_IMAGE
     sandbox_image: str = SANDBOX_IMAGE
     gateway_image: str = GATEWAY_IMAGE
-    sandbox_runtime: str = "runsc"
+    cuda_image: str = CUDA_IMAGE
+    sandbox_runtime: str = ""
     sandbox_cpus: float = SANDBOX_CPUS
     sandbox_memory: str = SANDBOX_MEMORY
     sandbox_pids: int = SANDBOX_PIDS
@@ -42,9 +44,6 @@ class EpochConfig:
     slm_ready_seconds: int = SLM_READY_SECONDS
     host_services_port: int = 9701
     allow_unsandboxed: bool = False
-    judge_share_gpu: bool = False
-    judge_model: str = ""
-    judge_revision: str = ""
     slm_memory_share: float = 0.0
     dry_run: bool = False
     item_limit: int = 0

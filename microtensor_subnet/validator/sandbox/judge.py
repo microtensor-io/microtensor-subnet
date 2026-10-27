@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +16,24 @@ from microtensor_subnet.validator.sandbox.slm import (
     MODEL_NAME,
     SlmClient,
     vllm_command,
+)
+
+QUANTISED_PROBE_MODELS: Final[dict[str, tuple[str, str]]] = {
+    "Qwen/Qwen2.5-Coder-7B-Instruct": (
+        "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ",
+        "8e8ed243bbe6f9a5aff549a0924562fc719b2b8a",
+    ),
+}
+QUANTISATION: Final[str] = "awq_marlin"
+TESTNET: Final[str] = "test"
+SHARED_CARD_BYTES: Final[int] = 40 * 1000**3
+MIB: Final[int] = 1024**2
+SHARED_PROBE_SHARE: Final[float] = 0.45
+SHARED_SLM_SHARE: Final[float] = 0.45
+QUANTISED_PROBE_SHARE: Final[float] = 0.4
+QUANTISED_SLM_SHARE: Final[float] = 0.5
+NEEDS_ROOM: Final[str] = (
+    "context compression needs a second GPU or a 40 GB card for the probe agent"
 )
 
 PROMPT: Final[str] = (
@@ -34,6 +52,46 @@ class JudgeError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class Placement:
+    gpu: str
+    model: str
+    revision: str
+    quantization: str
+    memory_share: float
+    slm_memory_share: float
+    slots: tuple[str, ...]
+
+
+def place(gpus: Mapping[str, int], spec: Mapping[str, Any], network: str) -> Placement:
+    model = str(spec.get("model") or "")
+    if not model:
+        raise JudgeError("the arena names no probe agent")
+    revision = str(spec.get("revision") or "main")
+    order = list(gpus)
+    if not order:
+        raise JudgeError("none of the configured GPUs is visible to Docker")
+    if len(order) >= 2:
+        return Placement(order[-1], model, revision, "", MEMORY_SHARE, 0.0, tuple(order[:-1]))
+    gpu = order[0]
+    if gpus[gpu] * MIB >= SHARED_CARD_BYTES:
+        return Placement(gpu, model, revision, "", SHARED_PROBE_SHARE, SHARED_SLM_SHARE, (gpu,))
+    if network != TESTNET:
+        raise JudgeError(NEEDS_ROOM)
+    quantised = QUANTISED_PROBE_MODELS.get(model)
+    if quantised is None:
+        raise JudgeError(f"{NEEDS_ROOM}; no quantised build of {model} is known")
+    return Placement(
+        gpu,
+        quantised[0],
+        quantised[1],
+        QUANTISATION,
+        QUANTISED_PROBE_SHARE,
+        QUANTISED_SLM_SHARE,
+        (gpu,),
+    )
+
+
 @dataclass(slots=True)
 class ProbeAgent:
     docker: Docker
@@ -42,6 +100,7 @@ class ProbeAgent:
     gpu: str
     max_tokens: int = 64
     memory_share: float = MEMORY_SHARE
+    quantization: str = ""
     name: str = ""
     network: str = ""
     url: str = ""
@@ -57,7 +116,10 @@ class ProbeAgent:
                 image=self.image,
                 network=self.network,
                 command=vllm_command(
-                    "/model", max_model_len=MAX_MODEL_LEN, memory_share=self.memory_share
+                    "/model",
+                    max_model_len=MAX_MODEL_LEN,
+                    quantization=self.quantization,
+                    memory_share=self.memory_share,
                 ),
                 env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
                 volumes=((str(self.model_dir), "/model", "ro"),),

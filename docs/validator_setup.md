@@ -7,16 +7,16 @@ Netuid **576** on Bittensor testnet. One validator evaluates every submission of
 | | |
 |---|---|
 | OS | Ubuntu 22.04 or 24.04 |
-| GPU | 3 × 24 GB (RTX 4090, L4, A10G or better), CUDA 12 driver. Arenas graded by a probe agent (context compression) take the last GPU in `--gpus` for it, so give them one more |
+| GPU | 3 × 24 GB (RTX 4090, L4, A10G or better), CUDA 12 driver. Arenas graded by a probe agent (context compression) place it automatically, see [Probe agent placement](#probe-agent-placement) |
 | CPU | 16 cores |
 | RAM | 64 GB |
-| Disk | NVMe, 400 GB free. Models are cached per revision and pruned after each epoch |
+| Disk | NVMe, 400 GB free. Bases and reference models stay cached between epochs; a miner's artifact and model are deleted as soon as its result is posted |
 | Network | 1 Gbps. One epoch downloads every submission's model once |
-| Software | Docker 27 or newer, NVIDIA Container Toolkit, gVisor (`runsc`) registered as a Docker runtime |
+| Software | Docker 27 or newer, NVIDIA Container Toolkit |
 | Uptime | continuous. An epoch is 50,400 blocks (about a week); the evaluation window opens 7,200 blocks in and a full pass over 30 submissions takes about 20 hours on three GPUs |
 | Access | a registered key and relay access granted by the team (see step 3) |
 
-Everything miner code does runs inside a gVisor sandbox with no network except four validator services. The validator itself runs as a container that starts sibling containers through the Docker socket: one vLLM server per submission on one GPU, one gateway, one sandbox.
+The sandbox is a locked down Docker container: no network except the gateway to four validator services, CPU, memory and process limits, a read only root file system, the artifact and the model mounted read only, every capability dropped and no privilege escalation. The validator itself runs as a container that starts sibling containers through the Docker socket: one vLLM server per submission on one GPU, one gateway, one sandbox. Missing sibling images (vLLM, sandbox, gateway) are pulled automatically, with a few retries.
 
 ## 1. Host preparation
 
@@ -33,19 +33,13 @@ curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-contai
 sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
 
-# gVisor
-curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
-sudo apt-get update && sudo apt-get install -y runsc
-sudo runsc install
 sudo systemctl restart docker
 
 sudo mkdir -p /var/lib/microtensor && sudo chown 10001:10001 /var/lib/microtensor
-docker run --rm --runtime=runsc hello-world
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
-Both test commands must succeed before anything else. `/var/lib/microtensor` has to exist at that exact path on the host: the validator bind-mounts it at the same path inside so the sibling containers it starts see the same files.
+The CUDA check must succeed before anything else; the validator runs the same image to read the GPUs it was given. `/var/lib/microtensor` has to exist at that exact path on the host: the validator bind-mounts it at the same path inside so the sibling containers it starts see the same files.
 
 ## 2. Register the hotkey
 
@@ -95,18 +89,30 @@ docker compose -f docker-compose.validator.yml up -d
 docker compose -f docker-compose.validator.yml logs -f
 ```
 
-The loop polls the chain every ten minutes. When an arena's evaluation window opens it downloads the epoch bundle, opens it with your key, fetches every submission on the signed roster at its committed revision, runs the five tests, posts the signed report, and sets weights. An epoch already reported is not run again; the record is `/var/lib/microtensor/state/<arena>.epochs.json`.
+The loop polls the chain every ten minutes. When an arena's evaluation window opens it downloads the epoch bundle, opens it with your key, sets up the baselines, evaluates the submissions on the signed roster one at a time at their committed revisions, posts each miner's signed result as it finishes, sets weights, and posts the signed epoch report. An epoch already reported is not run again; the record is `/var/lib/microtensor/state/<arena>.epochs.json`.
 
-## What one epoch does with a submission
+## What one epoch does
 
-1. Verifies the fee on chain, when the epoch's roster records one, and every file hash in `manifest.json`.
-2. Serves the miner's model with vLLM on one GPU, isolated on an internal network.
-3. Serves the miner's router from the validator process.
-4. Starts the miner's `main.py` in the sandbox with four service URLs and nothing else.
-5. Runs the SLM, harness, router, escalation and system tests on the epoch's hidden items.
-6. Grades every answer outside the sandbox and signs the report.
+Setup, once per arena, before any miner is touched:
 
-A submission that fails to build, crashes, times out or reaches for the network scores zero in every pool for the epoch, and the report says why.
+1. Loads the signed release, checks its seed against the chain's open block hash, opens the hidden items with your key, and loads the roster and the last epoch's best scores.
+2. Sets up the baselines: the reference parts and every allowed base come from the cache and are downloaded only when missing, the probe agent starts where the hardware allows, and the reference system, the frontier redo and each base run on the hidden items. If the frontier redo fails, for example because the relay has no credit, the escalation and system pools have no reference this epoch and score nothing for anyone; the log says why.
+3. Builds the miner queue from the chain: commitments and reveals, then timing, roster and fee for each, earliest commit first. Anything that fails is dropped with its reason.
+
+Per miner, one at a time, or one per GPU when there are several:
+
+4. Fetches the artifact and the model at the committed revision and checks arena, base, size, format, licence and the parameters read from the weights. A copy of an earlier miner's artifact or weights is refused; the earlier commit wins.
+5. Evaluates in the sandbox: the model on the hidden items with speed and memory, the harness and escalation, and the full system at each quality floor with the miner's own router.
+6. Scores provenance against the cached base, the margin over the reference and over the declared base, a lower bound score for each pool, and the envelope (at most 1% of items over).
+7. Posts the signed miner result, keeps a small record (scores, drafts as text, digests) in the epoch work folder, and deletes the artifact and the model before the next miner starts. Only the router folder is kept, for the router pass. A post that fails is retried at the end of the epoch.
+
+At close, once the queue is empty:
+
+8. Runs each kept router on the other miners' drafts and the reference drafts, posts the miner's result again with the router pool, and deletes the router.
+9. Ranks each pool and sets weights.
+10. Posts the signed epoch report with the relay receipts, saves the probe sets for inference miners, and clears the epoch work folder except the report and the probe sets. Base weights stay cached for the next epoch.
+
+A submission that fails a check, crashes, times out or reaches for the network is recorded with its reason, its files are deleted, and it scores nothing for the epoch.
 
 ## Dry run
 
@@ -114,21 +120,19 @@ A submission that fails to build, crashes, times out or reaches for the network 
 docker compose -f docker-compose.validator.yml run --rm validator epoch run --arena sql_gen --dry-run --item-limit 20 --home /var/lib/microtensor
 ```
 
-Evaluates twenty items per test, posts no report and sets no weights. Use it after installation and after every image update.
+Evaluates twenty items per test, posts no miner results and no report, and sets no weights. Use it after installation and after every image update.
 
-## Testnet on one GPU
+## Probe agent placement
 
-The published mechanism gives the context compression probe agent its own card. On testnet a validator may run everything on one GPU and swap the probe agent for a quantised build of the same model so both fit:
+Context compression arenas grade with a probe agent model. The validator reads the GPUs listed in `MT_GPUS` and places the probe agent itself:
 
-```
-MT_GPUS=0
-MT_SANDBOX_RUNTIME=runc
-MT_JUDGE_SHARE_GPU=1
-MT_JUDGE_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct-AWQ
-MT_SLM_MEMORY_SHARE=0.38
-```
+| GPUs | Probe agent | Model under test |
+|---|---|---|
+| two or more | the last GPU alone, full model | the other GPUs, one miner per GPU |
+| one card of 40 GB or more | the same card, full model at memory share 0.45 | memory share 0.45 |
+| one smaller card, testnet only | the same card, a quantised build of the same model at memory share 0.4 | memory share 0.5 |
 
-The probe agent then takes half the card and the model under test the share you set. `MT_JUDGE_MODEL` is refused on mainnet; `MT_SANDBOX_RUNTIME=runc` runs miner code in a plain container, which is acceptable only on testnet.
+On any other network a single card under 40 GB is refused with `context compression needs a second GPU or a 40 GB card for the probe agent`. When the probe agent shares the card, miners are evaluated one at a time. `MT_SLM_MEMORY_SHARE` overrides the share of the model under test when set.
 
 ## Updating
 
@@ -136,4 +140,4 @@ The probe agent then takes half the card and the model under test the share you 
 docker compose pull && docker compose -f docker-compose.validator.yml up -d
 ```
 
-Images are built from `main` and tagged `ghcr.io/microtensor-io/validator:1` and `ghcr.io/microtensor-io/sandbox:1`. The validator pulls the sandbox image itself.
+Images are built from `main` and tagged `ghcr.io/microtensor-io/validator:1` and `ghcr.io/microtensor-io/sandbox:1`. The validator pulls the vLLM, sandbox and gateway images itself when they are missing.
