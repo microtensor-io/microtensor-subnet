@@ -162,7 +162,7 @@ def load_context(
     files = items.open_bundle(manifest, bundle, hotkey, private)
     work_dir = config.work_dir / str(epoch_index)
     epoch_items, trees = items.unpack(files, seed=seed, work_dir=work_dir, limit=config.item_limit)
-    ref = items.reference_components(trees, definition, config.cache_dir)
+    ref = items.reference_components(trees, definition, config.cache_dir, config.chain.network)
     snapshot = client.ledger_snapshot(config.arena_id, epoch_index)
     roster_doc = client.roster(config.arena_id, epoch_index)
     charged = dict(dict(dict(roster_doc or {}).get("body") or {}).get("fee") or {})
