@@ -32,8 +32,6 @@ services:
     command:
       - epoch
       - loop
-      - --arena
-      - "${MT_ARENA:?set the arena id}"
       - --home
       - /var/lib/microtensor
     logging:

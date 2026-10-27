@@ -81,7 +81,6 @@ cd microtensor-subnet/deploy
 cat > .env <<EOF
 MT_WALLET_NAME=<coldkey>
 MT_WALLET_HOTKEY=<hotkey>
-MT_ARENA=sql_gen
 MT_GPUS=0,1,2
 DOCKER_GID=$(getent group docker | cut -d: -f3)
 EOF
@@ -89,7 +88,7 @@ docker compose -f docker-compose.validator.yml up -d
 docker compose -f docker-compose.validator.yml logs -f
 ```
 
-The loop polls the chain every ten minutes. When an arena's evaluation window opens it downloads the epoch bundle, opens it with your key, sets up the baselines, evaluates the submissions on the signed roster one at a time at their committed revisions, posts each miner's signed result as it finishes, sets weights, and posts the signed epoch report. An epoch already reported is not run again; the record is `/var/lib/microtensor/state/<arena>.epochs.json`.
+You do not choose arenas or miners: every ten minutes the loop asks the server which arenas are live on your network, and the signed roster names the miners. When an arena's evaluation window opens it downloads the epoch bundle, opens it with your key, sets up the baselines, evaluates the submissions on the signed roster one at a time at their committed revisions, posts each miner's signed result as it finishes, sets weights, and posts the signed epoch report. An epoch already reported is not run again; the record is `/var/lib/microtensor/state/<arena>.epochs.json`.
 
 ## What one epoch does
 
