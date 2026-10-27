@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -103,7 +104,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     run.set_defaults(handler=_run)
 
     loop = inner.add_parser("loop", help="run every epoch of an arena as its window opens")
-    loop.add_argument("--arena", required=True)
     loop.add_argument("--server", default=os.environ.get("MT_SERVER_URL", PUBLIC_SERVER_URL))
     loop.add_argument("--relay", default=os.environ.get("MT_RELAY_URL", ""))
     loop.add_argument(
@@ -503,7 +503,7 @@ def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
     return EpochConfig(
         chain=config,
         home=args.home,
-        arena_id=args.arena,
+        arena_id=getattr(args, "arena", "") or "",
         server_url=args.server,
         relay_url=args.relay or args.server,
         gpus=tuple(g.strip() for g in str(args.gpus).split(",") if g.strip()),
@@ -515,6 +515,44 @@ def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
     )
 
 
+def _poll_arena(
+    args: argparse.Namespace,
+    config: Any,
+    client: Any,
+    server: ServerClient,
+    wallet: Any,
+    state: Path,
+    arena_id: str,
+    block: int,
+) -> None:
+    record = state / f"{arena_id}.epochs.json"
+    done: set[int] = set()
+    if record.is_file():
+        done = {int(i) for i in json.loads(record.read_text(encoding="utf-8"))}
+    arena = server.arena(arena_id, block)
+    current = dict((arena or {}).get("current_epoch") or {})
+    index = current.get("index")
+    if arena is None:
+        log.warning("arena %s is unknown to %s", arena_id, args.server)
+        return
+    if current.get("phase") != "window" or index is None or int(index) in done:
+        log.info("block %d: %s epoch %s is %s", block, arena_id, index, current.get("phase"))
+        return
+    log.info("epoch %s of %s is open at block %d", index, arena_id, block)
+    settings = dataclasses.replace(_settings(args, config), arena_id=arena_id)
+    outcome = run_epoch(settings, chain=client, wallet=wallet, epoch_index=int(index))
+    done.add(int(index))
+    record.write_text(json.dumps(sorted(done)), encoding="utf-8")
+    log.info(
+        "epoch %s of %s done: %d scored, %d refused, %d weights",
+        index,
+        arena_id,
+        len(outcome.scores),
+        len(outcome.failures),
+        len(outcome.weights),
+    )
+
+
 def _loop(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO)
     config = chain_config(args)
@@ -523,35 +561,14 @@ def _loop(args: argparse.Namespace) -> int:
     server = ServerClient(args.server, hotkey_address(wallet), wallet)
     state = Path(args.home) / "state"
     state.mkdir(parents=True, exist_ok=True)
-    record = state / f"{args.arena}.epochs.json"
-    done: set[int] = set()
-    if record.is_file():
-        done = {int(i) for i in json.loads(record.read_text(encoding="utf-8"))}
-    settings = _settings(args, config)
     while True:
         try:
             block = client.block()
-            arena = server.arena(args.arena, block)
-            current = dict((arena or {}).get("current_epoch") or {})
-            index = current.get("index")
-            if arena is None:
-                log.warning("arena %s is unknown to %s", args.arena, args.server)
-            elif current.get("phase") == "window" and index is not None and int(index) not in done:
-                log.info("epoch %s of %s is open at block %d", index, args.arena, block)
-                outcome = run_epoch(settings, chain=client, wallet=wallet, epoch_index=int(index))
-                done.add(int(index))
-                record.write_text(json.dumps(sorted(done)), encoding="utf-8")
-                log.info(
-                    "epoch %s done: %d scored, %d refused, %d weights",
-                    index,
-                    len(outcome.scores),
-                    len(outcome.failures),
-                    len(outcome.weights),
-                )
-            else:
-                log.info(
-                    "block %d: %s epoch %s is %s", block, args.arena, index, current.get("phase")
-                )
+            arena_ids = server.live_arenas(config.network)
+            if not arena_ids:
+                log.info("block %d: the server lists no live arena on %s", block, config.network)
+            for arena_id in arena_ids:
+                _poll_arena(args, config, client, server, wallet, state, arena_id, block)
         except (EpochError, ReleaseError, ChainError, ServerError) as exc:
             log.error("epoch loop: %s", exc)
         if args.once:

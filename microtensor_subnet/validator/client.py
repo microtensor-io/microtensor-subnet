@@ -16,6 +16,9 @@ TIMEOUT_SECONDS: Final[float] = 60.0
 BUNDLE_TIMEOUT_SECONDS: Final[float] = 600.0
 
 
+ARENA_NETWORKS: dict[str, str] = {"test": "testnet", "finney": "mainnet"}
+
+
 class ServerError(RuntimeError):
     pass
 
@@ -63,6 +66,15 @@ class ServerClient:
                 f"{method} {path} answered {response.status_code}: {response.text[:300]}"
             )
         return response.json() if response.content else None
+
+    def live_arenas(self, network: str) -> list[str]:
+        found = self._request("GET", "/v2/arenas") or {}
+        wanted = ARENA_NETWORKS.get(network, network)
+        return sorted(
+            str(a.get("id"))
+            for a in found.get("arenas") or []
+            if a.get("state") == "live" and a.get("network") == wanted and a.get("id")
+        )
 
     def arena(self, arena_id: str, block: int | None = None) -> dict[str, Any] | None:
         query = f"?block={block}" if block is not None else ""
