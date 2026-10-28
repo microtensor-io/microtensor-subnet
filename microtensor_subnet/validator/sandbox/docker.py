@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import time
@@ -19,6 +20,13 @@ PULL_ATTEMPTS = 3
 PULL_PAUSE_SECONDS = 15.0
 GPU_QUERY = ("nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits")
 CONTAINER_MARKER = "/.dockerenv"
+MERGED_OUTPUT = frozenset({"logs"})
+FAILURE_LINES = 200
+FAILURE_CHARS = 300
+FAILURE_PIECE = 40
+EXITED_STATES = frozenset({"exited", "dead"})
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+RAISED = re.compile(r"(?:^|\s)((?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?:Error|Exception)(?::\s.*)?)$")
 
 
 class DockerError(RuntimeError):
@@ -56,14 +64,22 @@ class Runner(Protocol):
 
 class SubprocessRunner:
     def run(self, argv: Sequence[str], *, timeout: float = COMMAND_SECONDS) -> str:
+        merged = bool(argv) and argv[0] in MERGED_OUTPUT
         try:
             found = subprocess.run(  # noqa: S603
-                [DOCKER, *argv], capture_output=True, text=True, timeout=timeout, check=False
+                [DOCKER, *argv],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT if merged else subprocess.PIPE,
+                text=True,
+                errors="replace",
+                timeout=timeout,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise DockerError(f"docker {argv[0]} failed to start: {exc}") from exc
         if found.returncode != 0:
-            raise DockerError(f"docker {' '.join(argv[:2])}: {found.stderr.strip()[-400:]}")
+            said = found.stdout if found.stderr is None else found.stderr
+            raise DockerError(f"docker {' '.join(argv[:2])}: {(said or '').strip()[-400:]}")
         return found.stdout
 
 
@@ -114,6 +130,26 @@ def _flags(spec: ContainerSpec) -> list[str]:
     argv.append(spec.image)
     argv += list(spec.command)
     return argv
+
+
+def failure_detail(text: str, limit: int = FAILURE_CHARS) -> str:
+    lines = [ANSI.sub("", line).strip() for line in text.splitlines()]
+    found = [m.group(1) for m in (RAISED.search(line) for line in lines) if m]
+    if not found:
+        found = [line for line in lines if "error" in line.lower()]
+    picked: list[str] = []
+    seen: set[str] = set()
+    room = limit
+    for line in reversed(found):
+        if line in seen:
+            continue
+        seen.add(line)
+        room -= 3 if picked else 0
+        if picked and room < FAILURE_PIECE:
+            break
+        picked.insert(0, line[:room])
+        room -= len(picked[0])
+    return " | ".join(picked)
 
 
 def own_container() -> str:
@@ -213,6 +249,23 @@ class Docker:
             return self.runner.run(["logs", "--tail", str(tail), name])
         except DockerError:
             return ""
+
+    def exited(self, name: str) -> bool:
+        try:
+            raw = self.runner.run(["inspect", "-f", "{{.State.Status}}", name])
+        except DockerError as exc:
+            return "no such" in str(exc).lower()
+        return raw.strip() in EXITED_STATES
+
+    def failure(self, name: str) -> str:
+        return failure_detail(self.logs(name, FAILURE_LINES))
+
+    def exit_note(self, name: str) -> str:
+        detail = self.failure(name)
+        if detail:
+            return detail
+        code = self.exit_code(name)
+        return "no error in its log" if code is None else f"exit code {code}, no error in its log"
 
     def usage(self, name: str) -> dict[str, Any]:
         try:
