@@ -210,8 +210,16 @@ def materialise(
             slm_dir, manifest.slm, allowed_bases, bounds=bounds, formats=formats or ()
         )
         findings.problems += more.problems
-        licence = _licence(slm_dir)
-        if allowed_licenses and licence not in [x.lower() for x in allowed_licenses]:
+        licence = _card_value(slm_dir, "license")
+        submission = (
+            licence == "other"
+            and _card_value(slm_dir, "license_name") == contract.SUBMISSION_LICENCE
+        )
+        if (
+            allowed_licenses
+            and not submission
+            and licence not in [x.lower() for x in allowed_licenses]
+        ):
             findings.problems.append(f"slm licence {licence!r} is not allowed in this arena")
         try:
             parameters = model_parameters(slm_dir)
@@ -233,7 +241,7 @@ def materialise(
     )
 
 
-def _licence(root: Path) -> str:
+def _card_value(root: Path, wanted: str) -> str:
     card = root / "README.md"
     if not card.is_file():
         return ""
@@ -243,6 +251,6 @@ def _licence(root: Path) -> str:
     front = text.split("---", 2)[1] if text.count("---") >= 2 else ""
     for line in front.splitlines():
         key, _, value = line.partition(":")
-        if key.strip().lower() == "license":
+        if key.strip().lower() == wanted:
             return value.strip().strip("'\"").lower()
     return ""
