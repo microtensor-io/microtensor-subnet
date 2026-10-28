@@ -43,7 +43,7 @@ from microtensor_subnet.validator.sandbox import (
 )
 from microtensor_subnet.validator.sandbox import judge as probe_judge
 from microtensor_subnet.validator.sandbox import tools as tool_faults
-from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
+from microtensor_subnet.validator.sandbox.docker import Docker, DockerError, own_container
 from microtensor_subnet.validator.sandbox.services import Services
 from microtensor_subnet.validator.sandbox.slm import SlmClient
 
@@ -540,7 +540,8 @@ def set_up_baselines(
         if placement is not None:
             agent = start_probe_agent(config, context, engine, placement)
         address = host_ip()
-        services = Services(address, config.host_services_port)
+        listen = "0.0.0.0" if own_container() else address  # noqa: S104
+        services = Services(listen, config.host_services_port)
         services.start()
     except (DockerError, probe_judge.JudgeError, collect.CollectError) as exc:
         if agent is not None:

@@ -35,6 +35,7 @@ log = logging.getLogger("microtensor_subnet.validator.sandbox")
 GATEWAY_PORT = 9000
 ROUTER_PORT_BASE = 9800
 MAIN_PORT = 8080
+SLM_MAX_SEQS = 16
 READY_SECONDS = 180
 ROUTER_INPUT_CEILING = contract.CONFIG_LIMITS["router"]["max_input_tokens"]
 
@@ -223,6 +224,7 @@ class SandboxHost:
                     max_model_len=max_len,
                     memory_share=share,
                     quantization=self.quantised.get(model_dir, ""),
+                    max_seqs=SLM_MAX_SEQS,
                 ),
                 env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
                 volumes=((str(model_dir), "/model", "ro"),),
@@ -272,17 +274,18 @@ class SandboxHost:
 
     def _gateway_container(self, key: str, network: str) -> str:
         name = f"mt-gw-{key}"
+        upstream = self.docker.own_address(network) or self.host_ip
         self.docker.start(
             ContainerSpec(
                 name=name,
                 image=self.config.gateway_image,
                 network="bridge",
+                entrypoint="python",
                 command=(
-                    "python",
                     "-m",
                     "microtensor_subnet.validator.sandbox.gateway",
                     "--upstream",
-                    f"http://{self.host_ip}:{self.services.port}",
+                    f"http://{upstream}:{self.services.port}",
                     "--sandbox",
                     key,
                     "--port",

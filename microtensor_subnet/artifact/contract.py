@@ -85,6 +85,11 @@ ALLOWED_PACKAGES: Final[dict[str, str]] = {
     "pyyaml": "6.0.2",
     "tenacity": "9.1.2",
     "rapidfuzz": "3.13.0",
+    "typing-inspection": "0.4.0",
+    "attrs": "25.3.0",
+    "referencing": "0.36.2",
+    "jsonschema-specifications": "2025.4.1",
+    "rpds-py": "0.24.0",
 }
 
 CONFIG_LIMITS: Final[dict[str, dict[str, int]]] = {
