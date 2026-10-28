@@ -129,25 +129,19 @@ def sha256_of(path: Path) -> str:
     return "sha256:" + h.hexdigest()
 
 
-def tree_files(root: Path, *, skip: Iterable[str] = ()) -> list[str]:
-    skipped = set(skip)
-    return sorted(
-        p.relative_to(root).as_posix()
-        for p in root.rglob("*")
-        if p.is_file()
-        and not UNTRACKED_DIRS & set(p.parts)
-        and p.name not in UNTRACKED_FILES
-        and p.relative_to(root).as_posix() not in skipped
-    )
-
-
 def untracked(name: str) -> bool:
     parts = name.split("/")
     return (
-        bool(UNTRACKED_DIRS & set(parts))
-        or parts[-1] in UNTRACKED_FILES
+        parts[0] in UNTRACKED_DIRS
+        or name in UNTRACKED_FILES
         or (len(parts) > 1 and parts[0] == contract.SLM_FOLDER)
     )
+
+
+def tree_files(root: Path, *, skip: Iterable[str] = ()) -> list[str]:
+    skipped = set(skip)
+    names = (p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+    return sorted(name for name in names if not untracked(name) and name not in skipped)
 
 
 def tracked(files: dict[str, str]) -> dict[str, str]:
@@ -155,9 +149,7 @@ def tracked(files: dict[str, str]) -> dict[str, str]:
 
 
 def hash_tree(root: Path, *, skip: Iterable[str] = ()) -> dict[str, str]:
-    return {
-        name: sha256_of(root / name) for name in tree_files(root, skip=skip) if not untracked(name)
-    }
+    return {name: sha256_of(root / name) for name in tree_files(root, skip=skip)}
 
 
 @dataclass(slots=True)
