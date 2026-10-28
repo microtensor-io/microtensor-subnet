@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.core.items import Item
 from microtensor_subnet.validator.context import SYSTEM, EpochContext
+from microtensor_subnet.validator.progress import Progress, Tally
 from microtensor_subnet.validator.relay import SYSTEM as SYSTEM_PURPOSE
 from microtensor_subnet.validator.relay import RelayError, TicketDesk
 from microtensor_subnet.validator.results import FloorRun, ItemRun, ReferenceRun, SystemRun
@@ -25,13 +26,15 @@ def run(
     timeout: float,
     token_price: float,
     items: Sequence[Item] | None = None,
+    progress: Progress | None = None,
 ) -> SystemRun:
     chosen = list(items) if items is not None else context.items.items(SYSTEM)
     session = sandbox.session
     floors: list[FloorRun] = []
+    tally = Tally(progress, len(context.floors) * len(chosen))
     for floor in context.floors:
         runs: list[ItemRun] = []
-        for item in chosen:
+        for item in tally.over(chosen):
             redo = reference.system_answers.get(item.item_id)
             cap = max(1, int((redo.cost_micros if redo else 0) * TICKET_MULTIPLE))
             try:

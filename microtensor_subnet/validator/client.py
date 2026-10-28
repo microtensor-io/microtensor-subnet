@@ -14,6 +14,7 @@ TIMESTAMP_HEADER: Final[str] = "x-mt-timestamp"
 SIGNATURE_HEADER: Final[str] = "x-mt-signature"
 TIMEOUT_SECONDS: Final[float] = 60.0
 BUNDLE_TIMEOUT_SECONDS: Final[float] = 600.0
+PROGRESS_TIMEOUT_SECONDS: Final[float] = 5.0
 
 
 ARENA_NETWORKS: dict[str, str] = {"test": "testnet", "finney": "mainnet"}
@@ -46,7 +47,13 @@ class ServerClient:
         return headers
 
     def _request(
-        self, method: str, path: str, body: dict[str, Any] | None = None, *, signed: bool = False
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        signed: bool = False,
+        timeout: float | None = None,
     ) -> Any:
         raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode() if body else b""
         headers = (
@@ -55,7 +62,9 @@ class ServerClient:
             else {"accept": "application/json", "content-type": "application/json"}
         )
         try:
-            with httpx.Client(base_url=self.base_url.rstrip("/"), timeout=self.timeout) as http:
+            with httpx.Client(
+                base_url=self.base_url.rstrip("/"), timeout=timeout or self.timeout
+            ) as http:
                 response = http.request(method, path, content=raw or None, headers=headers)
         except httpx.HTTPError as exc:
             raise ServerError(f"{method} {path}: {exc}") from exc
@@ -133,3 +142,9 @@ class ServerClient:
         if not isinstance(found, dict) or not found.get("accepted"):
             raise ServerError(f"POST /v2/reports/artifact was not accepted: {found!r}"[:300])
         return dict(found)
+
+    def report_progress(self, body: dict[str, Any]) -> dict[str, Any]:
+        found = self._request(
+            "POST", "/v2/reports/progress", body, signed=True, timeout=PROGRESS_TIMEOUT_SECONDS
+        )
+        return dict(found or {})
