@@ -272,6 +272,7 @@ class SandboxHost:
 
     def _gateway_container(self, key: str, network: str) -> str:
         name = f"mt-gw-{key}"
+        upstream = self.docker.own_address(network) or self.host_ip
         self.docker.start(
             ContainerSpec(
                 name=name,
@@ -282,7 +283,7 @@ class SandboxHost:
                     "-m",
                     "microtensor_subnet.validator.sandbox.gateway",
                     "--upstream",
-                    f"http://{self.host_ip}:{self.services.port}",
+                    f"http://{upstream}:{self.services.port}",
                     "--sandbox",
                     key,
                     "--port",

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import socket
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
@@ -16,6 +18,7 @@ PULL_SECONDS = 3600.0
 PULL_ATTEMPTS = 3
 PULL_PAUSE_SECONDS = 15.0
 GPU_QUERY = ("nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits")
+CONTAINER_MARKER = "/.dockerenv"
 
 
 class DockerError(RuntimeError):
@@ -110,9 +113,19 @@ def _flags(spec: ContainerSpec) -> list[str]:
     return argv
 
 
+def own_container() -> str:
+    named = os.environ.get("MT_SELF_CONTAINER", "").strip()
+    if named:
+        return named
+    if os.path.exists(CONTAINER_MARKER):
+        return socket.gethostname()
+    return ""
+
+
 @dataclass(slots=True)
 class Docker:
     runner: Runner = field(default_factory=SubprocessRunner)
+    self_container: str = field(default_factory=own_container)
 
     def create_network(self, name: str, *, internal: bool = True) -> None:
         argv = ["network", "create", "--label", "microtensor=sandbox"]
@@ -128,8 +141,24 @@ class Docker:
                 )
             elif "already exists" not in str(exc):
                 raise
+        if self.self_container:
+            try:
+                self.connect(name, self.self_container)
+            except DockerError as exc:
+                if "already exists" not in str(exc):
+                    raise
+
+    def own_address(self, network: str) -> str:
+        if not self.self_container:
+            return ""
+        return self.address(self.self_container, network)
 
     def remove_network(self, name: str) -> None:
+        if self.self_container:
+            try:
+                self.runner.run(["network", "disconnect", "-f", name, self.self_container])
+            except DockerError as exc:
+                log.debug("left %s: %s", name, exc)
         try:
             self.runner.run(["network", "rm", name])
         except DockerError as exc:
