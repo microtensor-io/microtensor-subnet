@@ -135,6 +135,7 @@ def vllm_command(
     max_model_len: int,
     quantization: str = "",
     memory_share: float = MEMORY_SHARE,
+    max_seqs: int = 0,
 ) -> list[str]:
     argv = [
         "--model",
@@ -155,4 +156,6 @@ def vllm_command(
     ]
     if quantization:
         argv += ["--quantization", quantization]
+    if max_seqs:
+        argv += ["--max-num-seqs", str(max_seqs)]
     return argv

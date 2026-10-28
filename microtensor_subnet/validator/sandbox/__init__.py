@@ -35,6 +35,7 @@ log = logging.getLogger("microtensor_subnet.validator.sandbox")
 GATEWAY_PORT = 9000
 ROUTER_PORT_BASE = 9800
 MAIN_PORT = 8080
+SLM_MAX_SEQS = 16
 READY_SECONDS = 180
 ROUTER_INPUT_CEILING = contract.CONFIG_LIMITS["router"]["max_input_tokens"]
 
@@ -223,6 +224,7 @@ class SandboxHost:
                     max_model_len=max_len,
                     memory_share=share,
                     quantization=self.quantised.get(model_dir, ""),
+                    max_seqs=SLM_MAX_SEQS,
                 ),
                 env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
                 volumes=((str(model_dir), "/model", "ro"),),
