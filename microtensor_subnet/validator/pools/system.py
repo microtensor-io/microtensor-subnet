@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.core.items import Item
@@ -27,12 +27,14 @@ def run(
     token_price: float,
     items: Sequence[Item] | None = None,
     progress: Progress | None = None,
+    on_floor: Callable[[SystemRun], None] | None = None,
 ) -> SystemRun:
     chosen = list(items) if items is not None else context.items.items(SYSTEM)
     session = sandbox.session
     floors: list[FloorRun] = []
     tally = Tally(progress, context.pool_size(SYSTEM), len(context.floors) * len(chosen))
     for floor in context.floors:
+        tally.mark(floor=floor)
         runs: list[ItemRun] = []
         for item in tally.over(chosen):
             redo = reference.system_answers.get(item.item_id)
@@ -113,8 +115,15 @@ def run(
                 )
             )
         floors.append(FloorRun(floor=floor, runs=runs))
+        if on_floor is not None:
+            on_floor(_system_run(list(floors), reference))
+    return _system_run(floors, reference)
+
+
+def _system_run(floors: list[FloorRun], reference: ReferenceRun) -> SystemRun:
     return SystemRun(
         floors=floors,
         reference_cost_micros=reference.cost_micros,
         reference_latency_p95_ms=reference.latency_p95_ms,
+        reference_items=len(reference.system_answers),
     )

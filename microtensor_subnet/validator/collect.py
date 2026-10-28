@@ -213,10 +213,10 @@ def materialise(
             slm_dir, manifest.slm, allowed_bases, bounds=bounds, formats=formats or ()
         )
         findings.problems += more.problems
-        licence = _card_value(slm_dir, "license")
+        licence = card_value(slm_dir, "license")
         submission = (
             licence == "other"
-            and _card_value(slm_dir, "license_name") == contract.SUBMISSION_LICENCE
+            and card_value(slm_dir, "license_name") == contract.SUBMISSION_LICENCE
         )
         if (
             allowed_licenses
@@ -244,7 +244,7 @@ def materialise(
     )
 
 
-def _card_value(root: Path, wanted: str) -> str:
+def card_value(root: Path, wanted: str) -> str:
     card = root / "README.md"
     if not card.is_file():
         return ""

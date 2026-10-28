@@ -12,6 +12,7 @@ from microtensor_subnet.scoring.stats import (
     bootstrap_seed,
     ladder,
     paired_lb,
+    percentile,
     wilson_lb,
 )
 from microtensor_subnet.validator.results import (
@@ -227,11 +228,24 @@ def slm_score(
             "provenance": provenance_ok,
             "envelope": envelope_ok,
             "families": len(set(families)),
+            "passed": successes,
         },
     )
 
 
-def harness_score(run: HarnessRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
+def harness_limits(run: HarnessRun, limits: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "max_model_calls": int(limits.get("max_model_calls") or 0),
+        "added_wall_p95_ms": round(percentile(run.miner.added_ms, 0.95), 1),
+        "added_wall_limit_ms": float(limits.get("added_wall_p95_ms") or 0),
+        "within": run.limits_ok,
+    }
+
+
+def harness_score(
+    run: HarnessRun, *, min_items: int = MIN_ITEMS, limits: Mapping[str, Any] | None = None
+) -> PoolScore:
+    measured = harness_limits(run, limits or {})
     if not run.limits_ok:
         return PoolScore(
             pools.HARNESS,
@@ -240,7 +254,7 @@ def harness_score(run: HarnessRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
             run.miner.pass_rate,
             len(run.miner.runs),
             False,
-            {"reason": run.limits_reason},
+            {"reason": run.limits_reason, "limits": measured},
         )
     if not run.baselines:
         return PoolScore(
@@ -250,7 +264,7 @@ def harness_score(run: HarnessRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
             run.miner.pass_rate,
             len(run.miner.runs),
             False,
-            {"reason": "no baseline"},
+            {"reason": "no baseline", "limits": measured},
         )
     best = run.best_baseline()
     by_item = {r.item_id: r for r in best.runs}
@@ -278,6 +292,7 @@ def harness_score(run: HarnessRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
             "tokens_baseline": best.tokens,
             "allowance": round(allowance, DIGITS),
             "standard_error": paired.standard_error,
+            "limits": measured,
         },
     )
 
@@ -499,8 +514,6 @@ def _bootstrap_pairs(
 def system_score(run: SystemRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
     values: list[float] = []
     detail: dict[str, Any] = {"floors": {}}
-    from microtensor_subnet.scoring.stats import percentile
-
     for floor in run.floors:
         n = len(floor.runs)
         lower = wilson_lb(sum(1 for r in floor.runs if r.success), n)
@@ -518,11 +531,14 @@ def system_score(run: SystemRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
             "latency_p95_ms": round(latency, 1),
             "escalated": round(sum(1 for r in floor.runs if r.escalated) / n, DIGITS) if n else 0.0,
             "value": round(value, DIGITS),
+            "n": n,
+            "met": lower >= floor.floor,
         }
     score = sum(values) / len(values) if values else 0.0
     n = min((len(f.runs) for f in run.floors), default=0)
     detail["reference_cost_micros"] = run.reference_cost_micros
     detail["reference_latency_p95_ms"] = round(run.reference_latency_p95_ms, 1)
+    detail["reference_items"] = run.reference_items
     return PoolScore(
         pool=pools.SYSTEM,
         score=round(score, DIGITS),

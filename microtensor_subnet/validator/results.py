@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from microtensor_subnet.core.reports import PoolScore
+
 
 @dataclass(slots=True)
 class ItemRun:
@@ -117,6 +119,7 @@ class SystemRun:
     floors: list[FloorRun]
     reference_cost_micros: int
     reference_latency_p95_ms: float
+    reference_items: int = 0
 
 
 @dataclass(slots=True)
@@ -146,6 +149,7 @@ class ArtifactOutcome:
     escalation: EscalationRun | None = None
     system: SystemRun | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
+    scores: dict[str, PoolScore] = field(default_factory=dict)
     receipts: list[dict[str, Any]] = field(default_factory=list)
     failure: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
