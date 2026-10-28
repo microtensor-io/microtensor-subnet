@@ -11,6 +11,7 @@ ARTIFACT_REPO_PREFIX: Final[str] = "microtensor_"
 SLM_REPO_PREFIX: Final[str] = "mt_slm_"
 
 MANIFEST_FILE: Final[str] = "manifest.json"
+SLM_FOLDER: Final[str] = "slm_repo"
 CONFIG_FILE: Final[str] = "config.json"
 MAIN_FILE: Final[str] = "main.py"
 REQUIREMENTS_FILE: Final[str] = "requirements.txt"
