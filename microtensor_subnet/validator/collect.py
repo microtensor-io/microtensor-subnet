@@ -178,6 +178,7 @@ def materialise(
     bounds: tuple[int, int] | None = None,
     formats: list[str] | None = None,
     hold: Callable[[Path], None] | None = None,
+    on_downloaded: Callable[[], None] | None = None,
 ) -> Artifact:
     commitment = candidate.commitment
     if hold is not None:
@@ -186,6 +187,8 @@ def materialise(
         artifact_dir = download(commitment.artifact_repo, commitment.artifact_sha, cache_dir)
     except Exception as exc:
         raise CollectError(f"artifact repository could not be fetched: {exc}") from exc
+    if on_downloaded is not None:
+        on_downloaded()
     try:
         manifest = load_manifest(artifact_dir)
     except ManifestError as exc:

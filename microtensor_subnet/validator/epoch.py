@@ -19,13 +19,23 @@ from microtensor_subnet.chain.weights import quantise_weights, restrict_to_metag
 from microtensor_subnet.core.reports import PoolScore
 from microtensor_subnet.scoring import pools
 from microtensor_subnet.serving.probes import sets as probe_sets
-from microtensor_subnet.validator import collect, compress, items, provenance, report, score
+from microtensor_subnet.validator import (
+    collect,
+    compress,
+    items,
+    progress,
+    provenance,
+    report,
+    score,
+)
 from microtensor_subnet.validator.client import ServerClient, ServerError
 from microtensor_subnet.validator.config import EpochConfig
 from microtensor_subnet.validator.context import (
     ESCALATION,
+    HARNESS,
     ROUTER,
     SLM,
+    SYSTEM,
     Artifact,
     EpochContext,
     Reference,
@@ -228,6 +238,7 @@ class Runner:
     reference_router: RouterRun | None = None
     reference_escalation: Any = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    reporter: progress.Reporter = field(default_factory=progress.Reporter)
 
     def _memory(self, model_dir: Path, config: Mapping[str, Any]) -> int:
         slm = config.get("slm") or {}
@@ -390,6 +401,7 @@ class Runner:
         outcome = self.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
         if artifact.slm_dir is None:
             return
+        self.reporter.post(artifact.hotkey, SLM, 0, self.context.pool_size(SLM))
         try:
             sandbox = self._open(
                 self.context.reference.harness_dir,
@@ -405,6 +417,7 @@ class Runner:
                     SlmClient(sandbox.slm_url),
                     memory_bytes=self._memory(artifact.slm_dir, artifact.config),
                     parameters=artifact.slm_parameters,
+                    progress=self.reporter.tracker(artifact.hotkey, SLM),
                 )
                 outcome.slm.vram_peak_bytes = self._measured(sandbox, outcome.slm.vram_peak_bytes)
             finally:
@@ -438,7 +451,11 @@ class Runner:
             try:
                 if "harness" in artifact.has:
                     outcome.harness = harness.run(
-                        self.context, self.host, sandbox, timeout=self.config.request_seconds
+                        self.context,
+                        self.host,
+                        sandbox,
+                        timeout=self.config.request_seconds,
+                        progress=self.reporter.tracker(artifact.hotkey, HARNESS),
                     )
                     self.host.restart_main(sandbox, artifact_dir)
                 if "escalation" in artifact.has and self.reference_run is not None:
@@ -454,6 +471,7 @@ class Runner:
                         reference=self.reference_run,
                         timeout=self.config.request_seconds,
                         token_price=token_price,
+                        progress=self.reporter.tracker(artifact.hotkey, ESCALATION),
                     )
                 if self.reference_run is not None:
                     outcome.system = system.run(
@@ -464,6 +482,7 @@ class Runner:
                         reference=self.reference_run,
                         timeout=self.config.request_seconds,
                         token_price=token_price,
+                        progress=self.reporter.tracker(artifact.hotkey, SYSTEM),
                     )
             finally:
                 outcome.usage = self.host.close(sandbox)
@@ -494,6 +513,7 @@ class Runner:
             self.gpus.give(slot, gpu)
 
     def close(self) -> None:
+        self.reporter.close()
         self.host.services.stop()
         if self.agent is not None:
             self.agent.stop()
@@ -508,6 +528,7 @@ def set_up_baselines(
     *,
     wallet: Any,
     hotkey: str,
+    reporter: progress.Reporter | None = None,
 ) -> Runner:
     limits = Limits.from_definition(context.definition, context.max_model_len)
     placement: probe_judge.Placement | None = None
@@ -566,6 +587,7 @@ def set_up_baselines(
         base_dirs=base_dirs,
         known_public=provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json"),
         reference_slm_dir=reference_dir,
+        reporter=reporter or progress.Reporter(),
         protected={
             context.reference.slm_dir,
             *([reference_dir] if reference_dir is not None else []),
@@ -734,6 +756,19 @@ def build_queue(
     return queue, failures
 
 
+def announce(
+    reporter: progress.Reporter,
+    context: EpochContext,
+    queue: Sequence[collect.Candidate],
+    failures: Mapping[str, str],
+) -> None:
+    for position, candidate in enumerate(queue):
+        reporter.post(candidate.hotkey, progress.QUEUED, position + 1, len(queue))
+    for hotkey, reason in failures.items():
+        if hotkey in context.roster:
+            reporter.post(hotkey, progress.REFUSED, note=reason)
+
+
 def miner_loop(runner: Runner, queue: Sequence[collect.Candidate]) -> None:
     workers = (
         1 if runner.limits.on_cpu else max(1, min(runner.config.concurrency, runner.slot_count))
@@ -759,6 +794,7 @@ def process_miner(runner: Runner, position: int, candidate: collect.Candidate) -
             record.drafts = outcome.slm.drafts() if outcome.slm is not None else None
             record.failure = outcome.failure
             if not outcome.failure:
+                runner.reporter.post(candidate.hotkey, progress.SCORING)
                 record.scores = score_miner(runner, artifact, outcome)
                 record.provenance = dict(outcome.provenance)
     except Exception as exc:
@@ -781,6 +817,7 @@ def fetch_and_check(
             runner.holding[candidate.hotkey] = (*runner.holding.get(candidate.hotkey, ()), path)
 
     try:
+        runner.reporter.post(candidate.hotkey, progress.FETCHING)
         artifact = collect.materialise(
             candidate,
             cache_dir=runner.config.cache_dir,
@@ -790,6 +827,7 @@ def fetch_and_check(
             bounds=_bounds(definition),
             formats=[str(f) for f in definition.get("allowed_formats") or []],
             hold=hold,
+            on_downloaded=lambda: runner.reporter.post(candidate.hotkey, progress.CHECKING),
         )
         with runner.lock:
             runner.holding[candidate.hotkey] = _paths_of(artifact)
@@ -955,6 +993,8 @@ def post_result(runner: Runner, record: MinerRecord) -> bool:
         log.warning("%s result not accepted, kept for the retry at close: %s", record.hotkey, exc)
         return False
     record.posted = True
+    stage = progress.REFUSED if record.failure else progress.SENT
+    runner.reporter.post(record.hotkey, stage, note=record.failure)
     return True
 
 
@@ -1107,12 +1147,26 @@ def run_epoch(
     hotkey = hotkey_address(wallet)
     client = ServerClient(config.server_url, hotkey, wallet)
     context = load_context(config, client, chain, epoch_index=epoch_index, hotkey=hotkey)
-    runner = set_up_baselines(
-        config, client, context, docker or Docker(), wallet=wallet, hotkey=hotkey
+    reporter = progress.Reporter(
+        client, config.arena_id, context.epoch_index, enabled=not config.dry_run
     )
     try:
         queue, failures = build_queue(config, chain, context)
         log.info("epoch %d: %d queued, %d refused", epoch_index, len(queue), len(failures))
+        announce(reporter, context, queue, failures)
+        runner = set_up_baselines(
+            config,
+            client,
+            context,
+            docker or Docker(),
+            wallet=wallet,
+            hotkey=hotkey,
+            reporter=reporter,
+        )
+    except BaseException:
+        reporter.close()
+        raise
+    try:
         miner_loop(runner, queue)
         router_pass(runner)
         retry_unposted(runner)

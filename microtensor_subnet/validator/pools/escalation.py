@@ -7,6 +7,7 @@ from typing import Any
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.core.items import Item
 from microtensor_subnet.validator.context import ESCALATION, EpochContext
+from microtensor_subnet.validator.progress import Progress, Tally
 from microtensor_subnet.validator.relay import REPAIR, RelayError, TicketDesk
 from microtensor_subnet.validator.results import EscalationRun, ItemRun, ReferenceRun
 from microtensor_subnet.validator.sandbox import Sandbox, call_main
@@ -39,10 +40,12 @@ def run(
     reference: ReferenceRun,
     timeout: float,
     token_price: float,
+    progress: Progress | None = None,
 ) -> EscalationRun:
     repairs: list[ItemRun] = []
     session = sandbox.session
-    for item, draft in drafts:
+    tally = Tally(progress, context.pool_size(ESCALATION), len(drafts))
+    for item, draft in tally.over(drafts):
         redo = reference.redo_answers.get(item.item_id)
         redo_cost = redo.cost_micros if redo is not None else 0
         cap = max(1, int(redo_cost * TICKET_MULTIPLE))

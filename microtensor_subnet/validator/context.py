@@ -110,6 +110,11 @@ class EpochContext:
     def grader(self) -> str:
         return str(self.definition.get("grader") or "sqlite_execution")
 
+    def pool_size(self, test: str) -> int:
+        counts = self.definition.get("item_counts")
+        found = counts.get(test) if isinstance(counts, Mapping) else None
+        return int(found or 0) or len(self.items.originals(test))
+
     @property
     def stop(self) -> tuple[str, ...]:
         block = self.definition.get("generation") or {}

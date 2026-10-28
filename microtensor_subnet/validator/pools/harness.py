@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +9,7 @@ from microtensor_subnet.artifact import contract
 from microtensor_subnet.core.items import Item
 from microtensor_subnet.scoring.stats import percentile
 from microtensor_subnet.validator.context import HARNESS, EpochContext, render_prompt
+from microtensor_subnet.validator.progress import Progress, Tally
 from microtensor_subnet.validator.results import Condition, HarnessRun, ItemRun
 from microtensor_subnet.validator.sandbox import Sandbox, SandboxHost, call_main
 from microtensor_subnet.validator.sandbox.slm import SlmClient, SlmError
@@ -47,7 +48,7 @@ def run_condition(
     context: EpochContext,
     sandbox: Sandbox,
     name: str,
-    items: Sequence[Item],
+    items: Iterable[Item],
     *,
     timeout: float,
 ) -> Condition:
@@ -76,7 +77,7 @@ def run_condition(
 def run_bare(
     context: EpochContext,
     client: SlmClient,
-    items: Sequence[Item],
+    items: Iterable[Item],
     *,
     max_tokens: int | None = None,
 ) -> Condition:
@@ -102,20 +103,25 @@ def run(
     *,
     items: Sequence[Item] | None = None,
     timeout: float,
+    progress: Progress | None = None,
 ) -> HarnessRun:
     chosen = list(items) if items is not None else context.items.items(HARNESS)
-    miner = run_condition(context, sandbox, "H", chosen, timeout=timeout)
-    baselines = [run_bare(context, SlmClient(sandbox.slm_url), chosen)]
+    variants: list[Path] = [context.reference.harness_dir, *context.reference.variant_dirs]
+    tally = Tally(progress, context.pool_size(HARNESS), len(chosen) * (len(variants) + 2))
+    miner = run_condition(context, sandbox, "H", tally.over(chosen), timeout=timeout)
+    baselines = [run_bare(context, SlmClient(sandbox.slm_url), tally.over(chosen))]
     limit = float(context.harness_limits.get("added_wall_p95_ms") or 0)
     added = percentile(miner.added_ms, 0.95)
     limits_ok = not limit or added <= limit
     reason = "" if limits_ok else f"added wall time p95 {added:.0f} ms is over {limit:.0f} ms"
-    variants: list[Path] = [context.reference.harness_dir, *context.reference.variant_dirs]
     for index, variant in enumerate(variants, start=1):
         try:
             host.restart_main(sandbox, variant)
         except Exception as exc:
             log.warning("reference harness %d could not start: %s", index, exc)
+            tally.advance(len(chosen))
             continue
-        baselines.append(run_condition(context, sandbox, f"B{index}", chosen, timeout=timeout))
+        baselines.append(
+            run_condition(context, sandbox, f"B{index}", tally.over(chosen), timeout=timeout)
+        )
     return HarnessRun(miner=miner, baselines=baselines, limits_ok=limits_ok, limits_reason=reason)

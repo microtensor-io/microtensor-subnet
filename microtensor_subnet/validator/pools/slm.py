@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from microtensor_subnet.core.items import Item
 from microtensor_subnet.scoring.stats import percentile
 from microtensor_subnet.validator.context import SLM, EpochContext, render_prompt
+from microtensor_subnet.validator.progress import Progress, Tally
 from microtensor_subnet.validator.results import ItemRun, SlmRun
 from microtensor_subnet.validator.sandbox.slm import SlmClient, SlmError
 
@@ -42,13 +43,15 @@ def run(
     parameters: int,
     max_tokens: int | None = None,
     items: Sequence[Item] | None = None,
+    progress: Progress | None = None,
 ) -> SlmRun:
     budget = max_tokens or context.max_tokens
     chosen = list(items) if items is not None else context.items.originals(SLM)
     twins = context.items.twins_of(SLM)
     runs: list[ItemRun] = []
     twin_runs: list[ItemRun] = []
-    for item in chosen:
+    tally = Tally(progress, context.pool_size(SLM), len(chosen))
+    for item in tally.over(chosen):
         runs.append(_run_item(context, client, item, budget))
         twin = twins.get(item.item_id)
         if twin is not None:
