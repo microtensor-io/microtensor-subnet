@@ -39,6 +39,7 @@ THROTTLE_SECONDS: Final[float] = 15.0
 QUEUE_LIMIT: Final[int] = 256
 NOTE_LIMIT: Final[int] = 300
 RESULT_TIMEOUT_SECONDS: Final[float] = 15.0
+SETTLE_SECONDS: Final[float] = 4 * RESULT_TIMEOUT_SECONDS
 
 T = TypeVar("T")
 
@@ -113,6 +114,7 @@ class Reporter:
         self._pending: deque[dict[str, Any]] = deque(maxlen=QUEUE_LIMIT)
         self._results: dict[str, dict[str, Any]] = {}
         self._sending: set[str] = set()
+        self._settled: set[str] = set()
         self._last: dict[str, tuple[str, Any, float]] = {}
         self._wake = threading.Condition()
         self._worker: threading.Thread | None = None
@@ -146,14 +148,15 @@ class Reporter:
         if self._client is None:
             return
         with self._wake:
-            if self._closed:
+            if self._closed or miner in self._settled:
                 return
             self._results[miner] = body
             self._start()
             self._wake.notify_all()
 
-    def settle(self, miner: str, timeout: float = RESULT_TIMEOUT_SECONDS) -> None:
+    def settle(self, miner: str, timeout: float = SETTLE_SECONDS) -> None:
         with self._wake:
+            self._settled.add(miner)
             self._results.pop(miner, None)
             self._wake.wait_for(lambda: miner not in self._sending, timeout=timeout)
 

@@ -106,6 +106,7 @@ class MinerRecord:
     claim: str | None = None
     checks: list[dict[str, Any]] = field(default_factory=list)
     cleared: bool = False
+    shared: set[str] = field(default_factory=set)
 
     def wire(self) -> dict[str, Any]:
         return {
@@ -459,6 +460,7 @@ class Runner:
         try:
             outcome = self.outcomes.get(hotkey)
             live = assembled(self, record.artifact, outcome.scores if outcome else {})
+            record.shared.update(s.pool for s in live)
             body = result_body(self, record, live, final=False)
             self.reporter.publish(hotkey, report.sign_artifact(body, self.wallet))
         except Exception as exc:
@@ -1100,8 +1102,18 @@ def send_and_clear(runner: Runner, candidate: collect.Candidate, record: MinerRe
         runner.reporter.post(record.hotkey, progress.CLEARED)
 
 
+def withdrawn(record: MinerRecord) -> list[PoolScore]:
+    reason = record.failure[: checks.TEXT_LIMIT]
+    return [
+        PoolScore(pool, 0.0, 0.0, 0.0, 0, False, {"reason": reason})
+        for pool in pools.POOLS
+        if pool in record.shared
+    ]
+
+
 def _submit(runner: Runner, record: MinerRecord) -> None:
-    body = result_body(runner, record, record.scores, final=True)
+    scores = withdrawn(record) if record.failure else record.scores
+    body = result_body(runner, record, scores, final=True)
     try:
         runner.client.submit_artifact_result(report.sign_artifact(body, runner.wallet))
     except ServerError as exc:
@@ -1113,7 +1125,7 @@ def _submit(runner: Runner, record: MinerRecord) -> None:
             validator=runner.hotkey,
             miner=record.hotkey,
             artifact_sha=record.artifact_sha,
-            scores=record.scores,
+            scores=scores,
             provenance=record.provenance or _unchecked(record),
             failure=record.failure,
         )
