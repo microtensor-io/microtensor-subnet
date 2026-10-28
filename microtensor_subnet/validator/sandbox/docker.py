@@ -47,6 +47,7 @@ class ContainerSpec:
     ipc_none: bool = False
     cpuset: str = ""
     ports: Sequence[tuple[str, int]] = ()
+    entrypoint: str = ""
 
 
 class Runner(Protocol):
@@ -68,6 +69,8 @@ class SubprocessRunner:
 
 def _flags(spec: ContainerSpec) -> list[str]:
     argv = ["run", "-d", "--name", spec.name, "--network", spec.network, "--init"]
+    if spec.entrypoint:
+        argv += ["--entrypoint", spec.entrypoint]
     for key, value in spec.env.items():
         argv += ["-e", f"{key}={value}"]
     for host, guest, mode in spec.volumes:

@@ -35,7 +35,7 @@ SMALL_PROBE: Final[tuple[str, str]] = (
     "7ae557604adf67be50417f59c2c2f167def9a775",
 )
 SMALL_PROBE_SHARE: Final[float] = 0.15
-SMALL_CARD_SLM_SHARE: Final[float] = 0.8
+SMALL_CARD_SLM_SHARE: Final[float] = 0.72
 NEEDS_ROOM: Final[str] = (
     "context compression needs a second GPU or a 40 GB card for the probe agent"
 )

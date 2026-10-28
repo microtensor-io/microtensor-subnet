@@ -278,8 +278,8 @@ class SandboxHost:
                 name=name,
                 image=self.config.gateway_image,
                 network="bridge",
+                entrypoint="python",
                 command=(
-                    "python",
                     "-m",
                     "microtensor_subnet.validator.sandbox.gateway",
                     "--upstream",
