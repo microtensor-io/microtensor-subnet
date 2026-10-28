@@ -118,6 +118,7 @@ def _digests(raw: Any, where: str) -> dict[str, str]:
 
 
 UNTRACKED_DIRS = frozenset({".git", ".cache"})
+UNTRACKED_FILES = frozenset({".gitattributes", ".complete"})
 
 
 def sha256_of(path: Path) -> str:
@@ -135,18 +136,28 @@ def tree_files(root: Path, *, skip: Iterable[str] = ()) -> list[str]:
         for p in root.rglob("*")
         if p.is_file()
         and not UNTRACKED_DIRS & set(p.parts)
+        and p.name not in UNTRACKED_FILES
         and p.relative_to(root).as_posix() not in skipped
     )
 
 
+def untracked(name: str) -> bool:
+    parts = name.split("/")
+    return (
+        bool(UNTRACKED_DIRS & set(parts))
+        or parts[-1] in UNTRACKED_FILES
+        or (len(parts) > 1 and parts[0] == contract.SLM_FOLDER)
+    )
+
+
 def tracked(files: dict[str, str]) -> dict[str, str]:
-    return {
-        name: digest for name, digest in files.items() if not UNTRACKED_DIRS & set(name.split("/"))
-    }
+    return {name: digest for name, digest in files.items() if not untracked(name)}
 
 
 def hash_tree(root: Path, *, skip: Iterable[str] = ()) -> dict[str, str]:
-    return {name: sha256_of(root / name) for name in tree_files(root, skip=skip)}
+    return {
+        name: sha256_of(root / name) for name in tree_files(root, skip=skip) if not untracked(name)
+    }
 
 
 @dataclass(slots=True)
