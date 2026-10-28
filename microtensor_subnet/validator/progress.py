@@ -48,7 +48,7 @@ class Reporter:
     def __init__(
         self, client: Any = None, arena_id: str = "", epoch_index: int = 0, *, enabled: bool = True
     ) -> None:
-        self._client = client if enabled else None
+        self._client: Any = client if enabled else None
         self._arena_id = arena_id
         self._epoch_index = epoch_index
         self._pending: deque[dict[str, Any]] = deque(maxlen=QUEUE_LIMIT)
