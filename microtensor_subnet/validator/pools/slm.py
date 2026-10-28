@@ -50,7 +50,7 @@ def run(
     twins = context.items.twins_of(SLM)
     runs: list[ItemRun] = []
     twin_runs: list[ItemRun] = []
-    tally = Tally(progress, len(chosen))
+    tally = Tally(progress, context.pool_size(SLM), len(chosen))
     for item in tally.over(chosen):
         runs.append(_run_item(context, client, item, budget))
         twin = twins.get(item.item_id)

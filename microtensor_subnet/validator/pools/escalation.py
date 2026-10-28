@@ -44,7 +44,7 @@ def run(
 ) -> EscalationRun:
     repairs: list[ItemRun] = []
     session = sandbox.session
-    tally = Tally(progress, len(drafts))
+    tally = Tally(progress, context.pool_size(ESCALATION), len(drafts))
     for item, draft in tally.over(drafts):
         redo = reference.redo_answers.get(item.item_id)
         redo_cost = redo.cost_micros if redo is not None else 0

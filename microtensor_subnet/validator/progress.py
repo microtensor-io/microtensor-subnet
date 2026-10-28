@@ -28,7 +28,9 @@ T = TypeVar("T")
 class Tally:
     progress: Progress | None
     total: int
+    steps: int
     done: int = 0
+    shown: int = -1
 
     def __post_init__(self) -> None:
         self._emit()
@@ -36,12 +38,20 @@ class Tally:
     def over(self, rows: Iterable[T]) -> Iterator[T]:
         for row in rows:
             yield row
-            self.done += 1
-            self._emit()
+            self.advance(1)
+
+    def advance(self, count: int) -> None:
+        self.done += count
+        self._emit()
 
     def _emit(self) -> None:
-        if self.progress is not None:
-            self.progress(self.done, self.total)
+        if self.progress is None:
+            return
+        total = max(0, self.total)
+        shown = total if self.done >= self.steps else self.done * total // self.steps
+        if shown != self.shown:
+            self.shown = shown
+            self.progress(shown, total)
 
 
 class Reporter:

@@ -31,7 +31,7 @@ def run(
     chosen = list(items) if items is not None else context.items.items(SYSTEM)
     session = sandbox.session
     floors: list[FloorRun] = []
-    tally = Tally(progress, len(context.floors) * len(chosen))
+    tally = Tally(progress, context.pool_size(SYSTEM), len(context.floors) * len(chosen))
     for floor in context.floors:
         runs: list[ItemRun] = []
         for item in tally.over(chosen):

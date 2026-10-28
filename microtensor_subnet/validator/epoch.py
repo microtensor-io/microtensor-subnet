@@ -401,6 +401,7 @@ class Runner:
         outcome = self.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
         if artifact.slm_dir is None:
             return
+        self.reporter.post(artifact.hotkey, SLM, 0, self.context.pool_size(SLM))
         try:
             sandbox = self._open(
                 self.context.reference.harness_dir,
@@ -527,6 +528,7 @@ def set_up_baselines(
     *,
     wallet: Any,
     hotkey: str,
+    reporter: progress.Reporter | None = None,
 ) -> Runner:
     limits = Limits.from_definition(context.definition, context.max_model_len)
     placement: probe_judge.Placement | None = None
@@ -585,9 +587,7 @@ def set_up_baselines(
         base_dirs=base_dirs,
         known_public=provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json"),
         reference_slm_dir=reference_dir,
-        reporter=progress.Reporter(
-            client, config.arena_id, context.epoch_index, enabled=not config.dry_run
-        ),
+        reporter=reporter or progress.Reporter(),
         protected={
             context.reference.slm_dir,
             *([reference_dir] if reference_dir is not None else []),
@@ -757,13 +757,16 @@ def build_queue(
 
 
 def announce(
-    runner: Runner, queue: Sequence[collect.Candidate], failures: Mapping[str, str]
+    reporter: progress.Reporter,
+    context: EpochContext,
+    queue: Sequence[collect.Candidate],
+    failures: Mapping[str, str],
 ) -> None:
     for position, candidate in enumerate(queue):
-        runner.reporter.post(candidate.hotkey, progress.QUEUED, position + 1, len(queue))
+        reporter.post(candidate.hotkey, progress.QUEUED, position + 1, len(queue))
     for hotkey, reason in failures.items():
-        if hotkey in runner.context.roster:
-            runner.reporter.post(hotkey, progress.REFUSED, note=reason)
+        if hotkey in context.roster:
+            reporter.post(hotkey, progress.REFUSED, note=reason)
 
 
 def miner_loop(runner: Runner, queue: Sequence[collect.Candidate]) -> None:
@@ -824,8 +827,8 @@ def fetch_and_check(
             bounds=_bounds(definition),
             formats=[str(f) for f in definition.get("allowed_formats") or []],
             hold=hold,
+            on_downloaded=lambda: runner.reporter.post(candidate.hotkey, progress.CHECKING),
         )
-        runner.reporter.post(candidate.hotkey, progress.CHECKING)
         with runner.lock:
             runner.holding[candidate.hotkey] = _paths_of(artifact)
         record.artifact = artifact
@@ -1144,13 +1147,26 @@ def run_epoch(
     hotkey = hotkey_address(wallet)
     client = ServerClient(config.server_url, hotkey, wallet)
     context = load_context(config, client, chain, epoch_index=epoch_index, hotkey=hotkey)
-    runner = set_up_baselines(
-        config, client, context, docker or Docker(), wallet=wallet, hotkey=hotkey
+    reporter = progress.Reporter(
+        client, config.arena_id, context.epoch_index, enabled=not config.dry_run
     )
     try:
         queue, failures = build_queue(config, chain, context)
         log.info("epoch %d: %d queued, %d refused", epoch_index, len(queue), len(failures))
-        announce(runner, queue, failures)
+        announce(reporter, context, queue, failures)
+        runner = set_up_baselines(
+            config,
+            client,
+            context,
+            docker or Docker(),
+            wallet=wallet,
+            hotkey=hotkey,
+            reporter=reporter,
+        )
+    except BaseException:
+        reporter.close()
+        raise
+    try:
         miner_loop(runner, queue)
         router_pass(runner)
         retry_unposted(runner)

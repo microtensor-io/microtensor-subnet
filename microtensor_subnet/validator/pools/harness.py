@@ -107,7 +107,7 @@ def run(
 ) -> HarnessRun:
     chosen = list(items) if items is not None else context.items.items(HARNESS)
     variants: list[Path] = [context.reference.harness_dir, *context.reference.variant_dirs]
-    tally = Tally(progress, len(chosen) * (len(variants) + 2))
+    tally = Tally(progress, context.pool_size(HARNESS), len(chosen) * (len(variants) + 2))
     miner = run_condition(context, sandbox, "H", tally.over(chosen), timeout=timeout)
     baselines = [run_bare(context, SlmClient(sandbox.slm_url), tally.over(chosen))]
     limit = float(context.harness_limits.get("added_wall_p95_ms") or 0)
@@ -119,6 +119,7 @@ def run(
             host.restart_main(sandbox, variant)
         except Exception as exc:
             log.warning("reference harness %d could not start: %s", index, exc)
+            tally.advance(len(chosen))
             continue
         baselines.append(
             run_condition(context, sandbox, f"B{index}", tally.over(chosen), timeout=timeout)
