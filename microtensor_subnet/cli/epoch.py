@@ -241,8 +241,9 @@ def _show_logs() -> None:
     package.propagate = False
     package.disabled = False
     for name, found in list(logging.Logger.manager.loggerDict.items()):
-        if isinstance(found, logging.Logger) and name.startswith("microtensor_subnet"):
+        if isinstance(found, logging.Logger) and name.startswith("microtensor_subnet."):
             found.disabled = False
+            found.setLevel(logging.NOTSET)
 
 
 def _run(args: argparse.Namespace) -> int:
