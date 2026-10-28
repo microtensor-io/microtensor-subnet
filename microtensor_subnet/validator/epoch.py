@@ -6,7 +6,7 @@ import logging
 import platform
 import shutil
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -20,6 +20,7 @@ from microtensor_subnet.core.reports import PoolScore
 from microtensor_subnet.scoring import pools
 from microtensor_subnet.serving.probes import sets as probe_sets
 from microtensor_subnet.validator import (
+    checks,
     collect,
     compress,
     items,
@@ -42,7 +43,15 @@ from microtensor_subnet.validator.context import (
 )
 from microtensor_subnet.validator.pools import escalation, harness, reference, router, slm, system
 from microtensor_subnet.validator.relay import RelayClient, RelayError, TicketDesk
-from microtensor_subnet.validator.results import ArtifactOutcome, ReferenceRun, RouterRun, SlmRun
+from microtensor_subnet.validator.results import (
+    ArtifactOutcome,
+    EscalationRun,
+    HarnessRun,
+    ReferenceRun,
+    RouterRun,
+    SlmRun,
+    SystemRun,
+)
 from microtensor_subnet.validator.sandbox import (
     GpuPool,
     Limits,
@@ -59,8 +68,7 @@ from microtensor_subnet.validator.sandbox.slm import SlmClient
 
 log = logging.getLogger("microtensor_subnet.validator.epoch")
 DEFAULT_CONTEXT = 8192
-DEFAULT_MEMORY_BYTES = 24 * 1024**3
-DEFAULT_MAX_PARAMETERS = 8_000_000_000
+LIVE_POOLS: Final[tuple[str, ...]] = (SLM, HARNESS, ESCALATION, SYSTEM)
 RECORDS_DIR: Final[str] = "records"
 ROUTERS_DIR: Final[str] = "routers"
 REPORT_FILE: Final[str] = "report.json"
@@ -95,6 +103,10 @@ class MinerRecord:
     drafts: dict[str, tuple[str, bool]] | None = None
     router_dir: Path | None = None
     posted: bool = False
+    claim: str | None = None
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    cleared: bool = False
+    shared: set[str] = field(default_factory=set)
 
     def wire(self) -> dict[str, Any]:
         return {
@@ -425,6 +437,34 @@ class Runner:
         except (SandboxError, Exception) as exc:
             outcome.failure = f"slm test: {exc}"
             log.warning("%s slm test failed: %s", artifact.hotkey, exc)
+            return
+        record = self.records.get(artifact.hotkey)
+        if record is not None:
+            note_checks(self, record)
+        self.pool_done(artifact.hotkey, lambda: score_slm(self, artifact, outcome))
+
+    def pool_done(self, hotkey: str, make: Callable[[], PoolScore | None]) -> None:
+        try:
+            found = make()
+        except Exception as exc:
+            log.warning("%s pool not scored live: %s", hotkey, exc)
+            return
+        if found is not None:
+            self.outcomes[hotkey].scores[found.pool] = found
+        self.share(hotkey)
+
+    def share(self, hotkey: str) -> None:
+        record = self.records.get(hotkey)
+        if record is None or record.artifact is None or self.config.dry_run:
+            return
+        try:
+            outcome = self.outcomes.get(hotkey)
+            live = assembled(self, record.artifact, outcome.scores if outcome else {})
+            record.shared.update(s.pool for s in live)
+            body = result_body(self, record, live, final=False)
+            self.reporter.publish(hotkey, report.sign_artifact(body, self.wallet))
+        except Exception as exc:
+            log.debug("%s partial result not queued: %s", hotkey, exc)
 
     def full_phase(self, artifact: Artifact, slot: int, gpu: str) -> None:
         outcome = self.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
@@ -450,19 +490,21 @@ class Runner:
             sandbox = self._open(artifact_dir, slm_dir, router_dir, artifact.config, slot, gpu)
             try:
                 if "harness" in artifact.has:
-                    outcome.harness = harness.run(
+                    ran = harness.run(
                         self.context,
                         self.host,
                         sandbox,
                         timeout=self.config.request_seconds,
                         progress=self.reporter.tracker(artifact.hotkey, HARNESS),
                     )
+                    outcome.harness = ran
+                    self.pool_done(artifact.hotkey, lambda: score_harness(self, ran))
                     self.host.restart_main(sandbox, artifact_dir)
                 if "escalation" in artifact.has and self.reference_run is not None:
                     drafts = escalation.wrong_drafts(
                         self.context, self.reference_run, self.reference_slm.drafts()
                     )
-                    outcome.escalation = escalation.run(
+                    repaired = escalation.run(
                         self.context,
                         sandbox,
                         self.desk,
@@ -473,6 +515,8 @@ class Runner:
                         token_price=token_price,
                         progress=self.reporter.tracker(artifact.hotkey, ESCALATION),
                     )
+                    outcome.escalation = repaired
+                    self.pool_done(artifact.hotkey, lambda: score_escalation(self, repaired))
                 if self.reference_run is not None:
                     outcome.system = system.run(
                         self.context,
@@ -483,6 +527,9 @@ class Runner:
                         timeout=self.config.request_seconds,
                         token_price=token_price,
                         progress=self.reporter.tracker(artifact.hotkey, SYSTEM),
+                        on_floor=lambda partial: self.pool_done(
+                            artifact.hotkey, lambda: score_system(self, partial)
+                        ),
                     )
             finally:
                 outcome.usage = self.host.close(sandbox)
@@ -790,6 +837,7 @@ def process_miner(runner: Runner, position: int, candidate: collect.Candidate) -
     try:
         artifact = fetch_and_check(runner, position, candidate, record)
         if artifact is not None:
+            check_provenance(runner, artifact, record)
             outcome = evaluate(runner, artifact, slot, gpu)
             record.drafts = outcome.slm.drafts() if outcome.slm is not None else None
             record.failure = outcome.failure
@@ -841,11 +889,41 @@ def fetch_and_check(
         reason = str(exc) or "the artifact could not be fetched"
     finally:
         runner.turns.done(position)
+    if record.artifact is not None:
+        record.claim = reason
+        note_checks(runner, record)
     if reason:
         record.failure = reason
         log.info("%s refused: %s", candidate.hotkey, reason)
         return None
     return artifact
+
+
+def check_provenance(runner: Runner, artifact: Artifact, record: MinerRecord) -> None:
+    outcome = runner.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
+    if artifact.slm_dir is not None:
+        outcome.provenance = provenance.check(
+            artifact.slm_dir, base_dirs=runner.base_dirs, known_public=runner.known_public
+        )
+        record.provenance = dict(outcome.provenance)
+    note_checks(runner, record)
+    runner.share(artifact.hotkey)
+
+
+def note_checks(runner: Runner, record: MinerRecord) -> None:
+    if record.artifact is None:
+        return
+    outcome = runner.outcomes.get(record.hotkey)
+    try:
+        record.checks = checks.build(
+            runner.context,
+            record.artifact,
+            claim=record.claim,
+            found=record.provenance or None,
+            run=outcome.slm if outcome is not None else None,
+        )
+    except Exception as exc:
+        log.debug("%s checks not listed: %s", record.hotkey, exc)
 
 
 def evaluate(runner: Runner, artifact: Artifact, slot: int, gpu: str) -> ArtifactOutcome:
@@ -854,91 +932,138 @@ def evaluate(runner: Runner, artifact: Artifact, slot: int, gpu: str) -> Artifac
     return runner.outcomes[artifact.hotkey]
 
 
-def score_miner(runner: Runner, artifact: Artifact, outcome: ArtifactOutcome) -> list[PoolScore]:
-    context = runner.context
-    rules = score.Rules.from_definition(context.definition)
-    budgets = context.budgets
-    low = int(budgets.get("min_parameters") or 0)
-    high = int(budgets.get("max_parameters") or DEFAULT_MAX_PARAMETERS)
-    memory_cap = int(
-        budgets.get("memory_bytes") or budgets.get("vram_bytes") or DEFAULT_MEMORY_BYTES
-    )
-    found: list[PoolScore] = []
-    if (
-        outcome.slm is not None
-        and runner.reference_slm is not None
-        and artifact.slm_dir is not None
-    ):
-        prov = provenance.check(
+def score_slm(runner: Runner, artifact: Artifact, outcome: ArtifactOutcome) -> PoolScore | None:
+    if outcome.slm is None or runner.reference_slm is None or artifact.slm_dir is None:
+        return None
+    rules = score.Rules.from_definition(runner.context.definition)
+    if not outcome.provenance:
+        outcome.provenance = provenance.check(
             artifact.slm_dir, base_dirs=runner.base_dirs, known_public=runner.known_public
         )
-        outcome.provenance = prov
-        base_run = runner.base_slm.get(str(prov.get("declared_base", "")))
-        sized = artifact.slm_parameters > 0 and low <= artifact.slm_parameters <= high
-        memory_ok = outcome.slm.vram_peak_bytes <= memory_cap
-        if rules.per_item_envelope:
-            gate = sized
-            over = score.envelope_share(outcome.slm, budgets)
-            envelope_ok = memory_ok and over <= rules.violation_share
-        else:
-            gate = (
-                sized
-                and memory_ok
-                and (
-                    not budgets.get("ttft_ms")
-                    or outcome.slm.ttft_p95_ms <= float(budgets["ttft_ms"])
-                )
-                and (
-                    not budgets.get("tpot_ms")
-                    or outcome.slm.tpot_p95_ms <= float(budgets["tpot_ms"])
-                )
-            )
-            envelope_ok = True
-        pool_score = score.slm_score(
-            outcome.slm,
-            runner.reference_slm,
-            gate_ok=gate,
-            provenance_ok=bool(prov.get("passed")),
-            base=base_run,
-            min_items=rules.min_items,
-            rules=rules,
-            envelope_ok=envelope_ok,
+    prov = outcome.provenance
+    gate, envelope_ok = checks.gates(runner.context, artifact, outcome.slm, rules)
+    pool_score = score.slm_score(
+        outcome.slm,
+        runner.reference_slm,
+        gate_ok=gate,
+        provenance_ok=bool(prov.get("passed")),
+        base=runner.base_slm.get(str(prov.get("declared_base", ""))),
+        min_items=rules.min_items,
+        rules=rules,
+        envelope_ok=envelope_ok,
+    )
+    beats = pool_score.detail.get("beats_base_lb")
+    if beats is not None and beats <= 0:
+        pool_score = PoolScore(
+            pool_score.pool,
+            0.0,
+            pool_score.lower_bound,
+            pool_score.point,
+            pool_score.n,
+            False,
+            {
+                **pool_score.detail,
+                "provenance": False,
+                "reason": "does not beat its declared base",
+            },
         )
-        beats = pool_score.detail.get("beats_base_lb")
-        if beats is not None and beats <= 0:
-            pool_score = PoolScore(
-                pool_score.pool,
-                0.0,
-                pool_score.lower_bound,
-                pool_score.point,
-                pool_score.n,
-                False,
-                {
-                    **pool_score.detail,
-                    "provenance": False,
-                    "reason": "does not beat its declared base",
-                },
-            )
-        found.append(pool_score)
-    if outcome.harness is not None:
-        found.append(score.harness_score(outcome.harness, min_items=rules.min_items))
-    if outcome.escalation is not None:
-        found.append(
-            score.escalation_score(
-                outcome.escalation,
-                runner.reference_escalation,
-                seed=context.seed,
-                min_items=rules.min_items,
-            )
-        )
-    if outcome.system is not None:
-        found.append(score.system_score(outcome.system, min_items=rules.min_items))
+    return pool_score
+
+
+def score_harness(runner: Runner, run: HarnessRun) -> PoolScore:
+    return score.harness_score(
+        run,
+        min_items=score.Rules.from_definition(runner.context.definition).min_items,
+        limits=runner.context.harness_limits,
+    )
+
+
+def score_escalation(runner: Runner, run: EscalationRun) -> PoolScore:
+    return score.escalation_score(
+        run,
+        runner.reference_escalation,
+        seed=runner.context.seed,
+        min_items=score.Rules.from_definition(runner.context.definition).min_items,
+    )
+
+
+def score_system(runner: Runner, run: SystemRun) -> PoolScore:
+    return score.system_score(
+        run, min_items=score.Rules.from_definition(runner.context.definition).min_items
+    )
+
+
+def assembled(
+    runner: Runner, artifact: Artifact, found: Mapping[str, PoolScore]
+) -> list[PoolScore]:
+    ordered = [found[pool] for pool in LIVE_POOLS if pool in found]
     for pool, reason in runner.no_reference.items():
         if pool == pools.SYSTEM or pool in artifact.has:
-            found.append(
+            ordered.append(
                 PoolScore(pool, 0.0, 0.0, 0.0, 0, False, {"reason": f"no reference: {reason}"})
             )
+    return ordered
+
+
+def score_miner(runner: Runner, artifact: Artifact, outcome: ArtifactOutcome) -> list[PoolScore]:
+    found = dict(outcome.scores)
+    if SLM not in found:
+        made = score_slm(runner, artifact, outcome)
+        if made is not None:
+            found[SLM] = made
+    if HARNESS not in found and outcome.harness is not None:
+        found[HARNESS] = score_harness(runner, outcome.harness)
+    if ESCALATION not in found and outcome.escalation is not None:
+        found[ESCALATION] = score_escalation(runner, outcome.escalation)
+    if outcome.system is not None:
+        found[SYSTEM] = score_system(runner, outcome.system)
+    else:
+        found.pop(SYSTEM, None)
+    return assembled(runner, artifact, found)
+
+
+def reference_figures(runner: Runner, record: MinerRecord) -> dict[str, Any]:
+    found: dict[str, Any] = {}
+    run = runner.reference_slm
+    if run is not None:
+        wanted = {item.item_id for item in runner.context.items.originals(SLM)}
+        rows = [r for r in run.runs if r.item_id in wanted] or run.runs
+        found[SLM] = {
+            "pass_rate": round(sum(1 for r in rows if r.success) / len(rows), 6) if rows else 0.0,
+            "ttft_p95_ms": round(run.ttft_p95_ms, 1),
+            "tpot_p95_ms": round(run.tpot_p95_ms, 2),
+            "vram_peak_bytes": run.vram_peak_bytes,
+            "parameters": run.parameters,
+        }
+    name = str(record.provenance.get("declared_base") or "")
+    base = runner.base_slm.get(name) if name else None
+    if base is not None:
+        found["base"] = {"name": name, "pass_rate": round(base.pass_rate, 6)}
+    if runner.reference_run is not None:
+        found[SYSTEM] = {
+            "cost_micros": runner.reference_run.cost_micros,
+            "latency_p95_ms": round(runner.reference_run.latency_p95_ms, 1),
+            "items": len(runner.reference_run.system_answers),
+        }
     return found
+
+
+def result_body(
+    runner: Runner, record: MinerRecord, scores: Sequence[PoolScore], *, final: bool
+) -> dict[str, Any]:
+    return report.artifact_body(
+        runner.context,
+        validator=runner.hotkey,
+        miner=record.hotkey,
+        artifact_sha=record.artifact_sha,
+        scores=scores,
+        provenance=record.provenance or _unchecked(record),
+        failure=record.failure if final else "",
+        pool_details=report.pool_details(scores),
+        checks=record.checks if record.artifact is not None else None,
+        reference=reference_figures(runner, record) if record.artifact is not None else None,
+        progress_final=final,
+    )
 
 
 def score_router(runner: Runner, run: RouterRun) -> PoolScore:
@@ -971,30 +1096,60 @@ def send_and_clear(runner: Runner, candidate: collect.Candidate, record: MinerRe
         clear_miner(runner, candidate, record)
     except Exception as exc:
         log.warning("%s files not cleared: %s", record.hotkey, exc)
+        return
+    record.cleared = True
+    if record.posted and not record.failure:
+        runner.reporter.post(record.hotkey, progress.CLEARED)
+
+
+def withdrawn(record: MinerRecord) -> list[PoolScore]:
+    reason = record.failure[: checks.TEXT_LIMIT]
+    return [
+        PoolScore(pool, 0.0, 0.0, 0.0, 0, False, {"reason": reason})
+        for pool in pools.POOLS
+        if pool in record.shared
+    ]
+
+
+def _submit(runner: Runner, record: MinerRecord) -> None:
+    scores = withdrawn(record) if record.failure else record.scores
+    body = result_body(runner, record, scores, final=True)
+    try:
+        runner.client.submit_artifact_result(report.sign_artifact(body, runner.wallet))
+    except ServerError as exc:
+        if " answered 422" not in str(exc):
+            raise
+        log.warning("%s full result refused, sending the scores alone: %s", record.hotkey, exc)
+        plain = report.artifact_body(
+            runner.context,
+            validator=runner.hotkey,
+            miner=record.hotkey,
+            artifact_sha=record.artifact_sha,
+            scores=scores,
+            provenance=record.provenance or _unchecked(record),
+            failure=record.failure,
+        )
+        runner.client.submit_artifact_result(report.sign_artifact(plain, runner.wallet))
 
 
 def post_result(runner: Runner, record: MinerRecord) -> bool:
     if runner.config.dry_run:
         log.info("%s dry run, result not posted", record.hotkey)
         return False
+    first = not record.posted
+    runner.reporter.settle(record.hotkey)
     try:
-        body = report.artifact_body(
-            runner.context,
-            validator=runner.hotkey,
-            miner=record.hotkey,
-            artifact_sha=record.artifact_sha,
-            scores=record.scores,
-            provenance=record.provenance or _unchecked(record),
-            failure=record.failure,
-        )
-        runner.client.submit_artifact_result(report.sign_artifact(body, runner.wallet))
+        _submit(runner, record)
     except Exception as exc:
         record.posted = False
         log.warning("%s result not accepted, kept for the retry at close: %s", record.hotkey, exc)
         return False
     record.posted = True
-    stage = progress.REFUSED if record.failure else progress.SENT
-    runner.reporter.post(record.hotkey, stage, note=record.failure)
+    if first:
+        stage = progress.REFUSED if record.failure else progress.SENT
+        runner.reporter.post(record.hotkey, stage, note=record.failure)
+        if record.cleared and not record.failure:
+            runner.reporter.post(record.hotkey, progress.CLEARED)
     return True
 
 

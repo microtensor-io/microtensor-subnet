@@ -137,8 +137,10 @@ class ServerClient:
         found = self._request("POST", "/v2/reports", report, signed=True)
         return dict(found or {})
 
-    def submit_artifact_result(self, body: dict[str, Any]) -> dict[str, Any]:
-        found = self._request("POST", "/v2/reports/artifact", body, signed=True)
+    def submit_artifact_result(
+        self, body: dict[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        found = self._request("POST", "/v2/reports/artifact", body, signed=True, timeout=timeout)
         if not isinstance(found, dict) or not found.get("accepted"):
             raise ServerError(f"POST /v2/reports/artifact was not accepted: {found!r}"[:300])
         return dict(found)
