@@ -16,7 +16,7 @@ from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
 from microtensor_subnet.scoring.stats import percentile
 from microtensor_subnet.validator.config import LLAMA_IMAGE, VLLM_IMAGE
 from microtensor_subnet.validator.context import render_prompt
-from microtensor_subnet.validator.sandbox import Limits, cpu_container
+from microtensor_subnet.validator.sandbox import Limits, compat, cpu_container
 from microtensor_subnet.validator.sandbox.docker import ContainerSpec, Docker, DockerError
 from microtensor_subnet.validator.sandbox.slm import SlmClient, SlmError, vllm_command
 
@@ -70,7 +70,11 @@ def _prompts(
 
 
 def _spec(
-    args: argparse.Namespace, definition: Mapping[str, Any], limits: Limits, length: int
+    args: argparse.Namespace,
+    definition: Mapping[str, Any],
+    limits: Limits,
+    length: int,
+    mount: compat.Mount,
 ) -> ContainerSpec:
     name = f"mt-check-{secrets.token_hex(3)}"
     ports = ((f"127.0.0.1:{args.port}", 8000),)
@@ -81,9 +85,9 @@ def _spec(
         name=name,
         image=args.image or VLLM_IMAGE,
         network="bridge",
-        command=vllm_command("/model", max_model_len=length),
+        command=vllm_command(compat.GUEST, max_model_len=length),
         env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
-        volumes=((str(args.slm.resolve()), "/model", "ro"),),
+        volumes=mount.volumes,
         gpus=(args.gpu,),
         shm_size="8g",
         ports=ports,
@@ -119,10 +123,13 @@ def _check(args: argparse.Namespace) -> int:
     generation = definition.get("generation") or {}
     stop = [str(s) for s in generation.get("stop") or []]
     docker = Docker()
-    spec = _spec(args, definition, limits, length)
+    source = args.slm.resolve()
+    mount = compat.plain(source) if limits.on_cpu else compat.mount(source)
+    spec = _spec(args, definition, limits, length, mount)
     try:
         docker.start(spec)
     except DockerError as exc:
+        compat.release(mount)
         raise SystemExit(str(exc)) from exc
     ttft: list[float] = []
     tpot: list[float] = []
@@ -142,6 +149,7 @@ def _check(args: argparse.Namespace) -> int:
         memory = int(docker.usage(spec.name).get("memory_peak_bytes") or 0) if limits.on_cpu else 0
     finally:
         docker.kill(spec.name)
+        compat.release(mount)
     try:
         parameters = model_parameters(args.slm)
         memory = memory or footprint_bytes(args.slm, length)

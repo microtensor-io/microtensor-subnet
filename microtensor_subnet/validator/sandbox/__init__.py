@@ -19,7 +19,7 @@ import httpx
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.artifact.gguf import gguf_in
 from microtensor_subnet.validator.relay import TicketDesk
-from microtensor_subnet.validator.sandbox import tools
+from microtensor_subnet.validator.sandbox import compat, tools
 from microtensor_subnet.validator.sandbox.docker import ContainerSpec, Docker, DockerError
 from microtensor_subnet.validator.sandbox.services import ArtifactSession, Services
 from microtensor_subnet.validator.sandbox.slm import (
@@ -194,6 +194,7 @@ class SandboxHost:
     services: Services
     host_ip: str
     quantised: dict[Path, str] = field(default_factory=dict)
+    mounts: dict[str, compat.Mount] = field(default_factory=dict)
 
     def _slm_container(
         self,
@@ -214,20 +215,22 @@ class SandboxHost:
         share = self.config.slm_memory_share or (
             SHARED_MEMORY_SHARE if limits.router_on_gpu else MEMORY_SHARE
         )
+        mount = compat.mount(model_dir)
+        self.mounts[key] = mount
         self.docker.start(
             ContainerSpec(
                 name=name,
                 image=self.config.vllm_image,
                 network=network,
                 command=vllm_command(
-                    "/model",
+                    compat.GUEST,
                     max_model_len=max_len,
                     memory_share=share,
                     quantization=self.quantised.get(model_dir, ""),
                     max_seqs=SLM_MAX_SEQS,
                 ),
                 env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
-                volumes=((str(model_dir), "/model", "ro"),),
+                volumes=mount.volumes,
                 gpus=(gpu,),
                 shm_size="8g",
                 ipc_none=False,
@@ -378,7 +381,7 @@ class SandboxHost:
                 model_faults=chosen.model_faults,
             )
             self.services.attach(key, session)
-            self._wait_slm(session.slm_url)
+            self._wait_slm(slm_name, session.slm_url)
             if router is not None:
                 self._wait_router(router, router_url)
             main_name = self._main_container(key, artifact_dir, network, gateway_ip)
@@ -402,14 +405,19 @@ class SandboxHost:
             gpu=gpu,
         )
 
-    def _wait_slm(self, url: str) -> None:
+    def _wait_slm(self, name: str, url: str) -> None:
         client = SlmClient(url)
         deadline = time.monotonic() + self.config.slm_ready_seconds
         while time.monotonic() < deadline:
+            if self.docker.exited(name):
+                raise SandboxError(f"model server exited: {self.docker.exit_note(name)}")
             if client.ready():
                 return
             time.sleep(5.0)
-        raise SandboxError("the model server did not become ready")
+        detail = self.docker.failure(name)
+        raise SandboxError(
+            "the model server did not become ready" + (f": {detail}" if detail else "")
+        )
 
     def _wait_router(self, process: subprocess.Popen[bytes], url: str) -> None:
         deadline = time.monotonic() + READY_SECONDS
@@ -455,6 +463,9 @@ class SandboxHost:
         for name in (main_name, gateway_name, slm_name):
             if name:
                 self.docker.kill(name)
+        mount = self.mounts.pop(key, None)
+        if mount is not None:
+            compat.release(mount)
         if router is not None and router.poll() is None:
             router.kill()
         self.docker.remove_network(network)

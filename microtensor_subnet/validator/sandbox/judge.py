@@ -10,6 +10,7 @@ from typing import Any, Final
 
 import httpx
 
+from microtensor_subnet.validator.sandbox import compat
 from microtensor_subnet.validator.sandbox.docker import ContainerSpec, Docker
 from microtensor_subnet.validator.sandbox.slm import (
     MEMORY_SHARE,
@@ -110,46 +111,60 @@ class ProbeAgent:
     name: str = ""
     network: str = ""
     url: str = ""
+    mount: compat.Mount | None = None
 
     def start(self, ready_seconds: int) -> None:
         key = secrets.token_hex(4)
         self.network = f"mt-judge-{key}"
         self.name = f"mt-judge-{key}"
         self.docker.create_network(self.network)
-        self.docker.start(
-            ContainerSpec(
-                name=self.name,
-                image=self.image,
-                network=self.network,
-                command=vllm_command(
-                    "/model",
-                    max_model_len=MAX_MODEL_LEN,
-                    quantization=self.quantization,
-                    memory_share=self.memory_share,
-                ),
-                env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
-                volumes=((str(self.model_dir), "/model", "ro"),),
-                gpus=(self.gpu,),
-                shm_size="8g",
-                ipc_none=False,
+        try:
+            self.mount = compat.mount(self.model_dir)
+            self.docker.start(
+                ContainerSpec(
+                    name=self.name,
+                    image=self.image,
+                    network=self.network,
+                    command=vllm_command(
+                        compat.GUEST,
+                        max_model_len=MAX_MODEL_LEN,
+                        quantization=self.quantization,
+                        memory_share=self.memory_share,
+                    ),
+                    env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
+                    volumes=self.mount.volumes,
+                    gpus=(self.gpu,),
+                    shm_size="8g",
+                    ipc_none=False,
+                )
             )
-        )
-        self.url = f"http://{self.docker.address(self.name, self.network)}:8000"
+            self.url = f"http://{self.docker.address(self.name, self.network)}:8000"
+            self._wait(ready_seconds)
+        except Exception:
+            self.stop()
+            raise
+
+    def _wait(self, ready_seconds: int) -> None:
         client = SlmClient(self.url)
         deadline = time.monotonic() + ready_seconds
         while time.monotonic() < deadline:
+            if self.docker.exited(self.name):
+                raise JudgeError(f"the probe agent exited: {self.docker.exit_note(self.name)}")
             if client.ready():
                 return
             time.sleep(5.0)
-        self.stop()
-        raise JudgeError("the probe agent did not become ready")
+        detail = self.docker.failure(self.name)
+        raise JudgeError("the probe agent did not become ready" + (f": {detail}" if detail else ""))
 
     def stop(self) -> None:
         if self.name:
             self.docker.kill(self.name)
         if self.network:
             self.docker.remove_network(self.network)
+        if self.mount is not None:
+            compat.release(self.mount)
         self.name = self.network = self.url = ""
+        self.mount = None
 
     def _ask(self, summary: str, question: str) -> str:
         body: dict[str, Any] = {
