@@ -2079,7 +2079,6 @@ def miner_mode_report(
         ),
         runner.wallet,
     ).to_dict()
-    signed["evaluation_mode"] = MINER_MODE
     signed["receipt_root"] = runner.receipt_root
     signed["validator_profile"] = runner.profile
     if runner.reference_timing is not None:
@@ -2207,4 +2206,4 @@ def run_miner_mode_epoch(
 def miner_mode_definition(definition: Mapping[str, Any]) -> bool:
     block = definition.get("evaluation") or {}
     mode = block.get("mode") if isinstance(block, Mapping) else None
-    return str(mode or "validator") == MINER_MODE
+    return str(mode or "") == MINER_MODE
