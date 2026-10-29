@@ -33,6 +33,24 @@ class DockerError(RuntimeError):
     pass
 
 
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def image_name(image: str) -> str:
+    bare = image.split("@", 1)[0]
+    head, _, last = bare.rpartition("/")
+    if ":" in last:
+        last = last.split(":", 1)[0]
+    return f"{head}/{last}" if head else last
+
+
+def pinned(image: str, digest: str) -> str:
+    wanted = digest.strip().lower()
+    if not DIGEST.match(wanted):
+        raise DockerError(f"{image}: {digest!r} is not a sha256 image digest")
+    return f"{image_name(image)}@{wanted}"
+
+
 @dataclass(frozen=True, slots=True)
 class ContainerSpec:
     name: str
@@ -321,6 +339,30 @@ class Docker:
             log.info("pulled %s", image)
             return
         raise DockerError(f"the image {image} could not be pulled after {attempts} tries: {last}")
+
+    def image_digests(self, image: str) -> list[str]:
+        try:
+            raw = self.runner.run(["image", "inspect", "--format", "{{json .RepoDigests}}", image])
+        except DockerError:
+            return []
+        try:
+            listed = json.loads(raw or "[]")
+        except ValueError:
+            return []
+        found: list[str] = []
+        for entry in listed or []:
+            _, _, digest = str(entry).rpartition("@")
+            if DIGEST.match(digest):
+                found.append(digest)
+        return found
+
+    def ensure_digest(self, image: str, digest: str) -> str:
+        reference = pinned(image, digest)
+        self.ensure_image(reference)
+        held = self.image_digests(reference)
+        if held and digest.lower() not in held:
+            raise DockerError(f"{reference} resolved to {held[0]}, not the pinned digest")
+        return reference
 
     def gpu_memory(self, image: str, wanted: Sequence[str]) -> dict[str, int]:
         self.ensure_image(image)

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+from microtensor_subnet.artifact import contract
 from microtensor_subnet.scoring.sql import admissible
 
 FAULT_SHARE: Final[float] = 0.15
@@ -95,6 +96,20 @@ def query_execution(database: bytes, sql: str) -> dict[str, Any]:
         connection.close()
         path.unlink(missing_ok=True)
     return {"columns": columns, "rows": [list(r) for r in rows], "truncated": len(rows) >= ROW_CAP}
+
+
+def serve(database: bytes, route: str, request: Mapping[str, Any]) -> dict[str, Any]:
+    if route == contract.TOOL_SCHEMA:
+        return schema_lookup(database, str(request.get("table", "")))
+    if route == contract.TOOL_QUERY:
+        return query_execution(database, str(request.get("sql", "")))
+    return {"error": "no such tool"}
+
+
+def tool_request(route: str, body: Mapping[str, Any]) -> dict[str, Any]:
+    if route == contract.TOOL_SCHEMA:
+        return {"table": str(body.get("table", ""))}
+    return {"sql": str(body.get("sql", ""))}
 
 
 def model_fault(kind: str, body: bytes) -> bytes:
