@@ -7,6 +7,7 @@ from typing import Final
 
 from microtensor_subnet.core.constants import MAX_COMMITMENT_BYTES
 from microtensor_subnet.core.hashing import DIGEST_PREFIX
+from microtensor_subnet.core.profiles import PROFILES, is_profile
 
 COMMITMENT_TAG: Final[str] = "mt1"
 REVEAL_TAG: Final[str] = "mtr"
@@ -202,7 +203,10 @@ def decode_all(raw_by_hotkey: dict[str, str]) -> dict[str, Commitment]:
 
 SUBMISSION_TAG: Final[str] = "mt2"
 SEALED_TAG: Final[str] = "mt3"
+PROFILE_SUBMISSION_TAG: Final[str] = "mt4"
+PROFILE_SEALED_TAG: Final[str] = "mt5"
 REVEAL_MESSAGE_TAG: Final[str] = "mt-reveal"
+NO_PROFILE_REASON: Final[str] = "commitment carries no hardware profile"
 ARTIFACT_REPO_PREFIX: Final[str] = "microtensor_"
 SLM_REPO_PREFIX: Final[str] = "mt_slm_"
 
@@ -213,6 +217,11 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SALT = re.compile(r"^[0-9a-f]{16,64}$")
 
 
+def _check_profile(profile: str) -> None:
+    if profile and not is_profile(profile):
+        raise CommitmentError(f"unknown hardware profile {profile!r}; known: {', '.join(PROFILES)}")
+
+
 @dataclass(frozen=True, slots=True)
 class SubmissionCommitment:
     arena_id: str
@@ -220,6 +229,7 @@ class SubmissionCommitment:
     artifact_sha: str
     fee_block: int
     fee_index: int
+    profile: str = ""
 
     def __post_init__(self) -> None:
         if not _ARENA.match(self.arena_id):
@@ -230,6 +240,11 @@ class SubmissionCommitment:
             raise CommitmentError("the artifact revision must be a 40 hex git commit sha")
         if self.fee_block < 0 or self.fee_index < 0:
             raise CommitmentError("the fee reference must name a block and an extrinsic index")
+        _check_profile(self.profile)
+
+    @property
+    def has_profile(self) -> bool:
+        return bool(self.profile)
 
     @property
     def artifact_repo(self) -> str:
@@ -244,16 +259,12 @@ class SubmissionCommitment:
         return f"{self.fee_block}:{self.fee_index}"
 
     def encode(self) -> str:
-        payload = FIELD_SEPARATOR.join(
-            (
-                SUBMISSION_TAG,
-                self.arena_id,
-                self.hf_user,
-                self.artifact_sha,
-                str(self.fee_block),
-                str(self.fee_index),
-            )
-        )
+        fields = [self.arena_id, self.hf_user, self.artifact_sha]
+        if self.profile:
+            fields = [PROFILE_SUBMISSION_TAG, *fields, self.profile]
+        else:
+            fields = [SUBMISSION_TAG, *fields]
+        payload = FIELD_SEPARATOR.join((*fields, str(self.fee_block), str(self.fee_index)))
         size = len(payload.encode("utf-8"))
         if size > MAX_COMMITMENT_BYTES:
             raise CommitmentError(
@@ -266,15 +277,22 @@ class SubmissionCommitment:
         if not raw:
             return None
         parts = raw.strip().split(FIELD_SEPARATOR)
-        if len(parts) != 6 or parts[0] != SUBMISSION_TAG:
+        if parts[0] == SUBMISSION_TAG and len(parts) == 6:
+            profile = ""
+            fee_block, fee_index = parts[4], parts[5]
+        elif parts[0] == PROFILE_SUBMISSION_TAG and len(parts) == 7:
+            profile = parts[4]
+            fee_block, fee_index = parts[5], parts[6]
+        else:
             return None
         try:
             return cls(
                 arena_id=parts[1],
                 hf_user=parts[2],
                 artifact_sha=parts[3].lower(),
-                fee_block=int(parts[4]),
-                fee_index=int(parts[5]),
+                fee_block=int(fee_block),
+                fee_index=int(fee_index),
+                profile=profile,
             )
         except (CommitmentError, ValueError):
             return None
@@ -307,6 +325,7 @@ class SealedCommitment:
     digest: str
     fee_block: int
     fee_index: int
+    profile: str = ""
 
     def __post_init__(self) -> None:
         if not _ARENA.match(self.arena_id):
@@ -315,6 +334,11 @@ class SealedCommitment:
             raise CommitmentError("the sealed digest must be 64 hex characters")
         if self.fee_block < 0 or self.fee_index < 0:
             raise CommitmentError("the fee reference must name a block and an extrinsic index")
+        _check_profile(self.profile)
+
+    @property
+    def has_profile(self) -> bool:
+        return bool(self.profile)
 
     @classmethod
     def seal(
@@ -325,6 +349,7 @@ class SealedCommitment:
         salt: str,
         fee_block: int,
         fee_index: int,
+        profile: str = "",
     ) -> SealedCommitment:
         if not _HF_USER.match(hf_user):
             raise CommitmentError(f"hugging face user {hf_user!r} is not a valid name")
@@ -333,23 +358,37 @@ class SealedCommitment:
         if not _SALT.match(salt):
             raise CommitmentError("the salt must be 16 to 64 hex characters")
         digest = seal_digest(arena_id, hf_user, artifact_sha, salt)
-        return cls(arena_id, digest, fee_block, fee_index)
+        return cls(arena_id, digest, fee_block, fee_index, profile)
 
     def matches(self, hf_user: str, artifact_sha: str, salt: str) -> bool:
         return seal_digest(self.arena_id, hf_user, artifact_sha, salt) == self.digest
 
-    def encode(self) -> str:
-        return FIELD_SEPARATOR.join(
-            (SEALED_TAG, self.arena_id, self.digest, str(self.fee_block), str(self.fee_index))
+    def unseal(self, hf_user: str, artifact_sha: str) -> SubmissionCommitment:
+        return SubmissionCommitment(
+            self.arena_id, hf_user, artifact_sha, self.fee_block, self.fee_index, self.profile
         )
+
+    def encode(self) -> str:
+        fields = [self.arena_id, self.digest]
+        if self.profile:
+            fields = [PROFILE_SEALED_TAG, *fields, self.profile]
+        else:
+            fields = [SEALED_TAG, *fields]
+        return FIELD_SEPARATOR.join((*fields, str(self.fee_block), str(self.fee_index)))
 
     @classmethod
     def decode(cls, raw: str) -> SealedCommitment | None:
         parts = (raw or "").strip().split(FIELD_SEPARATOR)
-        if len(parts) != 5 or parts[0] != SEALED_TAG:
+        if parts[0] == SEALED_TAG and len(parts) == 5:
+            profile = ""
+            fee_block, fee_index = parts[3], parts[4]
+        elif parts[0] == PROFILE_SEALED_TAG and len(parts) == 6:
+            profile = parts[3]
+            fee_block, fee_index = parts[4], parts[5]
+        else:
             return None
         try:
-            return cls(parts[1], parts[2].lower(), int(parts[3]), int(parts[4]))
+            return cls(parts[1], parts[2].lower(), int(fee_block), int(fee_index), profile)
         except (CommitmentError, ValueError):
             return None
 

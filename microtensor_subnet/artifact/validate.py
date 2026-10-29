@@ -15,8 +15,11 @@ from microtensor_subnet.artifact.params import (
     model_parameters,
     safetensors_in,
 )
+from microtensor_subnet.core.profiles import PROFILES, is_profile
 
 _SHA = re.compile(r"^(sha256:)?[0-9a-f]{64}$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GIT = re.compile(r"^[0-9a-f]{40}$")
 _REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
 _REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*==\s*([A-Za-z0-9_.+!-]+)\s*$")
@@ -33,6 +36,20 @@ class SlmPin:
     files: dict[str, str]
 
 
+def bare_hex(digest: str) -> str:
+    body = digest.strip().lower()
+    return body[len("sha256:") :] if body.startswith("sha256:") else body
+
+
+def weights_sha256(files: Mapping[str, str]) -> str:
+    lines = [
+        f"{name} {bare_hex(digest)}"
+        for name, digest in sorted(files.items())
+        if name.endswith(contract.WEIGHT_SUFFIXES)
+    ]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class Manifest:
     arena: str
@@ -40,14 +57,22 @@ class Manifest:
     hardware_class: str
     files: dict[str, str]
     slm: SlmPin | None = None
+    schema_version: int = contract.SCHEMA_VERSION
+    profile: str = ""
+    weights_sha256: str = ""
+    image_digest: str = ""
 
     @property
     def has(self) -> frozenset[str]:
         return frozenset(self.components)
 
+    @property
+    def declares_profile(self) -> bool:
+        return self.schema_version >= contract.PROFILE_SCHEMA_VERSION
+
     def to_dict(self) -> dict[str, Any]:
         body: dict[str, Any] = {
-            "schema_version": contract.SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "arena": self.arena,
             "components": list(self.components),
             "hardware_class": self.hardware_class,
@@ -59,11 +84,19 @@ class Manifest:
                 "revision": self.slm.revision,
                 "files": dict(sorted(self.slm.files.items())),
             }
+        if self.declares_profile:
+            body["profile"] = self.profile
+            body["weights_sha256"] = self.weights_sha256
+            body["image_digest"] = self.image_digest
         return body
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> Manifest:
-        if int(raw.get("schema_version", contract.SCHEMA_VERSION)) != contract.SCHEMA_VERSION:
+        try:
+            version = int(raw.get("schema_version", contract.SCHEMA_VERSION))
+        except (TypeError, ValueError) as exc:
+            raise ManifestError("unknown manifest schema version") from exc
+        if version not in contract.SCHEMA_VERSIONS:
             raise ManifestError("unknown manifest schema version")
         arena = str(raw.get("arena", "")).strip()
         if not arena:
@@ -93,12 +126,32 @@ class Manifest:
             slm = SlmPin(repo=repo, revision=revision, files=slm_files)
         elif pin is not None:
             raise ManifestError("slm is pinned but not submitted")
+        profile = ""
+        weights = ""
+        image = ""
+        if version >= contract.PROFILE_SCHEMA_VERSION:
+            profile = str(raw.get("profile", "")).strip()
+            if not is_profile(profile):
+                raise ManifestError(f"profile must be one of {', '.join(PROFILES)}")
+            weights = str(raw.get("weights_sha256", "")).strip().lower()
+            if not _HEX64.match(weights):
+                raise ManifestError("weights_sha256 must be 64 hex characters")
+            expected = weights_sha256(slm.files if slm is not None else {})
+            if weights != expected:
+                raise ManifestError("weights_sha256 does not match the pinned slm files")
+            image = str(raw.get("image_digest", "")).strip().lower()
+            if not _IMAGE_DIGEST.match(image):
+                raise ManifestError("image_digest must be sha256: followed by 64 hex characters")
         return cls(
             arena=arena,
             components=components,
             hardware_class=hardware_class,
             files=files,
             slm=slm,
+            schema_version=version,
+            profile=profile,
+            weights_sha256=weights,
+            image_digest=image,
         )
 
 
@@ -379,6 +432,8 @@ def build_manifest(
     slm_repo: str = "",
     slm_revision: str = "",
     slm_root: Path | None = None,
+    profile: str = "",
+    image_digest: str = "",
 ) -> Manifest:
     pin: SlmPin | None = None
     parts = tuple(components)
@@ -391,12 +446,31 @@ def build_manifest(
             if not name.startswith("training/")
         }
         pin = SlmPin(repo=slm_repo, revision=slm_revision.lower(), files=files)
+    if not profile:
+        return Manifest(
+            arena=arena,
+            components=parts,
+            hardware_class=hardware_class,
+            files=hash_tree(root, skip=(contract.MANIFEST_FILE,)),
+            slm=pin,
+        )
+    if not is_profile(profile):
+        raise ManifestError(f"profile must be one of {', '.join(PROFILES)}")
+    digest = image_digest.strip().lower()
+    if not _IMAGE_DIGEST.match(digest):
+        raise ManifestError(
+            "a profiled manifest needs the runner image digest, sha256: and 64 hex characters"
+        )
     return Manifest(
         arena=arena,
         components=parts,
         hardware_class=hardware_class,
         files=hash_tree(root, skip=(contract.MANIFEST_FILE,)),
         slm=pin,
+        schema_version=contract.PROFILE_SCHEMA_VERSION,
+        profile=profile,
+        weights_sha256=weights_sha256(pin.files if pin is not None else {}),
+        image_digest=digest,
     )
 
 

@@ -36,7 +36,9 @@ from microtensor_subnet.cli.common import (
     open_client,
     open_wallet,
 )
+from microtensor_subnet.core import profiles
 from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
+from microtensor_subnet.core.profiles import PROFILES
 
 log = logging.getLogger("microtensor_subnet.cli.submit")
 TIMEOUT_SECONDS = 20
@@ -58,6 +60,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default=contract.DEFAULT_HARDWARE_CLASS,
         choices=contract.HARDWARE_CLASSES,
     )
+    manifest.add_argument(
+        "--profile",
+        default="",
+        choices=("", *PROFILES),
+        help="hardware profile for a miner-evaluated arena; writes manifest schema 2",
+    )
+    manifest.add_argument(
+        "--image-digest",
+        default="",
+        help="runner image digest; defaults to the one pinned in the arena definition",
+    )
+    manifest.add_argument("--server", default=PUBLIC_SERVER_URL)
     add_common_arguments(manifest)
     manifest.set_defaults(handler=_manifest)
 
@@ -84,6 +98,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     commit.add_argument("--fee-index", type=int, default=0, help="0 when the arena is free")
     commit.add_argument(
         "--open", action="store_true", help="commit the repository in the open instead of sealed"
+    )
+    commit.add_argument(
+        "--profile",
+        default="",
+        choices=("", *PROFILES),
+        help="hardware profile the miner will run on; required by miner-evaluated arenas",
     )
     add_chain_arguments(commit)
     add_common_arguments(commit)
@@ -125,8 +145,27 @@ def _arena(server: str, arena_id: str) -> dict[str, Any]:
     return dict(found or {})
 
 
+def runner_digest(server: str, arena_id: str) -> str:
+    definition = dict(_arena(server, arena_id).get("definition") or {})
+    if not profiles.miner_mode(definition):
+        raise ValueError(f"{arena_id} is not evaluated by miners; drop --profile")
+    images = dict((definition.get("evaluation") or {}).get("images") or {})
+    digest = str(dict(images.get("runner") or {}).get("digest") or "")
+    if not digest:
+        raise ValueError(
+            f"{arena_id} pins no runner image digest; pass --image-digest sha256:<64 hex>"
+        )
+    return digest
+
+
 def _manifest(args: argparse.Namespace) -> int:
     components = [c.strip() for c in str(args.components).split(",") if c.strip()]
+    image_digest = str(args.image_digest or "")
+    if args.profile and not image_digest:
+        try:
+            image_digest = runner_digest(args.server, args.arena)
+        except ValueError as exc:
+            return fail(str(exc))
     try:
         manifest = build_manifest(
             args.artifact,
@@ -136,6 +175,8 @@ def _manifest(args: argparse.Namespace) -> int:
             slm_repo=args.slm_repo,
             slm_revision=args.slm_revision,
             slm_root=args.slm,
+            profile=args.profile,
+            image_digest=image_digest,
         )
     except (ManifestError, OSError) as exc:
         return fail(str(exc))
@@ -144,6 +185,10 @@ def _manifest(args: argparse.Namespace) -> int:
     print(f"files      {len(manifest.files)}")
     if manifest.slm is not None:
         print(f"slm        {manifest.slm.repo}@{manifest.slm.revision[:12]}")
+    if manifest.declares_profile:
+        print(f"profile    {manifest.profile}")
+        print(f"weights    {manifest.weights_sha256}")
+        print(f"image      {manifest.image_digest}")
     print(f"manifest   {manifest_sha256(args.artifact)}")
     return 0
 
@@ -241,6 +286,7 @@ def _commit(args: argparse.Namespace) -> int:
                 artifact_sha=artifact_sha,
                 fee_block=int(args.fee_block),
                 fee_index=int(args.fee_index),
+                profile=str(args.profile or ""),
             )
         else:
             commitment = SealedCommitment.seal(
@@ -250,6 +296,7 @@ def _commit(args: argparse.Namespace) -> int:
                 salt,
                 int(args.fee_block),
                 int(args.fee_index),
+                profile=str(args.profile or ""),
             )
         payload = commitment.encode()
     except CommitmentError as exc:
@@ -266,6 +313,8 @@ def _commit(args: argparse.Namespace) -> int:
     hotkey = hotkey_address(wallet)
     print(f"committed  {payload}")
     print(f"hotkey     {hotkey}")
+    if commitment.profile:
+        print(f"profile    {commitment.profile}")
     if isinstance(commitment, SealedCommitment):
         path = _reveal_path(args.home, args.arena)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -278,6 +327,8 @@ def _commit(args: argparse.Namespace) -> int:
                     "artifact_sha": artifact_sha,
                     "salt": salt,
                     "digest": commitment.digest,
+                    "profile": commitment.profile,
+                    "commitment": payload,
                 },
                 indent=2,
             ),

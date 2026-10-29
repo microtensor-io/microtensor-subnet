@@ -10,6 +10,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HOME=/tmp
 
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libfaketime \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=pins /requirements.txt /requirements.txt
 RUN pip install --no-deps -r /requirements.txt \
  && pip uninstall -y pip setuptools wheel \

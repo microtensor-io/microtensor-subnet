@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import json
 import sys
+from collections.abc import Iterable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlparse
@@ -12,7 +13,16 @@ import httpx
 
 MAX_BODY = 4 * 1024 * 1024
 UPSTREAM_SECONDS = 330.0
-HOP_HEADERS = frozenset({"connection", "keep-alive", "transfer-encoding", "host", "content-length"})
+SANDBOX_HEADER = "x-mt-sandbox"
+HOP_HEADERS = frozenset(
+    {"connection", "keep-alive", "transfer-encoding", "host", "content-length", SANDBOX_HEADER}
+)
+
+
+def forwarded_headers(incoming: Iterable[tuple[str, str]], sandbox: str) -> dict[str, str]:
+    kept = {key: value for key, value in incoming if key.lower() not in HOP_HEADERS}
+    kept[SANDBOX_HEADER] = sandbox
+    return kept
 
 
 def build(upstream: str, sandbox: str) -> type[BaseHTTPRequestHandler]:
@@ -29,10 +39,7 @@ def build(upstream: str, sandbox: str) -> type[BaseHTTPRequestHandler]:
                 return
             body = self.rfile.read(length) if length else b""
             path = urlparse(self.path).path
-            headers = {
-                key: value for key, value in self.headers.items() if key.lower() not in HOP_HEADERS
-            }
-            headers["x-mt-sandbox"] = sandbox
+            headers = forwarded_headers(self.headers.items(), sandbox)
             try:
                 with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
                     response = http.request(

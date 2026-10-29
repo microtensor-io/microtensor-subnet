@@ -35,11 +35,28 @@ Nothing a miner claims is used. The artifact is fetched from Hugging Face at the
 
 Five pools pay 20% each by rank (40 / 25 / 15 / 12 / 8). Every score is a one sided lower bound; a published score only moves when a new result beats the previous best for the same artifact by 0.01.
 
+## Running your own evaluation
+
+Arenas whose definition carries `evaluation.mode: miner` are evaluated by the miners themselves and verified by validators. You declare a hardware profile (`P1` RTX 4090, `P2` A100, `P3` H100, `K` Kaggle T4, `C` CPU), commit with it, and during the window run one batch job on your own GPU:
+
+```bash
+mt check-model --slm ./slm_repo --profile P1 --arena <arena>
+mt submit manifest --artifact ./artifact_repo --arena <arena> --slm ./slm_repo \
+  --slm-repo <user>/mt_slm_<arena> --slm-revision <sha> --profile P1
+mt submit commit --arena <arena> --hf-user <user> --artifact-sha <sha> --profile P1
+MT_ARENA=<arena> docker compose -f deploy/docker-compose.miner.yml up
+```
+
+The runner pulls your frozen files from the mirror, serves your model with the pinned engine, records every model, tool and relay call into a signed transcript and uploads it before Freeze 2. Validators replay the transcript on CPU and spot check sampled calls on the same profile. `mt miner replay` runs that replay locally so you can test determinism before uploading. Full guide: [docs/miner.md](docs/miner.md). Arenas without the block work exactly as before.
+
 ## Repository map
 
 | Path | What it holds |
 |---|---|
-| `microtensor_subnet/chain` | commitments (`mt2`), epochs, weights, chain client |
+| `microtensor_subnet/chain` | commitments (`mt2` to `mt5`), epochs, weights, chain client |
+| `microtensor_subnet/core/transcript.py`, `profiles.py` | the miner transcript (canonical JSON, signature, merkle receipts) and hardware profiles |
+| `microtensor_subnet/validator/runner.py`, `preflight.py`, `receipts.py` | the miner job, the model pre-flight check, relay receipt verification |
+| `microtensor_subnet/cli/miner.py`, `check_model.py` | `mt miner run`, `mt miner replay`, `mt check-model` |
 | `microtensor_subnet/core/items.py` | item bundles, encryption, sealed keys, release manifests |
 | `microtensor_subnet/artifact` | the manifest contract, the allowed package list, validation |
 | `microtensor_subnet/validator` | the epoch pipeline: collect, sandbox, tests, scoring, report |
@@ -47,7 +64,7 @@ Five pools pay 20% each by rank (40 / 25 / 15 / 12 / 8). Every score is a one si
 | `microtensor_subnet/cli/submit.py` | `mt submit manifest`, `validate`, `pay`, `commit`, `status` |
 | `microtensor_subnet/cli/epoch.py` | `mt epoch register-key`, `relay-token`, `run`, `loop` |
 | `microtensor_subnet/serving`, `microtensor_subnet/rigs` | the certified inference serving product and the compute pool |
-| `deploy` | the validator and sandbox images and the validator compose file |
+| `deploy` | the validator, sandbox, runner and replayer images and the validator and miner compose files |
 
 ## Documentation
 
