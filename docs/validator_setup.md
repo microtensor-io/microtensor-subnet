@@ -1,22 +1,20 @@
 # Running a Microtensor validator
 
-Netuid **576** on Bittensor testnet. One validator evaluates every submission of an arena each epoch on its own GPUs, reports the five pool scores to the server, and sets weights itself.
+Netuid **576** on Bittensor testnet. Miners run their own evaluation on their own GPU and upload a transcript. A validator verifies every transcript: it replays the miner's code on CPU, re-runs a chain seeded sample of model calls on a GPU of the same hardware profile and requires the same tokens, grades after the labels release, reports the five pool scores to the server, and sets weights itself.
 
 ## Requirements
 
 | | |
 |---|---|
 | OS | Ubuntu 22.04 or 24.04 |
-| GPU | 3 × 24 GB (RTX 4090, L4, A10G or better), CUDA 12 driver. Arenas graded by a probe agent (context compression) place it automatically, see [Probe agent placement](#probe-agent-placement) |
-| CPU | 16 cores |
-| RAM | 64 GB |
-| Disk | NVMe, 400 GB free. Bases and reference models stay cached between epochs; a miner's artifact and model are deleted as soon as its result is posted |
-| Network | 1 Gbps. One epoch downloads every submission's model once |
-| Software | Docker 27 or newer, NVIDIA Container Toolkit |
-| Uptime | continuous. An epoch is 50,400 blocks (about a week); the evaluation window opens 7,200 blocks in and a full pass over 30 submissions takes about 20 hours on three GPUs |
-| Access | a registered key and relay access granted by the team (see step 3) |
+| CPU box | 8 cores, 32 GB RAM, 200 GB NVMe; runs replay, grading, the router pass and the probe grader |
+| GPU | one card of an approved hardware profile (`P1` RTX 4090, `P2` A100, `P3` H100, `K` T4 x2) for about 20 to 30 minutes per epoch; a rented machine is fine. No GPU at all is allowed: a CPU only validator replays, grades and confirms evidence but runs no spot checks |
+| Network | a real connection; each sampled miner's weights are about 15 GB and the download dominates the spot check |
+| Software | Docker 27 or newer, NVIDIA Container Toolkit on the GPU box |
+| Uptime | the loop runs after each epoch's Freeze 2; an epoch is about a week on testnet |
+| Access | a registered key, relay access granted by the team, and a registered profile (see step 3) |
 
-The sandbox is a locked down Docker container: no network except the gateway to four validator services, CPU, memory and process limits, a read only root file system, the artifact and the model mounted read only, every capability dropped and no privilege escalation. The validator itself runs as a container that starts sibling containers through the Docker socket: one vLLM server per submission on one GPU, one gateway, one sandbox. Missing sibling images (vLLM, sandbox, gateway) are pulled automatically, with a few retries.
+The only miner code a validator runs is the artifact's `main.py`, inside the CPU replayer image: read only, no network, a frozen clock, every capability dropped. No validator serves a miner's model.
 
 ## 1. Host preparation
 

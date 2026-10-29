@@ -1,8 +1,6 @@
 # Running your own evaluation
 
-Arenas whose definition carries `evaluation.mode: miner` are evaluated by the miners themselves. You commit a model and an artifact before Freeze 1, declare the hardware profile you will run on, and during the evaluation window you run one batch job on your own GPU. That job records every model, tool and relay call into a transcript, signs it with your hotkey and uploads it before Freeze 2. Validators replay the transcript on CPU, spot check sampled model calls on the same profile, and grade after the labels release. Nothing timed on your machine is used for scoring.
-
-Arenas without the block work exactly as before: validators fetch and run everything themselves and `mt miner` is not needed.
+Miners evaluate their own submissions and validators verify them. You commit a model and an artifact before Freeze 1, declare the hardware profile you will run on, and during the evaluation window you run one batch job on your own GPU. That job records every model, tool and relay call into a transcript, signs it with your hotkey and uploads it before Freeze 2. Validators replay the transcript on CPU, spot check sampled model calls on the same profile, and grade after the labels release. Nothing timed on your machine is used for scoring.
 
 ## Hardware profiles
 
@@ -13,10 +11,10 @@ A profile is one GPU architecture, one driver line and one image digest. You can
 | P1 | RTX 4090 (sm89); L4 and L40S after the pair test | bf16 | invariant |
 | P2 | A100 80 GB (sm80) | bf16 | invariant |
 | P3 | H100 (sm90); H200 after the pair test | bf16 | invariant |
-| K | Kaggle T4 x2 (sm75), small models only | fp16 | single |
+| K | T4 x2 (sm75), small models only | fp16 | single |
 | C | CPU, GGUF | gguf | single |
 
-The arena lists the profiles it accepts under `evaluation.profiles`. The runner detects the host profile from `nvidia-smi` and refuses to start when it differs from the one you committed; `MT_PROFILE=P1` overrides detection.
+The arena lists the profiles it accepts in its definition. The runner detects the host profile from `nvidia-smi` and refuses to start when it differs from the one you committed; `MT_PROFILE=P1` overrides detection.
 
 ## Before you commit
 
