@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image: [sandbox, validator]
+        image: [sandbox, validator, runner, replayer]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -32,7 +32,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/Dockerfile.${{ matrix.image }}
@@ -42,3 +43,44 @@ jobs:
             ghcr.io/microtensor-io/${{ matrix.image }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
+      - name: Record the digest
+        run: |
+          mkdir -p digests
+          printf '%s\n' '${{ steps.build.outputs.digest }}' > "digests/${{ matrix.image }}"
+          echo "| ghcr.io/microtensor-io/${{ matrix.image }}:1 | \`${{ steps.build.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}
+          path: digests/${{ matrix.image }}
+          retention-days: 90
+
+  digests:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+      - name: Write images.json
+        run: |
+          python3 - <<'PY'
+          import json, os
+          found = {}
+          for name in sorted(os.listdir("digests")):
+              with open(os.path.join("digests", name)) as handle:
+                  found[f"ghcr.io/microtensor-io/{name}:1"] = handle.read().strip()
+          with open("images.json", "w") as handle:
+              json.dump(found, handle, indent=2, sort_keys=True)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("## Image digests\n\n| image | digest |\n|---|---|\n")
+              for image, digest in found.items():
+                  summary.write(f"| {image} | `{digest}` |\n")
+          print(json.dumps(found, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images.json
+          path: images.json
+          retention-days: 90
