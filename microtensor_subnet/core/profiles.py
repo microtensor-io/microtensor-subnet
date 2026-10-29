@@ -142,7 +142,7 @@ def allowed_profiles(definition: Mapping[str, Any]) -> tuple[str, ...]:
 def evaluation_mode(definition: Mapping[str, Any]) -> str:
     block = definition.get("evaluation") or {}
     mode = block.get("mode") if isinstance(block, Mapping) else None
-    return str(mode or "validator")
+    return str(mode or "")
 
 
 def miner_mode(definition: Mapping[str, Any]) -> bool:

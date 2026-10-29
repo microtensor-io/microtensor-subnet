@@ -47,7 +47,7 @@ mt submit commit --arena <arena> --hf-user <user> --artifact-sha <sha> --profile
 MT_ARENA=<arena> docker compose -f deploy/docker-compose.miner.yml up
 ```
 
-The runner pulls your frozen files from the mirror, serves your model with the pinned engine, records every model, tool and relay call into a signed transcript and uploads it before Freeze 2. Validators replay the transcript on CPU and spot check sampled calls on the same profile. `mt miner replay` runs that replay locally so you can test determinism before uploading. Full guide: [docs/miner.md](docs/miner.md). Arenas without the block work exactly as before.
+The runner pulls your frozen files from the mirror, serves your model with the pinned engine, records every model, tool and relay call into a signed transcript and uploads it before Freeze 2. Validators replay the transcript on CPU and spot check sampled calls on the same profile. `mt miner replay` runs that replay locally so you can test determinism before uploading. Full guide: [docs/miner.md](docs/miner.md).
 
 ## Repository map
 
