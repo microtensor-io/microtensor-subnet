@@ -15,7 +15,7 @@ services:
       MT_HOME: /var/lib/microtensor
       MT_SERVER_URL: "${MT_SERVER_URL:-https://api.microtensor.cloud}"
       MT_RELAY_URL: "${MT_RELAY_URL:-https://api.microtensor.cloud}"
-      MT_GPUS: "${MT_GPUS:-0,1,2}"
+      MT_GPUS: "${MT_GPUS:-0}"
       MT_SLM_MEMORY_SHARE: "${MT_SLM_MEMORY_SHARE:-0}"
       HF_HOME: /var/lib/microtensor/cache/hf
       HF_HUB_DISABLE_XET: "${HF_HUB_DISABLE_XET:-}"
@@ -24,13 +24,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/microtensor:/var/lib/microtensor
       - ${MT_WALLET_DIR:-~/.bittensor/wallets}:/wallets:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     command:
       - epoch
       - loop
