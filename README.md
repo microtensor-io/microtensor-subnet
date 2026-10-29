@@ -37,7 +37,7 @@ Five pools pay 20% each by rank (40 / 25 / 15 / 12 / 8). Every score is a one si
 
 ## Running your own evaluation
 
-Arenas whose definition carries `evaluation.mode: miner` are evaluated by the miners themselves and verified by validators. You declare a hardware profile (`P1` RTX 4090, `P2` A100, `P3` H100, `K` Kaggle T4, `C` CPU), commit with it, and during the window run one batch job on your own GPU:
+Miners evaluate their own submissions and validators verify them. You declare a hardware profile (`P1` RTX 4090, `P2` A100, `P3` H100, `K` T4, `C` CPU), commit with it, and during the window run one batch job on your own GPU:
 
 ```bash
 mt check-model --slm ./slm_repo --profile P1 --arena <arena>
