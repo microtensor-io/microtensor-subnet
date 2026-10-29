@@ -73,9 +73,7 @@ def candidates(
                 refused[hotkey] = "revealed values do not match the sealed digest"
             continue
         try:
-            decoded[hotkey] = SubmissionCommitment(
-                sealed.arena_id, hf_user, artifact_sha, sealed.fee_block, sealed.fee_index
-            )
+            decoded[hotkey] = sealed.unseal(hf_user, artifact_sha)
         except CommitmentError as exc:
             log.info("%s revealed values are invalid: %s", hotkey, exc)
             if sealed.arena_id == arena_id:

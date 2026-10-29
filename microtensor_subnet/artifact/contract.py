@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Final
 
 SCHEMA_VERSION: Final[int] = 1
+PROFILE_SCHEMA_VERSION: Final[int] = 2
+SCHEMA_VERSIONS: Final[tuple[int, ...]] = (SCHEMA_VERSION, PROFILE_SCHEMA_VERSION)
+WEIGHT_SUFFIXES: Final[tuple[str, ...]] = (".safetensors", ".gguf")
+IMAGE_DIGEST_PREFIX: Final[str] = "sha256:"
 COMPONENTS: Final[tuple[str, ...]] = ("slm", "harness", "router", "escalation")
 HARDWARE_CLASSES: Final[tuple[str, ...]] = ("mt-1", "mt-2", "mt-3", "mt-4", "mt-5")
 DEFAULT_HARDWARE_CLASS: Final[str] = "mt-5"
@@ -48,6 +52,10 @@ ENV_SLM_URL: Final[str] = "MT_SLM_URL"
 ENV_ROUTER_URL: Final[str] = "MT_ROUTER_URL"
 ENV_TOOLS_URL: Final[str] = "MT_TOOLS_URL"
 ENV_RELAY_URL: Final[str] = "MT_RELAY_URL"
+ENV_SEED: Final[str] = "SUBNET_SEED"
+SANDBOX_HEADER: Final[str] = "x-mt-sandbox"
+FAKETIME: Final[str] = "@2026-01-01 00:00:00 x0"
+FAKETIME_LIBRARY: Final[str] = "/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1"
 
 HARNESS_RUN: Final[str] = "/harness/run"
 ESCALATION_REPAIR: Final[str] = "/escalation/repair"
