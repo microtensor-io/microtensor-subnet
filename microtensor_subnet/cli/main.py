@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import sys
 
+from microtensor_subnet.cli import check_model as check_model_cmd
 from microtensor_subnet.cli import envelope as envelope_cmd
 from microtensor_subnet.cli import epoch as epoch_cmd
+from microtensor_subnet.cli import miner as miner_cmd
 from microtensor_subnet.cli import operator as operator_cmd
 from microtensor_subnet.cli import submit as submit_cmd
 from microtensor_subnet.cli.common import configure_logging
@@ -27,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     epoch_cmd.register(subparsers)
     operator_cmd.register(subparsers)
     envelope_cmd.register(subparsers)
+    miner_cmd.register(subparsers)
+    check_model_cmd.register(subparsers)
     return parser
 
 
