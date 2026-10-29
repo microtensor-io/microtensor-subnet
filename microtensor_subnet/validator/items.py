@@ -5,6 +5,8 @@ import json
 import logging
 import shutil
 import subprocess
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -247,3 +249,190 @@ def load_recipient_key(keys_dir: Path) -> bytes:
 
 def catch_server(exc: ServerError) -> ReleaseError:
     return ReleaseError(str(exc))
+
+
+INPUTS_FILE = "inputs.jsonl"
+DRAFTS_FILE = "reference/drafts.jsonl"
+CANARIES_FILE = "canaries.jsonl"
+REDO_FILE = "redo.jsonl"
+GZIP_MAGIC = b"\x1f\x8b"
+
+
+@dataclass(frozen=True, slots=True)
+class InputItem:
+    item_id: str
+    pool: str
+    family: str
+    task: dict[str, Any]
+    twin_of: str
+    seed: int
+
+
+@dataclass(slots=True)
+class InputsBundle:
+    sha256: str
+    seed: str
+    items: list[InputItem]
+    databases: dict[str, bytes]
+    trees: dict[str, Path]
+    drafts: dict[str, str]
+    open_block: int = 0
+    close_block: int = 0
+
+    def by_id(self) -> dict[str, InputItem]:
+        return {item.item_id: item for item in self.items}
+
+    def seeds(self) -> dict[str, int]:
+        return {item.item_id: item.seed for item in self.items}
+
+
+@dataclass(frozen=True, slots=True)
+class RedoRow:
+    item_id: str
+    pool: str
+    correct: bool
+    cost_micros: int
+    latency_ms: float
+    answer: str = ""
+    model: str = ""
+    ttft_ms: float = 0.0
+    tpot_ms: float = 0.0
+
+
+@dataclass(slots=True)
+class LabelsBundle:
+    canaries: list[dict[str, Any]] = field(default_factory=list)
+    redo: list[RedoRow] = field(default_factory=list)
+
+    def rows(self, pool: str) -> dict[str, RedoRow]:
+        return {row.item_id: row for row in self.redo if row.pool == pool}
+
+
+def item_seed(epoch_seed: str, item_id: str) -> int:
+    digest = hashlib.sha256(f"{epoch_seed}:{item_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def _lines(raw: bytes | None) -> list[dict[str, Any]]:
+    if not raw:
+        return []
+    found: list[dict[str, Any]] = []
+    for line in raw.decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        parsed = json.loads(line)
+        if isinstance(parsed, dict):
+            found.append(parsed)
+    return found
+
+
+def fetch_inputs(
+    client: ServerClient, arena_id: str, epoch_index: int, public_key: str
+) -> tuple[dict[str, Any], bytes]:
+    from microtensor_subnet.validator.transcripts import client_method
+
+    document = client_method(client, "inputs")(arena_id, epoch_index)
+    if document is None:
+        raise ReleaseError("the epoch inputs have not been published")
+    verify_document(document, public_key)
+    body = dict(document.get("body") or {})
+    bundle = client_method(client, "inputs_bundle")(arena_id, epoch_index)
+    if len(bundle) != int(body.get("bundle_bytes") or -1):
+        raise ReleaseError("the inputs bundle does not match the signed inputs document")
+    if hashlib.sha256(bundle).hexdigest() != str(body.get("bundle_sha256", "")).lower():
+        raise ReleaseError("the inputs bundle does not match the signed inputs document")
+    return body, bundle
+
+
+def unpack_inputs(
+    body: dict[str, Any], bundle: bytes, *, epoch_seed: str, work_dir: Path
+) -> InputsBundle:
+    from microtensor_subnet.core.items import unpack_bundle
+
+    try:
+        files = unpack_bundle(bundle)
+    except (ItemError, OSError) as exc:
+        raise ReleaseError(f"the inputs bundle cannot be opened: {exc}") from exc
+    rows = _lines(files.get(INPUTS_FILE))
+    if not rows:
+        raise ReleaseError(f"the inputs bundle has no {INPUTS_FILE}")
+    items: list[InputItem] = []
+    for row in rows:
+        item_id = str(row.get("item_id", "")).strip()
+        task = row.get("task")
+        if not item_id or not isinstance(task, dict):
+            raise ReleaseError(f"inputs item {item_id or '?'} is malformed")
+        wanted = item_seed(epoch_seed, item_id)
+        raw_seed = row.get("seed")
+        seed = int(raw_seed) if raw_seed is not None else wanted
+        if seed != wanted:
+            raise ReleaseError(f"inputs item {item_id} carries a seed the epoch seed does not give")
+        items.append(
+            InputItem(
+                item_id=item_id,
+                pool=str(row.get("pool") or ""),
+                family=str(row.get("family") or item_id),
+                task=dict(task),
+                twin_of=str(row.get("twin_of") or ""),
+                seed=seed,
+            )
+        )
+    databases = {
+        name[len(BLOB_PREFIX) :]: blob
+        for name, blob in files.items()
+        if name.startswith(BLOB_PREFIX)
+    }
+    trees: dict[str, Path] = {}
+    names = {
+        name[len(REFERENCE_PREFIX) :].split("/", 1)[0]
+        for name in files
+        if name.startswith(REFERENCE_PREFIX) and "/" in name[len(REFERENCE_PREFIX) :]
+    }
+    for name in sorted(names):
+        trees[name] = _write_tree(
+            files, f"{REFERENCE_PREFIX}{name}/", work_dir / "inputs" / "reference" / name
+        )
+    drafts = {
+        str(row.get("item_id", "")): str(row.get("draft", ""))
+        for row in _lines(files.get(DRAFTS_FILE))
+        if row.get("item_id")
+    }
+    return InputsBundle(
+        sha256=str(body.get("bundle_sha256", "")).lower(),
+        seed=str(body.get("seed") or epoch_seed),
+        items=items,
+        databases=databases,
+        trees=trees,
+        drafts=drafts,
+        open_block=int(body.get("open_block") or 0),
+        close_block=int(body.get("close_block") or 0),
+    )
+
+
+def unpack_labels(files: Mapping[str, bytes]) -> LabelsBundle:
+    canaries = [
+        {
+            "item_id": str(row.get("item_id", "")),
+            "prefix": str(row.get("prefix", "")),
+            "fact": str(row.get("fact", "")),
+            "epoch": int(row.get("epoch") or 0),
+        }
+        for row in _lines(files.get(CANARIES_FILE))
+        if row.get("item_id") and row.get("fact")
+    ]
+    redo = [
+        RedoRow(
+            item_id=str(row.get("item_id", "")),
+            pool=str(row.get("pool") or ""),
+            correct=bool(row.get("correct")),
+            cost_micros=int(row.get("cost_micros") or 0),
+            latency_ms=float(row.get("latency_ms") or 0.0),
+            answer=str(row.get("answer") if row.get("answer") is not None else ""),
+            model=str(row.get("model") or ""),
+            ttft_ms=float(row.get("ttft_ms") or 0.0),
+            tpot_ms=float(row.get("tpot_ms") or 0.0),
+        )
+        for row in _lines(files.get(REDO_FILE))
+        if row.get("item_id")
+    ]
+    return LabelsBundle(canaries=canaries, redo=redo)

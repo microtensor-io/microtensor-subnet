@@ -19,6 +19,8 @@ SCORING: Final[str] = "scoring"
 SENT: Final[str] = "sent"
 CLEARED: Final[str] = "cleared"
 REFUSED: Final[str] = "refused"
+REPLAYED: Final[str] = "replayed"
+SPOT_CHECKED: Final[str] = "spot_checked"
 STAGES: Final[tuple[str, ...]] = (
     QUEUED,
     FETCHING,
@@ -27,6 +29,8 @@ STAGES: Final[tuple[str, ...]] = (
     pools.HARNESS,
     pools.ESCALATION,
     pools.SYSTEM,
+    REPLAYED,
+    SPOT_CHECKED,
     SCORING,
     SENT,
     CLEARED,
@@ -62,6 +66,12 @@ def stage_detail(stage: str, detail: Mapping[str, Any] | None) -> dict[str, Any]
     phase = detail.get("phase")
     if stage == pools.HARNESS and phase in PHASES:
         return {"phase": str(phase)}
+    if stage == REPLAYED and isinstance(detail.get("ok"), bool):
+        return {"ok": bool(detail["ok"])}
+    if stage == SPOT_CHECKED:
+        counts = {name: detail.get(name) for name in ("matched", "calls")}
+        if all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in counts.values()):
+            return {name: int(value) for name, value in counts.items() if isinstance(value, int)}
     return None
 
 
