@@ -1,6 +1,6 @@
 # Running a Microtensor validator
 
-Netuid **576** on Bittensor testnet. A validator verifies and scores: every epoch it fetches each miner's transcript, replays the miner's artifact code against it, grades the answers once the labels are released, scores the five pools, signs a report and sets weights. Everything runs on CPU inside Docker. A validator serves no model and runs no miner model.
+Netuid **576** on Bittensor testnet.
 
 ## Requirements
 
@@ -12,8 +12,6 @@ Netuid **576** on Bittensor testnet. A validator verifies and scores: every epoc
 | Network | a stable connection; every epoch the loop downloads each miner's transcript and the epoch bundles |
 | Uptime | the loop must be running at each epoch's Freeze 2 and through the 6 hour grading window that follows |
 | Access | a hotkey registered on netuid 576, a registered X25519 key, relay access granted by the team |
-
-The only miner code a validator ever runs is the artifact's `main.py`, inside the CPU replayer image: read only, no network, a frozen clock, every capability dropped.
 
 ## 1. Host preparation
 
@@ -33,7 +31,7 @@ btcli subnet register --netuid 576 --subtensor.network test --wallet.name <coldk
 
 ## 3. Keys and access
 
-The labels bundle is sealed to a key only your validator holds. Register it, then ask the team to grant relay access to your hotkey (the relay pays for the reference checks your validator makes, within a per epoch allowance).
+Register the key, then ask the team to grant relay access to your hotkey.
 
 ```bash
 docker run --rm -it \
@@ -67,7 +65,7 @@ docker compose -f docker-compose.validator.yml up -d
 docker compose -f docker-compose.validator.yml logs -f
 ```
 
-You choose nothing: every ten minutes the loop asks the server which arenas are live on your network, and the signed roster and mirror name the miners. When an arena reaches Freeze 2 it runs the seven steps below once; an epoch already reported is not run again, and the record is `/var/lib/microtensor/state/<arena>.epochs.json`.
+The loop takes every live arena from the server itself. At each epoch's Freeze 2 it runs the seven steps below once; an epoch already reported is not run again, and the record is `/var/lib/microtensor/state/<arena>.epochs.json`.
 
 ## The seven steps of an epoch
 
