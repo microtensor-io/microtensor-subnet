@@ -52,7 +52,6 @@ from microtensor_subnet.validator.config import PROFILE_ENV, EpochConfig, detect
 from microtensor_subnet.validator.epoch import (
     EpochError,
     miner_mode_definition,
-    run_epoch,
     run_miner_mode_epoch,
 )
 from microtensor_subnet.validator.items import ReleaseError
@@ -316,11 +315,13 @@ def _run(args: argparse.Namespace) -> int:
         epoch_index = int(current["index"])
     settings = _settings(args, config)
     try:
-        miner_mode = miner_mode_definition(_definition(server, args.arena, block))
-        if miner_mode and not _receipts_published(server, args.arena, epoch_index):
+        if not miner_mode_definition(_definition(server, args.arena, block)):
+            return fail(f"{args.arena} carries no evaluation block; nothing to verify")
+        if not _receipts_published(server, args.arena, epoch_index):
             return fail(f"{args.arena} epoch {epoch_index} has no Freeze 2 receipts yet")
-        run = run_miner_mode_epoch if miner_mode else run_epoch
-        outcome = run(settings, chain=client, wallet=wallet, epoch_index=epoch_index)
+        outcome = run_miner_mode_epoch(
+            settings, chain=client, wallet=wallet, epoch_index=epoch_index
+        )
     except (EpochError, ReleaseError, ChainError, ServerError) as exc:
         return fail(str(exc))
     print(f"epoch       {epoch_index}")
@@ -614,18 +615,18 @@ def _poll_arena(
     if arena is None:
         log.warning("arena %s is unknown to %s", arena_id, args.server)
         return
-    miner_mode = miner_mode_definition(dict(arena.get("definition") or {}))
-    phases = ("settling",) if miner_mode else ("window",)
-    if current.get("phase") not in phases or index is None or int(index) in done:
+    if not miner_mode_definition(dict(arena.get("definition") or {})):
+        log.warning("arena %s carries no evaluation block; skipped", arena_id)
+        return
+    if current.get("phase") != "settling" or index is None or int(index) in done:
         log.info("block %d: %s epoch %s is %s", block, arena_id, index, current.get("phase"))
         return
-    if miner_mode and not _receipts_published(server, arena_id, int(index)):
+    if not _receipts_published(server, arena_id, int(index)):
         log.info("block %d: %s epoch %s waits for the Freeze 2 receipts", block, arena_id, index)
         return
     log.info("epoch %s of %s is open at block %d", index, arena_id, block)
     settings = dataclasses.replace(_settings(args, config), arena_id=arena_id)
-    run = run_miner_mode_epoch if miner_mode else run_epoch
-    outcome = run(settings, chain=client, wallet=wallet, epoch_index=int(index))
+    outcome = run_miner_mode_epoch(settings, chain=client, wallet=wallet, epoch_index=int(index))
     done.add(int(index))
     record.write_text(json.dumps(sorted(done)), encoding="utf-8")
     log.info(
