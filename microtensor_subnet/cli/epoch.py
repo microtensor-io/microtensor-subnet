@@ -48,10 +48,16 @@ from microtensor_subnet.serving.verifier import (
 )
 from microtensor_subnet.serving.verify import UNPROVEN, VerificationError
 from microtensor_subnet.validator.client import ServerClient, ServerError
-from microtensor_subnet.validator.config import EpochConfig
-from microtensor_subnet.validator.epoch import EpochError, run_epoch
+from microtensor_subnet.validator.config import PROFILE_ENV, EpochConfig, detect_profile
+from microtensor_subnet.validator.epoch import (
+    EpochError,
+    miner_mode_definition,
+    run_epoch,
+    run_miner_mode_epoch,
+)
 from microtensor_subnet.validator.items import ReleaseError
 from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
+from microtensor_subnet.validator.transcripts import client_method
 
 log = logging.getLogger("microtensor_subnet.cli.epoch")
 KEY_BLOCKS = 2_600_000
@@ -85,6 +91,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_common_arguments(token)
     token.set_defaults(handler=_relay_token)
 
+    profile = inner.add_parser(
+        "register-profile", help="register the hardware profile this validator can spot check"
+    )
+    profile.add_argument("--server", default=os.environ.get("MT_SERVER_URL", PUBLIC_SERVER_URL))
+    _add_profile(profile)
+    add_chain_arguments(profile)
+    add_common_arguments(profile)
+    profile.set_defaults(handler=_register_profile)
+
     run = inner.add_parser("run", help="evaluate every submission of one epoch and set weights")
     run.add_argument("--arena", required=True)
     run.add_argument(
@@ -98,6 +113,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     run.add_argument("--concurrency", type=int, default=3)
     run.add_argument("--sandbox-runtime", default=os.environ.get("MT_SANDBOX_RUNTIME", ""))
     _add_gpu_sharing(run)
+    _add_profile(run)
     run.add_argument("--item-limit", type=int, default=0, help="development only")
     run.add_argument("--dry-run", action="store_true", help="evaluate and report, set no weights")
     add_chain_arguments(run)
@@ -113,6 +129,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     loop.add_argument("--concurrency", type=int, default=3)
     loop.add_argument("--sandbox-runtime", default=os.environ.get("MT_SANDBOX_RUNTIME", ""))
     _add_gpu_sharing(loop)
+    _add_profile(loop)
     loop.add_argument("--poll-seconds", type=int, default=600)
     loop.add_argument("--once", action="store_true", help="one poll, then exit")
     loop.add_argument("--item-limit", type=int, default=0, help="development only")
@@ -230,6 +247,37 @@ def _relay_token(args: argparse.Namespace) -> int:
     return 0
 
 
+def _register_profile(args: argparse.Namespace) -> int:
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    try:
+        profile = detect_profile(args.profile or "")
+    except ValueError as exc:
+        return fail(str(exc))
+    server = ServerClient(args.server, hotkey_address(wallet), wallet)
+    try:
+        found = client_method(server, "register_profile")([profile])
+    except (ServerError, RuntimeError) as exc:
+        return fail(str(exc))
+    listed = found.get("profiles") if isinstance(found, dict) else None
+    print(f"profile     {profile}")
+    print(f"registered  {', '.join(str(p) for p in listed) if listed else profile}")
+    return 0
+
+
+def _definition(server: ServerClient, arena_id: str, block: int | None = None) -> dict[str, Any]:
+    arena = server.arena(arena_id, block)
+    return dict((arena or {}).get("definition") or {})
+
+
+def _receipts_published(server: ServerClient, arena_id: str, index: int) -> bool:
+    try:
+        return client_method(server, "receipts")(arena_id, index) is not None
+    except (ServerError, RuntimeError) as exc:
+        log.warning("receipts for %s epoch %d not read: %s", arena_id, index, exc)
+        return False
+
+
 def _show_logs() -> None:
     package = logging.getLogger("microtensor_subnet")
     if not any(getattr(h, "_mt_visible", False) for h in package.handlers):
@@ -268,7 +316,11 @@ def _run(args: argparse.Namespace) -> int:
         epoch_index = int(current["index"])
     settings = _settings(args, config)
     try:
-        outcome = run_epoch(settings, chain=client, wallet=wallet, epoch_index=epoch_index)
+        miner_mode = miner_mode_definition(_definition(server, args.arena, block))
+        if miner_mode and not _receipts_published(server, args.arena, epoch_index):
+            return fail(f"{args.arena} epoch {epoch_index} has no Freeze 2 receipts yet")
+        run = run_miner_mode_epoch if miner_mode else run_epoch
+        outcome = run(settings, chain=client, wallet=wallet, epoch_index=epoch_index)
     except (EpochError, ReleaseError, ChainError, ServerError) as exc:
         return fail(str(exc))
     print(f"epoch       {epoch_index}")
@@ -508,6 +560,14 @@ def _probe(args: argparse.Namespace) -> int:
             close_reference(docker, reference)
 
 
+def _add_profile(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--profile",
+        default=os.environ.get(PROFILE_ENV, ""),
+        help="hardware profile for spot checks (P1, P2, P3, K or C); detected when empty",
+    )
+
+
 def _add_gpu_sharing(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--slm-memory-share",
@@ -530,6 +590,7 @@ def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
         dry_run=args.dry_run,
         item_limit=args.item_limit,
         slm_memory_share=float(getattr(args, "slm_memory_share", 0.0) or 0.0),
+        profile=str(getattr(args, "profile", "") or ""),
     )
 
 
@@ -553,12 +614,18 @@ def _poll_arena(
     if arena is None:
         log.warning("arena %s is unknown to %s", arena_id, args.server)
         return
-    if current.get("phase") != "window" or index is None or int(index) in done:
+    miner_mode = miner_mode_definition(dict(arena.get("definition") or {}))
+    phases = ("settling",) if miner_mode else ("window",)
+    if current.get("phase") not in phases or index is None or int(index) in done:
         log.info("block %d: %s epoch %s is %s", block, arena_id, index, current.get("phase"))
+        return
+    if miner_mode and not _receipts_published(server, arena_id, int(index)):
+        log.info("block %d: %s epoch %s waits for the Freeze 2 receipts", block, arena_id, index)
         return
     log.info("epoch %s of %s is open at block %d", index, arena_id, block)
     settings = dataclasses.replace(_settings(args, config), arena_id=arena_id)
-    outcome = run_epoch(settings, chain=client, wallet=wallet, epoch_index=int(index))
+    run = run_miner_mode_epoch if miner_mode else run_epoch
+    outcome = run(settings, chain=client, wallet=wallet, epoch_index=int(index))
     done.add(int(index))
     record.write_text(json.dumps(sorted(done)), encoding="utf-8")
     log.info(

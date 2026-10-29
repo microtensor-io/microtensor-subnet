@@ -16,8 +16,16 @@ from microtensor_subnet.validator.sandbox.slm import (
     MEMORY_SHARE,
     MODEL_NAME,
     SlmClient,
+    llama_command,
     vllm_command,
 )
+
+VLLM_BACKEND: Final[str] = "vllm"
+LLAMA_BACKEND: Final[str] = "llama"
+LLAMA_THREADS: Final[int] = 8
+LLAMA_CACHE_REUSE: Final[int] = 256
+LLAMA_GUEST: Final[str] = "/model"
+DEFAULT_PROBE_TOKENS: Final[int] = 64
 
 QUANTISED_PROBE_MODELS: Final[dict[str, tuple[str, str]]] = {
     "Qwen/Qwen2.5-Coder-7B-Instruct": (
@@ -99,19 +107,102 @@ def place(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ProbeSpec:
+    model: str
+    revision: str
+    file: str
+    max_tokens: int = DEFAULT_PROBE_TOKENS
+
+    @classmethod
+    def from_definition(cls, definition: Mapping[str, Any]) -> ProbeSpec:
+        block = definition.get("evaluation") or {}
+        probe = block.get("probe") if isinstance(block, Mapping) else None
+        if not isinstance(probe, Mapping) or not probe.get("model") or not probe.get("file"):
+            raise JudgeError("the arena definition names no evaluation.probe model and file")
+        return cls(
+            model=str(probe["model"]),
+            revision=str(probe.get("revision") or "main"),
+            file=str(probe["file"]),
+            max_tokens=int(probe.get("max_tokens") or DEFAULT_PROBE_TOKENS),
+        )
+
+
+def fetch_probe(spec: ProbeSpec, cache_dir: Path) -> Path:
+    from huggingface_hub import hf_hub_download
+
+    target = cache_dir / "probe" / spec.model.replace("/", "__") / spec.revision
+    found = target / spec.file
+    if found.is_file():
+        return found
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        path = hf_hub_download(spec.model, spec.file, revision=spec.revision, local_dir=str(target))
+    except Exception as exc:
+        raise JudgeError(f"the probe model {spec.model} could not be fetched: {exc}") from exc
+    return Path(path)
+
+
 @dataclass(slots=True)
 class ProbeAgent:
     docker: Docker
     image: str
     model_dir: Path
     gpu: str
-    max_tokens: int = 64
+    max_tokens: int = DEFAULT_PROBE_TOKENS
     memory_share: float = MEMORY_SHARE
     quantization: str = ""
+    backend: str = VLLM_BACKEND
+    model_file: str = ""
+    threads: int = LLAMA_THREADS
     name: str = ""
     network: str = ""
     url: str = ""
     mount: compat.Mount | None = None
+
+    @property
+    def on_cpu(self) -> bool:
+        return self.backend == LLAMA_BACKEND
+
+    def _spec(self) -> ContainerSpec:
+        if self.on_cpu:
+            if not self.model_file:
+                raise JudgeError("the llama.cpp probe backend needs the GGUF file name")
+            threads = max(1, self.threads)
+            return ContainerSpec(
+                name=self.name,
+                image=self.image,
+                network=self.network,
+                command=[
+                    *llama_command(
+                        f"{LLAMA_GUEST}/{self.model_file}",
+                        threads=threads,
+                        max_model_len=MAX_MODEL_LEN,
+                    ),
+                    "--cache-reuse",
+                    str(LLAMA_CACHE_REUSE),
+                ],
+                volumes=((str(self.model_dir), LLAMA_GUEST, "ro"),),
+                cpus=float(threads),
+            )
+        mount = compat.mount(self.model_dir)
+        self.mount = mount
+        return ContainerSpec(
+            name=self.name,
+            image=self.image,
+            network=self.network,
+            command=vllm_command(
+                compat.GUEST,
+                max_model_len=MAX_MODEL_LEN,
+                quantization=self.quantization,
+                memory_share=self.memory_share,
+            ),
+            env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
+            volumes=mount.volumes,
+            gpus=(self.gpu,),
+            shm_size="8g",
+            ipc_none=False,
+        )
 
     def start(self, ready_seconds: int) -> None:
         key = secrets.token_hex(4)
@@ -119,25 +210,7 @@ class ProbeAgent:
         self.name = f"mt-judge-{key}"
         self.docker.create_network(self.network)
         try:
-            self.mount = compat.mount(self.model_dir)
-            self.docker.start(
-                ContainerSpec(
-                    name=self.name,
-                    image=self.image,
-                    network=self.network,
-                    command=vllm_command(
-                        compat.GUEST,
-                        max_model_len=MAX_MODEL_LEN,
-                        quantization=self.quantization,
-                        memory_share=self.memory_share,
-                    ),
-                    env={"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1"},
-                    volumes=self.mount.volumes,
-                    gpus=(self.gpu,),
-                    shm_size="8g",
-                    ipc_none=False,
-                )
-            )
+            self.docker.start(self._spec())
             self.url = f"http://{self.docker.address(self.name, self.network)}:8000"
             self._wait(ready_seconds)
         except Exception:
@@ -179,6 +252,8 @@ class ProbeAgent:
             "temperature": 0,
             "max_tokens": self.max_tokens,
         }
+        if self.on_cpu:
+            body["cache_prompt"] = True
         try:
             with httpx.Client(timeout=ANSWER_SECONDS) as http:
                 response = http.post(self.url + "/v1/chat/completions", json=body)
@@ -192,6 +267,8 @@ class ProbeAgent:
         return str(message.get("content") or "")
 
     def answer(self, summary: str, questions: Sequence[str]) -> list[str]:
+        if self.on_cpu:
+            return [self._ask(summary, question) for question in questions]
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             return list(pool.map(lambda question: self._ask(summary, question), questions))
 
