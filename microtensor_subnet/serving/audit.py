@@ -15,6 +15,7 @@ from microtensor_subnet.serving.client import ServerError
 log = logging.getLogger("microtensor_subnet.serving.audit")
 
 SETTLEMENT_PATH = "/v1/public/inference/settlement"
+OPERATORS_PATH = "/v1/public/inference/operators"
 TIMEOUT_SECONDS = 60
 
 
@@ -56,18 +57,27 @@ class Audit:
         }
 
 
-def fetch(server: str, timeout: int = TIMEOUT_SECONDS) -> dict[str, Any]:
-    url = urllib.parse.urljoin(server.rstrip("/") + "/", SETTLEMENT_PATH.lstrip("/"))
+def _get(server: str, path: str, timeout: int) -> dict[str, Any]:
+    url = urllib.parse.urljoin(server.rstrip("/") + "/", path.lstrip("/"))
     request = urllib.request.Request(url, headers={"accept": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as answer:
             return dict(json.loads(answer.read().decode("utf-8")))
     except urllib.error.HTTPError as exc:
-        raise ServerError(f"{exc.code}: could not read the settlement") from exc
+        raise ServerError(f"{exc.code}: could not read {path}") from exc
     except urllib.error.URLError as exc:
         raise ServerError(f"could not reach {url}: {exc.reason}") from exc
     except (OSError, ValueError) as exc:
         raise ServerError(f"could not read {url}: {exc}") from exc
+
+
+def fetch(server: str, timeout: int = TIMEOUT_SECONDS) -> dict[str, Any]:
+    return _get(server, SETTLEMENT_PATH, timeout)
+
+
+def fetch_operators(server: str, timeout: int = TIMEOUT_SECONDS) -> list[dict[str, Any]]:
+    found = _get(server, OPERATORS_PATH, timeout)
+    return [dict(row) for row in found.get("operators") or [] if isinstance(row, Mapping)]
 
 
 def recompute(evidence: Mapping[str, Any]) -> list[Any]:

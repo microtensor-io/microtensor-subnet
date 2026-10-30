@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import json
 import logging
+import math
 import platform
 import shutil
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Final
 
@@ -25,6 +28,9 @@ from microtensor_subnet.chain.weights import quantise_weights, restrict_to_metag
 from microtensor_subnet.core.reports import PoolScore
 from microtensor_subnet.scoring import pools
 from microtensor_subnet.scoring.stats import percentile
+from microtensor_subnet.serving import audit as serving_audit
+from microtensor_subnet.serving import pools as serving_pools
+from microtensor_subnet.serving.client import ServerError as ServingServerError
 from microtensor_subnet.serving.probes import sets as probe_sets
 from microtensor_subnet.validator import (
     checks,
@@ -234,6 +240,7 @@ def load_context(
         sample_database=sample,
         r_class={str(k): float(v) for k, v in dict(definition.get("r_class") or {}).items()},
         floors=tuple(float(f) for f in definition.get("floors") or (0.8, 0.9, 0.95, 0.99)),
+        epoch_blocks=window.length,
     )
 
 
@@ -1112,6 +1119,7 @@ class MinerModeRunner:
     sampled: list[str] = field(default_factory=list)
     seen_manifests: dict[str, str] = field(default_factory=dict)
     seen_weights: dict[str, str] = field(default_factory=dict)
+    serving: dict[str, Any] | None = None
 
     @property
     def evaluation(self) -> dict[str, Any]:
@@ -2037,6 +2045,78 @@ def post_miner_mode_result(runner: MinerModeRunner, record: MinerRecord) -> bool
     return True
 
 
+SERVING_SCALE: Final[int] = 10**9
+BLOCK_SECONDS: Final[float] = 12.0
+
+
+def serving_fold(
+    config: EpochConfig, runner: MinerModeRunner
+) -> tuple[dict[str, Fraction], Fraction, Fraction]:
+    context = runner.context
+    arena_id = context.arena_id
+    serving = dict(context.definition.get("serving") or {})
+    record: dict[str, Any] = {"audit": None, "billing_usd": 0.0, "cap": None, "error": ""}
+    settled: list[Any] = []
+    operators: list[Mapping[str, Any]] = []
+    billing = 0.0
+    try:
+        document = serving_audit.fetch(config.server_url)
+        checked = serving_audit.check(document)
+        record["audit"] = checked.to_dict()
+        if checked.holds:
+            settled = [
+                row
+                for row in serving_audit.recompute(dict(document.get("evidence") or {}))
+                if serving_pools.arena_of(str(row.model)) == arena_id
+            ]
+        billing = sum(
+            float(value)
+            for model, value in dict(document.get("billing_usd_30d") or {}).items()
+            if serving_pools.arena_of(str(model)) == arena_id
+        )
+        operators = [
+            op
+            for op in serving_audit.fetch_operators(config.server_url)
+            if any(serving_pools.arena_of(str(m)) == arena_id for m in op.get("models") or [])
+        ]
+    except (ServingServerError, ValueError, KeyError, TypeError) as exc:
+        record["error"] = str(exc)
+        log.warning("the serving settlement could not be read; its pool is burned: %s", exc)
+    try:
+        dials = serving_pools.dials_for(serving, billing)
+        floors = serving_pools.floors_for(
+            serving,
+            operators,
+            now=dt.datetime.now(dt.timezone.utc),
+            epoch_seconds=context.epoch_blocks * BLOCK_SECONDS,
+        )
+        split = serving_pools.divide(SERVING_SCALE, settled, dials, floors=floors)
+    except serving_pools.PoolError as exc:
+        record["error"] = str(exc)
+        log.error("the serving block of %s is invalid; its pool is burned: %s", arena_id, exc)
+        dials = serving_pools.Dials()
+        split = serving_pools.divide(SERVING_SCALE, [], dials)
+    record.update(split.to_dict())
+    record["cap"] = str(dials.cap)
+    record["billing_usd"] = round(billing, 6)
+    runner.serving = record
+    available = split.available or 1
+    shares = {
+        operator: Fraction(value, available)
+        for operator, value in split.shares.items()
+        if value > 0
+    }
+    return shares, Fraction(split.modelling, available), Fraction(split.burned, available)
+
+
+def vector_for(weights: Mapping[str, float], snapshot: Any) -> Any:
+    uid_by_hotkey = snapshot.uid_by_hotkey
+    by_uid = {uid_by_hotkey[h]: w for h, w in weights.items() if h in uid_by_hotkey}
+    return (
+        quantise_weights(restrict_to_metagraph(by_uid, len(snapshot.neurons))) if by_uid else None
+    )
+
+
 def miner_mode_weights(
     config: EpochConfig,
     chain: Any,
@@ -2054,7 +2134,22 @@ def miner_mode_weights(
     burn_to = (
         _owner(chain) if score.Rules.from_definition(context.definition).burn_empty_pools else ""
     )
-    weights, burned, vector = weights_for(standings, chain.snapshot(refresh=True), burn_to)
+    pooled, burned = pools.combine(standings, burn_to=burn_to)
+    shares, modelling, serving_burn = serving_fold(config, runner)
+    folded = {hotkey: value * float(modelling) for hotkey, value in pooled.items()}
+    for operator, share in shares.items():
+        folded[operator] = folded.get(operator, 0.0) + float(share)
+    if serving_burn > 0:
+        burned["serving"] = float(serving_burn)
+        if burn_to:
+            folded[burn_to] = folded.get(burn_to, 0.0) + float(serving_burn)
+    total = math.fsum(folded.values())
+    weights = (
+        {hotkey: round(value / total, pools.DIGITS) for hotkey, value in folded.items()}
+        if total > 0
+        else {}
+    )
+    vector = vector_for(weights, chain.snapshot(refresh=True))
     if vector is not None and not config.dry_run:
         ok, reason = chain.set_weights(vector)
         if not ok:
@@ -2081,6 +2176,7 @@ def miner_mode_report(
     ).to_dict()
     signed["receipt_root"] = runner.receipt_root
     signed["validator_profile"] = runner.profile
+    signed["serving"] = runner.serving
     if runner.reference_timing is not None:
         signed["reference_spot_check"] = runner.reference_timing.to_dict()
     for row in signed.get("miners") or []:

@@ -110,7 +110,23 @@ Calibration and the per model verifiability table wait for a GPU box. A threshol
 
 ## Earnings
 
-Serving pays from the serving pool by metered, billed usage per operator and model, gated on success rate, time to first token and time per token (`mt operator audit` recomputes the published settlement). The launch is meter only; the gates and the split are unchanged from the serving settlement.
+Two sources, both per arena.
+
+**Revenue share.** You receive 95% of the metered billing for the requests you served; Microtensor keeps 5%. A request that fell back to a frontier model is billed to the customer at the frontier list price and passed through; it is outside the 95%.
+
+**The serving pool.** Each arena's epoch emission sets aside a serving pool for inference miners, at most 10% at launch, and splits the rest equally across the five system pools (18% each). At epoch close every validator reads the published settlement, recomputes it, and pays the pool by billed score per operator: your share is your billed tokens at the reference rate over everyone's, after the gates. Serving emission that no served request earned is burned to the burn hotkey, the same rule as an empty system pool; it never flows back to the system pools.
+
+The cap slides with the arena's billing over the last 30 days, read from the gateway each epoch, and the freed share returns to the five system pools:
+
+| Monthly billing | Serving pool |
+|---|---|
+| below 5,000 USD | 10% |
+| below 50,000 USD | 5% |
+| above | 2% |
+
+**Admission floor.** For your first 3 epochs after admission you earn 1% of the serving pool even at zero traffic, so a new arena always has someone serving. After that, pay is usage only.
+
+**Gates.** Serving pay requires the success rate, TTFT p99, TPOT p99 and cheat share gates to pass, as above; a failed gate zeroes the epoch's score. `mt operator audit` recomputes the published settlement.
 
 ## Troubleshooting
 
