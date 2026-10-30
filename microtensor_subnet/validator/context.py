@@ -105,6 +105,7 @@ class EpochContext:
     r_class: dict[str, float] = field(default_factory=dict)
     floors: tuple[float, ...] = (0.8, 0.9, 0.95, 0.99)
     judge: compress.Judge | None = None
+    epoch_blocks: int = 50_400
 
     @property
     def grader(self) -> str:
