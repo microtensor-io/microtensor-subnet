@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-label="Figure 2: the four parts of a submission and the pools that score them">
+  <defs>
+    <style>
+      .s { font-family: Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .bx { fill: #161a22; stroke: #3a4150; stroke-width: 1.5; }
+      .h { font-size: 17px; font-weight: 600; fill: #eef0f5; }
+      .d { font-size: 13.5px; fill: #8b93a1; }
+      .tag { font-size: 12px; fill: #8b95ff; letter-spacing: 1px; }
+    </style>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7a8295"/></marker>
+    <marker id="g" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#34d399"/></marker>
+    <marker id="r" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f5b544"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="518" rx="18" fill="#0f1116" stroke="#262b36"/>
+  <text x="48" y="58" class="m" font-size="14" fill="#8b95ff">FIGURE 2</text>
+  <text x="48" y="90" class="s" font-size="24" font-weight="600" fill="#f2f4f8">A submission is a system, and each part is scored on its own</text>
+
+  <!-- system pool frame -->
+  <rect x="196" y="122" width="972" height="356" rx="16" fill="none" stroke="#6d7cff" stroke-opacity="0.6" stroke-dasharray="7 6"/>
+  <text x="214" y="148" class="m tag">SYSTEM POOL · the whole pipeline at quality floors 0.80 to 0.99, cost and latency against a frontier redo</text>
+
+  <!-- request -->
+  <rect x="40" y="206" width="128" height="64" rx="32" fill="#1b2033" stroke="#5a6385"/>
+  <text x="104" y="244" class="s h" text-anchor="middle">Request</text>
+  <path d="M168 238 H214" stroke="#7a8295" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- harness -->
+  <rect x="218" y="180" width="200" height="116" rx="12" class="bx"/>
+  <text x="236" y="212" class="s h">Harness</text>
+  <text x="236" y="238" class="s d">prompts, tools, checks</text>
+  <text x="236" y="258" class="s d">and retries</text>
+  <text x="236" y="280" class="m" font-size="12" fill="#6f7685">≤ 3 model calls per item</text>
+  <text x="236" y="322" class="m tag">HARNESS POOL</text>
+  <path d="M418 238 H446" stroke="#7a8295" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- slm -->
+  <rect x="450" y="180" width="200" height="116" rx="12" fill="#151a33" stroke="#6d7cff" stroke-width="1.8"/>
+  <text x="468" y="212" class="s h">Specialist model</text>
+  <text x="468" y="238" class="s d">fine tuned from the</text>
+  <text x="468" y="258" class="s d">arena's one base model</text>
+  <text x="468" y="280" class="m" font-size="12" fill="#6f7685">writes the draft answer</text>
+  <text x="468" y="322" class="m tag">SLM POOL</text>
+  <path d="M650 238 H678" stroke="#7a8295" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- router -->
+  <rect x="682" y="180" width="190" height="116" rx="12" class="bx"/>
+  <text x="700" y="212" class="s h">Router</text>
+  <text x="700" y="238" class="s d">p(draft passes)</text>
+  <text x="700" y="258" class="s d">≤ 1.5B parameters</text>
+  <text x="700" y="280" class="m" font-size="12" fill="#6f7685">Brier score and AUROC</text>
+  <text x="700" y="322" class="m tag">ROUTER POOL</text>
+  <path d="M872 238 H906" stroke="#7a8295" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- decision -->
+  <polygon points="950,198 992,238 950,278 908,238" fill="#1b2033" stroke="#5a6385" stroke-width="1.5"/>
+  <text x="950" y="234" class="s" font-size="12.5" fill="#d7dae3" text-anchor="middle">p ≥</text>
+  <text x="950" y="250" class="s" font-size="12.5" fill="#d7dae3" text-anchor="middle">floor?</text>
+
+  <path d="M992 238 H1034" stroke="#34d399" stroke-width="2" marker-end="url(#g)"/>
+  <text x="1000" y="228" class="m" font-size="12" fill="#34d399">yes</text>
+  <rect x="1038" y="206" width="112" height="64" rx="32" fill="#10261e" stroke="#34d399"/>
+  <text x="1094" y="244" class="s h" text-anchor="middle">Answer</text>
+
+  <!-- escalation -->
+  <path d="M950 278 V352" stroke="#f5b544" stroke-width="2" marker-end="url(#r)"/>
+  <text x="960" y="318" class="m" font-size="12" fill="#f5b544">no</text>
+  <rect x="826" y="356" width="248" height="100" rx="12" class="bx"/>
+  <text x="844" y="388" class="s h">Escalation</text>
+  <text x="844" y="412" class="s d">repairs the doubtful draft through</text>
+  <text x="844" y="432" class="s d">a frontier model on the relay</text>
+  <path d="M1074 406 H1094 V274" stroke="#7a8295" stroke-width="2" fill="none" marker-end="url(#a)"/>
+  <text x="600" y="412" class="m tag">ESCALATION POOL</text>
+  <text x="600" y="432" class="m" font-size="12" fill="#6f7685">cap: 1.5 × a frontier redo</text>
+</svg>

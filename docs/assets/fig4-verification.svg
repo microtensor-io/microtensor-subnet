@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-label="Figure 4: how validators verify a miner's evaluation">
+  <defs>
+    <style>
+      .s { font-family: Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .h { font-size: 17px; font-weight: 600; fill: #eef0f5; }
+      .k { font-size: 12px; letter-spacing: 1px; }
+      .d { font-size: 13.5px; fill: #a7adbb; }
+    </style>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7a8295"/></marker>
+    <marker id="r" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f87171"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="598" rx="18" fill="#0f1116" stroke="#262b36"/>
+  <text x="48" y="58" class="m" font-size="14" fill="#8b95ff">FIGURE 4</text>
+  <text x="48" y="90" class="s" font-size="24" font-weight="600" fill="#f2f4f8">Miners compute, validators verify: no validator serves every model</text>
+
+  <!-- miner -->
+  <rect x="40" y="124" width="300" height="300" rx="14" fill="#10261e" stroke="#2c6b52" stroke-width="1.5"/>
+  <text x="62" y="154" class="m k" fill="#34d399">MINER · OWN GPU</text>
+  <text x="62" y="186" class="s h">Batch job in pinned images</text>
+  <text x="62" y="216" class="s d">frozen artifact and weights</text>
+  <text x="62" y="236" class="s d">pulled from the mirror</text>
+  <text x="62" y="266" class="s d">vLLM pinned by digest,</text>
+  <text x="62" y="286" class="s d">greedy, batch invariant</text>
+  <text x="62" y="316" class="s d">recording gateway, frozen clock,</text>
+  <text x="62" y="336" class="s d">no network but the gateway</text>
+  <text x="62" y="372" class="m" font-size="12.5" fill="#6f7685">nothing timed here is</text>
+  <text x="62" y="390" class="m" font-size="12.5" fill="#6f7685">used for scoring</text>
+
+  <path d="M340 274 H378" stroke="#7a8295" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- transcript -->
+  <path d="M382 186 H520 L552 218 V362 H382 Z" fill="#1a1d25" stroke="#5a6385" stroke-width="1.5"/>
+  <path d="M520 186 V218 H552" fill="none" stroke="#5a6385" stroke-width="1.5"/>
+  <text x="398" y="214" class="s h">Transcript</text>
+  <text x="398" y="244" class="m" font-size="12" fill="#a7adbb">prompt tokens</text>
+  <text x="398" y="264" class="m" font-size="12" fill="#a7adbb">output tokens</text>
+  <text x="398" y="284" class="m" font-size="12" fill="#a7adbb">tool calls</text>
+  <text x="398" y="304" class="m" font-size="12" fill="#a7adbb">relay receipts</text>
+  <text x="398" y="336" class="m" font-size="12" fill="#f5b544">signed, sealed</text>
+  <text x="398" y="352" class="m" font-size="12" fill="#f5b544">under Freeze 2 root</text>
+
+  <path d="M552 240 C 575 240, 575 196, 600 196" stroke="#7a8295" stroke-width="2" fill="none" marker-end="url(#a)"/>
+  <path d="M552 320 C 575 320, 575 358, 600 358" stroke="#7a8295" stroke-width="2" fill="none" marker-end="url(#a)"/>
+
+  <!-- replay -->
+  <rect x="604" y="124" width="290" height="150" rx="14" fill="#151a33" stroke="#3b4399" stroke-width="1.5"/>
+  <text x="624" y="152" class="m k" fill="#8b95ff">VALIDATOR · CPU</text>
+  <text x="624" y="182" class="s h">Replay: every miner, every item</text>
+  <text x="624" y="208" class="s d">rerun the frozen code, answer calls</text>
+  <text x="624" y="228" class="s d">from the transcript in exact order</text>
+  <text x="624" y="248" class="s d">recompute tools, check relay signatures</text>
+
+  <!-- spot check -->
+  <rect x="604" y="288" width="290" height="150" rx="14" fill="#151a33" stroke="#3b4399" stroke-width="1.5"/>
+  <text x="624" y="316" class="m k" fill="#8b95ff">CHECKER · SAME GPU PROFILE</text>
+  <text x="624" y="346" class="s h">Spot check: 200+ sampled calls</text>
+  <text x="624" y="372" class="s d">exact token match against the</text>
+  <text x="624" y="392" class="s d">committed weights; time TTFT, TPOT</text>
+  <text x="624" y="412" class="s d">and memory against the base model</text>
+
+  <path d="M894 198 C 915 198, 915 270, 936 270" stroke="#7a8295" stroke-width="2" fill="none" marker-end="url(#a)"/>
+  <path d="M894 362 C 915 362, 915 290, 936 290" stroke="#7a8295" stroke-width="2" fill="none" marker-end="url(#a)"/>
+
+  <!-- outcome -->
+  <rect x="940" y="200" width="220" height="160" rx="14" fill="#1a1d25" stroke="#3a4150" stroke-width="1.5"/>
+  <text x="960" y="230" class="s h">Grade and score</text>
+  <text x="960" y="256" class="s d">labels released after</text>
+  <text x="960" y="276" class="s d">Freeze 2; lower bounds</text>
+  <text x="960" y="296" class="s d">per pool; signed report</text>
+  <text x="960" y="330" class="m" font-size="12" fill="#34d399">stake weighted median</text>
+  <text x="960" y="348" class="m" font-size="12" fill="#34d399">sets weights on chain</text>
+
+  <!-- fraud path -->
+  <path d="M749 438 V478" stroke="#f87171" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="380" y="482" width="780" height="70" rx="14" fill="#2c1414" stroke="#5a2323" stroke-width="1.5"/>
+  <text x="402" y="512" class="s" font-size="15.5" font-weight="600" fill="#fca5a5">Mismatch → public fraud evidence</text>
+  <text x="402" y="536" class="s" font-size="13.5" fill="#d4a3a3">Other validators re-run the cited calls; a confirmed miner scores zero and is banned for N epochs.</text>
+  <text x="62" y="512" class="s" font-size="13.5" fill="#6f7685">Replay proves the code, tools and</text>
+  <text x="62" y="530" class="s" font-size="13.5" fill="#6f7685">relay calls; spot checks prove the</text>
+  <text x="62" y="548" class="s" font-size="13.5" fill="#6f7685">model outputs came from the weights.</text>
+</svg>
