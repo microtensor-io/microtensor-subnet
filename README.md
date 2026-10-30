@@ -2,73 +2,62 @@
 
 # Microtensor
 
-### A Decentralized Network for Certified Inference Systems
+### Certified specialist models for real work
 
 Bittensor subnet 576 (testnet)
 
-[Mining](docs/miner_setup.md) •
-[Inference miner](docs/inference_miner.md) •
-[Compute miner](docs/compute_miner.md) •
-[Validator](docs/validator_setup.md) •
-[Mechanism](docs/mechanism.md) •
-[Dashboard](https://microtensor.cloud)
+[Website](https://microtensor.cloud) •
+[Docs](https://www.microtensor.cloud/docs/certified-inference) •
+[Arenas](https://github.com/microtensor-io/microtensor-arenas) •
+[Miner template](https://github.com/microtensor-io/microtensor-miner-template)
 
 </div>
 
 ---
 
-## What the network does
+## What Microtensor is
 
-Microtensor pays for specialised small language models and the machinery around them. A miner ships a system in four parts: a small model trained for one task, a harness that drives it with tools, a router that decides when the small model's answer can be trusted, and an escalation path that repairs a wrong answer with a frontier model. Validators run every part themselves on their own GPUs, against hidden items they decrypt only once an epoch opens, and score each part in its own pool.
+Microtensor is a Bittensor subnet that produces certified specialist AI systems: small language models fine tuned for one real task, wrapped in the code that makes them reliable, and proven on hidden tests before anyone can use them. The network pays the people who build the best system for each task and serves the winners as products through the Microtensor API.
 
-Nothing a miner claims is used. The artifact is fetched from Hugging Face at the revision committed on chain and executed inside a locked down Docker container that reaches only the validator's own services: an internal network to the gateway and nothing else, CPU, memory and process limits, read only mounts and every capability dropped.
+## Why
 
-## How an epoch works
+Frontier models answer everything, at frontier prices and frontier latency. Most production work is narrow: compact an agent's context, read a document page, write one database query. A small model trained for that one job runs on a single GPU, a laptop or a phone at a fraction of the cost, once someone has proven it is good enough. Microtensor is where that proof happens.
 
-1. **Commit, sealed.** A miner pays the arena fee, if the arena charges one, and commits one line on chain: arena, a digest of (Hugging Face user, artifact commit, secret salt), fee block and extrinsic index (0 and 0 for a free arena). The repositories stay private, so nothing can be copied during the window. `mt submit commit --open` still publishes the repository in the clear.
-2. **Reveal.** When the commit window closes a reveal window opens. The miner makes both repositories public and runs `mt submit reveal`, which sends the user, commit and salt signed by the hotkey. The server checks the digest; a missing or mismatched reveal is rejected, and validators recheck the digest themselves from the roster. A model or artifact whose weights duplicate an earlier commitment is rejected as a copy.
-3. **Roster and snapshot.** At commit close the server verifies every fee it charges and publishes a signed roster and a signed snapshot of previous bests.
-4. **Release.** Once the open block is final the server seals the epoch's encrypted item bundle to every permitted validator and publishes the seed, the hash of the open block hash and the arena id.
-5. **Evaluation.** Each validator serves the miner's model with vLLM, serves the miner's router, runs the miner's `main.py` in the sandbox, and runs the SLM, harness, router, escalation and system tests.
-6. **Report.** Each validator signs one report per epoch and sets weights from its own scores.
-7. **Ledger and archive.** The server publishes the stake weighted median across agreeing reports, applies the ladder, and mirrors the SLM pool winner privately to the archive.
+## What we build
 
-Five pools pay 20% each by rank (40 / 25 / 15 / 12 / 8). Every score is a one sided lower bound; a published score only moves when a new result beats the previous best for the same artifact by 0.01.
+Each task is an **arena**. An arena names one base model, the task, the hidden test items, the grader and the limits a system has to run within. Miners take the base model, make it better at that task, and ship a system in four parts:
 
-## Running your own evaluation
-
-Miners evaluate their own submissions and validators verify them. You declare a hardware profile (`P1` RTX 4090, `P2` A100, `P3` H100, `K` T4, `C` CPU), commit with it, and during the window run one batch job on your own GPU:
-
-```bash
-mt check-model --slm ./slm_repo --profile P1 --arena <arena>
-mt submit manifest --artifact ./artifact_repo --arena <arena> --slm ./slm_repo \
-  --slm-repo <user>/mt_slm_<arena> --slm-revision <sha> --profile P1
-mt submit commit --arena <arena> --hf-user <user> --artifact-sha <sha> --profile P1
-MT_ARENA=<arena> docker compose -f deploy/docker-compose.miner.yml up
-```
-
-The runner pulls your frozen files from the mirror, serves your model with the pinned engine, records every model, tool and relay call into a signed transcript and uploads it before Freeze 2. Validators replay the transcript on CPU and spot check sampled calls on the same profile. `mt miner replay` runs that replay locally so you can test determinism before uploading. Full guide: [docs/miner.md](docs/miner.md).
-
-## Repository map
-
-| Path | What it holds |
+| Part | What it does |
 |---|---|
-| `microtensor_subnet/chain` | commitments (`mt2` to `mt5`), epochs, weights, chain client |
-| `microtensor_subnet/core/transcript.py`, `profiles.py` | the miner transcript (canonical JSON, signature, merkle receipts) and hardware profiles |
-| `microtensor_subnet/validator/runner.py`, `preflight.py`, `receipts.py` | the miner job, the model pre-flight check, relay receipt verification |
-| `microtensor_subnet/cli/miner.py`, `check_model.py` | `mt miner run`, `mt miner replay`, `mt check-model` |
-| `microtensor_subnet/core/items.py` | item bundles, encryption, sealed keys, release manifests |
-| `microtensor_subnet/artifact` | the manifest contract, the allowed package list, validation |
-| `microtensor_subnet/validator` | the epoch pipeline: collect, sandbox, tests, scoring, report |
-| `microtensor_subnet/scoring` | lower bounds, pools, SQL execution grading |
-| `microtensor_subnet/cli/submit.py` | `mt submit manifest`, `validate`, `pay`, `commit`, `status` |
-| `microtensor_subnet/cli/epoch.py` | `mt epoch register-key`, `relay-token`, `run`, `loop` |
-| `microtensor_subnet/serving`, `microtensor_subnet/rigs` | the certified inference serving product and the compute pool |
-| `deploy` | the validator, sandbox, runner and replayer images and the validator and miner compose files |
+| Specialist model | the base model, fine tuned and compressed for the task |
+| Harness | the code that drives the model with tools and checks its answers |
+| Router | a small classifier that says when the specialist's answer can be trusted |
+| Escalation | the repair path that hands a doubtful answer to a frontier model |
 
-## Documentation
+The best system in each arena is certified and served as a product.
 
-The full documentation is on the site: https://www.microtensor.cloud/docs/certified-inference. The miner template is at https://github.com/microtensor-io/microtensor-miner-template.
+## How certification works
+
+Every epoch, miners run their system on fresh hidden items on their own GPU and upload a signed transcript of everything it did. Validators replay that transcript on CPU, grade the answers once the labels are released, and set weights. Nothing a miner claims is used; only what the replay confirms counts. The mechanism in full is in the [docs](https://www.microtensor.cloud/docs/certified-inference/system/decentralised-evaluation).
+
+## Arenas
+
+| Arena | Task | Base model |
+|---|---|---|
+| `ctx_compress` | compact a coding agent's context so the session can continue | Qwen2.5 Coder 7B Instruct |
+| `doc_parse` | turn a document page into clean, structured Markdown (draft) | LightOnOCR-2-1B |
+| `sql_gen` | answer a plain language question with one correct SQLite query | Qwen2.5 Coder 7B Instruct |
+
+Every arena's definition and page lives in [microtensor-arenas](https://github.com/microtensor-io/microtensor-arenas).
+
+## Products
+
+Certified systems are served through the Microtensor API and console at [microtensor.cloud](https://microtensor.cloud), priced per task, with the certification behind every model in the open.
+
+## Get started
+
+- **Mining**: the [miner guide](https://www.microtensor.cloud/docs/certified-inference/guides/mining), the [training guide](https://www.microtensor.cloud/docs/certified-inference/guides/training), the repository guide [docs/miner.md](docs/miner.md) and the [miner template](https://github.com/microtensor-io/microtensor-miner-template).
+- **Validating**: the [validator guide](https://www.microtensor.cloud/docs/certified-inference/guides/validating) and the repository guide [docs/validator_setup.md](docs/validator_setup.md).
 
 ## License
 
