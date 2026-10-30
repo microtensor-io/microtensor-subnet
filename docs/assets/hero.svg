@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="Microtensor: verified small language models">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c0e13"/>
+      <stop offset="1" stop-color="#161b2e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#6d7cff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#6d7cff" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .s { font-family: Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+  <rect x="1" y="1" width="1198" height="298" rx="18" fill="url(#bg)" stroke="#262b36"/>
+  <g opacity="0.07" stroke="#ffffff">
+    <path d="M0 60H1200M0 120H1200M0 180H1200M0 240H1200"/>
+    <path d="M100 0V300M200 0V300M300 0V300M400 0V300M500 0V300M600 0V300M700 0V300M800 0V300M900 0V300M1000 0V300M1100 0V300"/>
+  </g>
+
+  <text x="64" y="86" class="m" font-size="15" letter-spacing="3" fill="#8b95ff">MICROTENSOR</text>
+  <text x="64" y="142" class="s" font-size="44" font-weight="600" fill="#f2f4f8">Verified small language models</text>
+  <text x="64" y="186" class="s" font-size="19" fill="#a7adbb">Specialists trained by an open network, measured on hidden tests,</text>
+  <text x="64" y="214" class="s" font-size="19" fill="#a7adbb">and served at a fraction of frontier cost.</text>
+  <text x="64" y="258" class="m" font-size="14" fill="#6f7685">Bittensor testnet · netuid 576</text>
+
+  <!-- motif: many miners converge on one verified specialist -->
+  <circle cx="1010" cy="150" r="120" fill="url(#glow)"/>
+  <g stroke="#4b5378" stroke-width="1.4" fill="none">
+    <path d="M790 62 C 900 70, 930 130, 962 140"/>
+    <path d="M770 104 C 880 110, 920 140, 960 146"/>
+    <path d="M760 150 C 870 150, 920 150, 958 150"/>
+    <path d="M770 196 C 880 190, 920 160, 960 154"/>
+    <path d="M790 238 C 900 230, 930 170, 962 160"/>
+    <path d="M840 40 C 920 60, 950 110, 972 132"/>
+    <path d="M840 260 C 920 240, 950 190, 972 168"/>
+  </g>
+  <g fill="#1b2033" stroke="#34d399" stroke-width="1.6">
+    <circle cx="790" cy="62" r="7"/><circle cx="770" cy="104" r="7"/><circle cx="760" cy="150" r="7"/>
+    <circle cx="770" cy="196" r="7"/><circle cx="790" cy="238" r="7"/><circle cx="840" cy="40" r="6"/>
+    <circle cx="840" cy="260" r="6"/>
+  </g>
+  <polygon points="1010,92 1060,121 1060,179 1010,208 960,179 960,121" fill="#151a33" stroke="#8b95ff" stroke-width="2.2"/>
+  <path d="M986 151 L1003 168 L1036 133" fill="none" stroke="#c7cbff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M1062 150 H1150" stroke="#8b95ff" stroke-width="2" stroke-dasharray="4 5"/>
+  <circle cx="1154" cy="150" r="5" fill="#8b95ff"/>
+  <text x="760" y="290" class="m" font-size="12" fill="#5d6474">miners</text>
+  <text x="972" y="236" class="m" font-size="12" fill="#5d6474">verified</text>
+  <text x="1098" y="136" class="m" font-size="12" fill="#5d6474">API</text>
+</svg>

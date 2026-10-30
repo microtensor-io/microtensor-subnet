@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-label="Figure 1: cost per request against verifiable evidence">
+  <defs>
+    <style>
+      .s { font-family: Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+    <marker id="ax" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6f7685"/></marker>
+    <marker id="ac" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8b95ff"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="618" rx="18" fill="#0f1116" stroke="#262b36"/>
+  <text x="48" y="58" class="m" font-size="14" fill="#8b95ff">FIGURE 1</text>
+  <text x="48" y="90" class="s" font-size="24" font-weight="600" fill="#f2f4f8">Cheap specialists exist. Verifiable ones do not.</text>
+
+  <!-- target region -->
+  <rect x="150" y="128" width="400" height="190" rx="14" fill="#6d7cff" fill-opacity="0.07" stroke="#6d7cff" stroke-opacity="0.55" stroke-dasharray="6 6"/>
+  <text x="168" y="154" class="m" font-size="13" fill="#8b95ff">THE GAP: LOW COST AND VERIFIABLE</text>
+
+  <!-- axes -->
+  <path d="M140 540 H1130" stroke="#6f7685" stroke-width="1.5" marker-end="url(#ax)"/>
+  <path d="M140 540 V122" stroke="#6f7685" stroke-width="1.5" marker-end="url(#ax)"/>
+  <text x="1130" y="572" class="s" font-size="16" fill="#a7adbb" text-anchor="end">Cost per request</text>
+  <text x="96" y="330" class="s" font-size="16" fill="#a7adbb" text-anchor="middle" transform="rotate(-90 96 330)">Evidence a buyer can verify</text>
+  <text x="150" y="572" class="m" font-size="13" fill="#5d6474">low</text>
+  <text x="104" y="534" class="m" font-size="13" fill="#5d6474">low</text>
+
+  <!-- points -->
+  <circle cx="930" cy="400" r="13" fill="#2a2f3a" stroke="#c0c6d2" stroke-width="2"/>
+  <text x="952" y="396" class="s" font-size="17" font-weight="600" fill="#e6e8ee">Frontier APIs</text>
+  <text x="952" y="420" class="s" font-size="14" fill="#8b93a1">high quality, high cost,</text>
+  <text x="952" y="440" class="s" font-size="14" fill="#8b93a1">evaluated by the vendor</text>
+
+  <circle cx="600" cy="462" r="13" fill="#2a2f3a" stroke="#c0c6d2" stroke-width="2"/>
+  <text x="622" y="458" class="s" font-size="17" font-weight="600" fill="#e6e8ee">Public leaderboards</text>
+  <text x="622" y="482" class="s" font-size="14" fill="#8b93a1">test items leak into training data</text>
+
+  <circle cx="300" cy="490" r="13" fill="#2a2f3a" stroke="#c0c6d2" stroke-width="2"/>
+  <text x="322" y="486" class="s" font-size="17" font-weight="600" fill="#e6e8ee">Self reported fine tunes</text>
+  <text x="322" y="510" class="s" font-size="14" fill="#8b93a1">author's hardware, prompt and items</text>
+
+  <circle cx="300" cy="226" r="17" fill="#6d7cff" stroke="#c7cbff" stroke-width="2.5"/>
+  <path d="M291 226 L298 233 L311 219" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="330" y="222" class="s" font-size="18" font-weight="600" fill="#ffffff">Microtensor specialists</text>
+  <text x="330" y="246" class="s" font-size="14" fill="#b8bdf5">hidden items every epoch,</text>
+  <text x="330" y="266" class="s" font-size="14" fill="#b8bdf5">replayed and spot checked by validators</text>
+
+  <path d="M300 470 V 254" stroke="#8b95ff" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#ac)"/>
+  <text x="290" y="372" class="m" font-size="13" fill="#8b95ff" text-anchor="end">adversarial</text>
+  <text x="290" y="390" class="m" font-size="13" fill="#8b95ff" text-anchor="end">evaluation</text>
+
+  <text x="1150" y="600" class="s" font-size="12" fill="#5d6474" text-anchor="end">Conceptual illustration, not to scale</text>
+</svg>

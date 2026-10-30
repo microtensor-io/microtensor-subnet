@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-label="Figure 5: five pools of 20 percent, each paying its top five">
+  <defs>
+    <style>
+      .s { font-family: Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .p { font-size: 15px; font-weight: 600; fill: #eef0f5; }
+      .q { font-size: 12.5px; fill: #dfe3ff; }
+    </style>
+  </defs>
+  <rect x="1" y="1" width="1198" height="438" rx="18" fill="#0f1116" stroke="#262b36"/>
+  <text x="48" y="58" class="m" font-size="14" fill="#8b95ff">FIGURE 5</text>
+  <text x="48" y="90" class="s" font-size="24" font-weight="600" fill="#f2f4f8">Miner emissions: five pools, each paying its top five</text>
+
+  <!-- pools -->
+  <g>
+    <rect x="60" y="124" width="212" height="58" rx="8" fill="#6d7cff"/>
+    <rect x="276" y="124" width="212" height="58" rx="8" fill="#2a3060"/>
+    <rect x="492" y="124" width="212" height="58" rx="8" fill="#2a3060"/>
+    <rect x="708" y="124" width="212" height="58" rx="8" fill="#2a3060"/>
+    <rect x="924" y="124" width="216" height="58" rx="8" fill="#2a3060"/>
+    <text x="166" y="151" class="s p" text-anchor="middle">SLM</text>
+    <text x="166" y="171" class="m q" text-anchor="middle" fill="#e6e8ff">20%</text>
+    <text x="382" y="151" class="s p" text-anchor="middle">Harness</text>
+    <text x="382" y="171" class="m q" text-anchor="middle">20%</text>
+    <text x="598" y="151" class="s p" text-anchor="middle">Router</text>
+    <text x="598" y="171" class="m q" text-anchor="middle">20%</text>
+    <text x="814" y="151" class="s p" text-anchor="middle">Escalation</text>
+    <text x="814" y="171" class="m q" text-anchor="middle">20%</text>
+    <text x="1032" y="151" class="s p" text-anchor="middle">System</text>
+    <text x="1032" y="171" class="m q" text-anchor="middle">20%</text>
+  </g>
+
+  <!-- zoom -->
+  <path d="M60 182 L60 254 M272 182 L1140 254" stroke="#6d7cff" stroke-opacity="0.6" stroke-width="1.5" stroke-dasharray="5 5" fill="none"/>
+  <path d="M60 182 L60 254" stroke="#6d7cff" stroke-opacity="0.6" stroke-width="1.5"/>
+  <polygon points="60,182 272,182 1140,254 60,254" fill="#6d7cff" fill-opacity="0.06"/>
+
+  <!-- ranks within a pool: 40 25 15 12 8 of 1080 -->
+  <g>
+    <rect x="60" y="258" width="430" height="58" rx="8" fill="#4954c9"/>
+    <rect x="494" y="258" width="266" height="58" rx="8" fill="#3d47a8"/>
+    <rect x="764" y="258" width="158" height="58" rx="8" fill="#323a8a"/>
+    <rect x="926" y="258" width="126" height="58" rx="8" fill="#2a3170"/>
+    <rect x="1056" y="258" width="84" height="58" rx="8" fill="#232958"/>
+    <text x="275" y="285" class="s p" text-anchor="middle">#1</text>
+    <text x="275" y="305" class="m q" text-anchor="middle" fill="#e6e8ff">40%</text>
+    <text x="627" y="285" class="s p" text-anchor="middle">#2</text>
+    <text x="627" y="305" class="m q" text-anchor="middle" fill="#e6e8ff">25%</text>
+    <text x="843" y="285" class="s p" text-anchor="middle">#3</text>
+    <text x="843" y="305" class="m q" text-anchor="middle">15%</text>
+    <text x="989" y="285" class="s p" text-anchor="middle">#4</text>
+    <text x="989" y="305" class="m q" text-anchor="middle">12%</text>
+    <text x="1098" y="285" class="s p" text-anchor="middle">#5</text>
+    <text x="1098" y="305" class="m q" text-anchor="middle">8%</text>
+  </g>
+
+  <text x="60" y="358" class="s" font-size="14.5" fill="#a7adbb">Ranked by score within each pool; an earlier commit wins a tie. A partial submission, such as a router alone, competes in its own pool.</text>
+  <text x="60" y="384" class="s" font-size="14.5" fill="#a7adbb">A pool with no eligible entry is burned rather than paid to weak work. A ladder keeps each artifact's best score.</text>
+  <text x="60" y="414" class="s" font-size="12.5" fill="#5d6474">Testnet parameters; mainnet values are set from measured epochs.</text>
+</svg>
