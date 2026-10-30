@@ -21,13 +21,13 @@ Microtensor runs on Bittensor testnet as **netuid 576**.
 
 Microtensor is a decentralised network for producing **specialists**: small language models fine tuned from one fixed base for one narrow task, shipped with the harness, router and escalation code that make them usable, and evaluated on hidden items under conditions no participant controls. Every published score is a verified, reproducible measurement, not a self report.
 
-## The problem
+## The measurement gap
 
 Most production language model work is narrow and repetitive: compacting an agent's context, reading a document page, turning a question into a database query. Frontier models solve these tasks at frontier cost and latency. Small models can match them on a narrow distribution, and the literature on task specific fine tuning says so consistently, yet the numbers that would let anyone rely on a small model are the weakest part of the field.
 
 Public benchmarks leak into training data. Self reported evaluations run on the author's hardware, with the author's prompt, on items the author chose. Nothing distinguishes a model that generalises from one that memorised the test, and nothing ties a published number to the weights that produced it. A buyer who needs a specialist has no way to tell which one is real.
 
-## How Microtensor is different
+## Evaluation as the primary artifact
 
 Microtensor treats evaluation as the product. Each task is an **arena** with one base model, a hidden item pool and a grader, and an epoch is a measurement under fixed conditions:
 
@@ -46,29 +46,29 @@ Microtensor treats evaluation as the product. Each task is an **arena** with one
 | Reproducibility | rarely | none | deterministic replay of a signed transcript |
 | Incentive to be right | none | commercial | TAO emissions against stake weighted consensus |
 
-## How it works
+## Anatomy of an epoch
 
-### Arenas and epochs
+### Fixed conditions
 
 An arena fixes the task, the base model and its licence, the grader, the tools, the limits a system must run within and the number of hidden items per pool. The arena definition is frozen while it is live; a stronger base model is a new arena version. Epochs are measured in blocks: a commit window in which miners declare their revision and hardware profile, a window in which they run, and a grading margin in which validators report.
 
-### The system under test
+### What is measured
 
 A submission is a system of up to four parts: the specialist model, a harness that drives it with the arena's tools and checks its answers, a router that predicts whether the specialist's answer can be trusted, and an escalation path that repairs a doubtful answer through a frontier model. Each part is scored in its own pool, and a missing part is replaced by the arena's reference so the others can still be measured.
 
-### Measurement on the miner's hardware
+### Execution on declared hardware
 
 During the window the miner's frozen artifact and weights are pulled from a content addressed mirror and run inside official images pinned by digest: a deterministic inference engine, a sandbox with a frozen clock and no network, and a gateway that records every model, tool and relay call. The transcript is signed by the miner and sealed under a Merkle root at the close of the window.
 
-### Verification
+### Independent replay and re-execution
 
 Validators need no GPU. They replay the artifact's code on CPU with every model call answered from the transcript, every tool response recomputed and every relay receipt checked, and reject any request that differs from the recording. Checkers holding a GPU of the miner's declared profile re-run at least 200 sampled calls on the same engine and require an exact token match, time the calls against the base model on the same card, and publish any mismatch as evidence that others confirm before it counts.
 
-### Scoring and consensus
+### From answers to weights
 
 After the labels release, every answer is graded. The model pool score is the lower bound of the pass rate paired against the base on the same items, clustered by item family, multiplied by an efficiency term from the measured latency and memory. Twin items detect memorisation; canaries planted in earlier epochs detect training on released inputs. Validators sign one report per epoch and set weights; the server folds reports into a stake weighted median for publication and never decides a score itself.
 
-## The evaluation record
+## The chain of evidence
 
 ```text
 arena:        one task, one base model, one hidden pool per epoch
@@ -83,7 +83,7 @@ report:       signed by the validator; published figure = stake weighted median
 
 The miner signs what its system did; the validator signs what the replay confirmed; the chain carries the consensus. Anyone can verify each link offline.
 
-## Getting started
+## Join the network
 
 ```bash
 git clone https://github.com/microtensor-io/microtensor-subnet.git
