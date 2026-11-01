@@ -1,19 +1,23 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
 GRADER: Final[str] = "context_compression"
-FIELDS: Final[dict[str, type]] = {
-    "summary": str,
-    "files_touched": list,
-    "open_tasks": list,
-    "errors": list,
-    "decisions": list,
-}
+HEADINGS: Final[tuple[str, ...]] = (
+    "Primary request and intent",
+    "Key technical concepts",
+    "Files and code sections",
+    "Errors and fixes",
+    "Problem solving",
+    "All user messages",
+    "Pending tasks",
+    "Current work",
+    "Next step",
+)
+HEADING_MARK: Final[str] = "## "
 EXTENSIONS: Final[str] = (
     "py|pyi|js|ts|tsx|jsx|go|rs|java|rb|c|h|cc|cpp|hpp|toml|cfg|ini|yaml|yml|json|md|rst|txt|sh"
 )
@@ -65,7 +69,6 @@ ALLOWED: Final[frozenset[str]] = frozenset(
 KINDS: Final[tuple[str, ...]] = ("read", "edit", "test", "run", "install", "other")
 CHOICE = re.compile(r"^\(?([a-d])(?:\)|\.|:|\s|$)")
 CHOICE_NAMED = re.compile(r"\b(?:option|answer|choice)\s*\(?([a-d])\b")
-FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 BOUNDARY_BEFORE: Final[str] = r"(?<![\w.-])"
 LOOSE_BEFORE: Final[str] = r"(?<![\w-])"
 BOUNDARY_AFTER: Final[str] = r"(?![\w-])"
@@ -76,9 +79,11 @@ MAX_ANSWER_WORDS: Final[int] = 8
 class Judge:
     count_tokens: Callable[[str], int]
     answer: Callable[[str, Sequence[str]], list[str]]
-    pass_threshold: float = 0.8
-    min_output_tokens: int = 300
-    max_output_share: float = 0.1
+    pass_threshold: float = 0.6
+    min_output_tokens: int = 1000
+    max_output_share: float = 0.05
+    max_output_tokens: int = 3072
+    headings: tuple[str, ...] = HEADINGS
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,35 +106,33 @@ def mentioned(normalised_text: str, alias: str, *, loose: bool = False) -> bool:
     return re.search(pattern, normalised_text) is not None
 
 
-def parse(output: Any) -> Mapping[str, Any] | None:
-    if isinstance(output, Mapping):
-        return output
-    text = FENCE.sub("", str(output if output is not None else "").strip())
-    try:
-        found = json.loads(text)
-    except ValueError:
+def text_of(output: Any) -> str:
+    return output if isinstance(output, str) else ""
+
+
+def sections(text: str, headings: Sequence[str] = HEADINGS) -> dict[str, str] | None:
+    lines = text.strip().split("\n")
+    found: dict[str, list[str]] = {}
+    position = 0
+    current = ""
+    for line in lines:
+        cleaned = line.rstrip()
+        if position < len(headings) and cleaned == HEADING_MARK + headings[position]:
+            current = headings[position]
+            found[current] = []
+            position += 1
+            continue
+        if not current:
+            return None
+        found[current].append(cleaned)
+    if position != len(headings):
         return None
-    return found if isinstance(found, Mapping) else None
+    return {name: "\n".join(body).strip() for name, body in found.items()}
 
 
-def valid(found: Mapping[str, Any] | None) -> bool:
-    if found is None or set(found) != set(FIELDS):
-        return False
-    for key, kind in FIELDS.items():
-        value = found[key]
-        if not isinstance(value, kind):
-            return False
-        if isinstance(value, list) and not all(isinstance(entry, str) for entry in value):
-            return False
-    return True
-
-
-def values_text(found: Mapping[str, Any]) -> str:
-    parts: list[str] = []
-    for key in FIELDS:
-        value = found.get(key)
-        parts += value if isinstance(value, list) else [str(value or "")]
-    return "\n".join(str(p) for p in parts)
+def budget_for(input_tokens: int, judge: Judge) -> int:
+    share = int(judge.max_output_share * input_tokens)
+    return min(judge.max_output_tokens, max(judge.min_output_tokens, share))
 
 
 def identifiers(text: str) -> set[str]:
@@ -191,12 +194,9 @@ def probe_score(probe: Mapping[str, Any], answer: str) -> float:
     return 1.0 if any(mentioned(said, alias) for alias in aliases) else 0.0
 
 
-def continuation(
-    found: Mapping[str, Any], probes: Sequence[Mapping[str, Any]], judge: Judge
-) -> float:
+def continuation(summary: str, probes: Sequence[Mapping[str, Any]], judge: Judge) -> float:
     if not probes:
         return 1.0
-    summary = json.dumps(dict(found), ensure_ascii=False, indent=1)
     answers = judge.answer(summary, [str(p.get("question", "")) for p in probes])
     scores = [probe_score(p, a) for p, a in zip(probes, answers, strict=False)]
     return sum(scores) / len(probes)
@@ -207,24 +207,21 @@ def grade(
 ) -> Verdict:
     if judge is None:
         raise ValueError("context compression needs the probe agent and the tokenizer")
-    found = parse(output)
-    if not valid(found) or found is None:
-        return Verdict(0.0, False, "not a JSON object with the five fields")
-    raw = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+    raw = text_of(output)
+    if sections(raw, judge.headings) is None:
+        return Verdict(0.0, False, "the nine headings are not all present, in order, first")
     session = str(task.get("user", ""))
     input_tokens = int(label.get("input_tokens") or 0) or judge.count_tokens(
         str(task.get("system", "")) + session
     )
-    budget = int(label.get("budget_tokens") or 0) or max(
-        judge.min_output_tokens, int(judge.max_output_share * input_tokens)
-    )
+    budget = int(label.get("budget_tokens") or 0) or budget_for(input_tokens, judge)
     spent = judge.count_tokens(raw)
     if spent > budget:
         return Verdict(0.0, False, f"{spent} output tokens, over {budget}")
-    text = values_text(found)
+    text = raw.strip()
     kept = recall(text, label.get("facts") or [])
     invented = hallucination(text, session)
-    carried = continuation(found, label.get("probes") or [], judge)
+    carried = continuation(text, label.get("probes") or [], judge)
     score = (1 - invented) * (0.5 * kept + 0.5 * carried)
     reason = f"recall {kept:.2f}, invented {invented:.2f}, continuation {carried:.2f}"
     return Verdict(round(score, 6), score >= judge.pass_threshold, reason)

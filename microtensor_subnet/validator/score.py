@@ -150,10 +150,18 @@ def envelope_share(run: SlmRun, budgets: Mapping[str, Any]) -> float:
     ttft = float(budgets.get("ttft_ms") or 0)
     tpot = float(budgets.get("tpot_ms") or 0)
     rate = float(budgets.get("min_tokens_per_s") or 0)
+    held = budgets.get("long_input")
+    long: Mapping[str, Any] = held if isinstance(held, Mapping) else {}
+    above = int(long.get("above_tokens") or 0)
+    long_ttft = float(long.get("ttft_p95_ms") or 0)
+    long_e2e = float(long.get("e2e_p95_ms") or 0)
     slowest = 1000.0 / rate if rate > 0 else 0.0
     over = 0
     for r in answered:
-        late = bool(ttft) and r.ttft_ms > ttft
+        is_long = bool(above) and r.prompt_tokens > above
+        limit = long_ttft if is_long and long_ttft else ttft
+        late = bool(limit) and r.ttft_ms > limit
+        late = late or (is_long and bool(long_e2e) and r.latency_ms > long_e2e)
         slow = r.completion_tokens > 1 and (
             (bool(tpot) and r.tpot_ms > tpot) or (bool(slowest) and r.tpot_ms > slowest)
         )

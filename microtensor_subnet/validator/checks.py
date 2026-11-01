@@ -75,7 +75,9 @@ class Envelope:
             memory_cap=int(
                 budgets.get("memory_bytes") or budgets.get("vram_bytes") or DEFAULT_MEMORY_BYTES
             ),
-            ttft_ms=float(budgets.get("ttft_ms") or 0),
+            ttft_ms=float(
+                (budgets.get("long_input") or {}).get("ttft_p95_ms") or budgets.get("ttft_ms") or 0
+            ),
             tpot_ms=float(budgets.get("tpot_ms") or 0),
         )
 
