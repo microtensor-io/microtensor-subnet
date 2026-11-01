@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -81,7 +82,10 @@ class Item:
 
 def pack_bundle(files: Mapping[str, bytes]) -> bytes:
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as tar:
+    with (
+        gzip.GzipFile(fileobj=buffer, mode="wb", compresslevel=6, mtime=0) as packed,
+        tarfile.open(fileobj=packed, mode="w") as tar,
+    ):
         for name in sorted(files):
             if name.startswith("/") or ".." in name.split("/"):
                 raise ItemError(f"bundle member {name!r} is not a relative path")
