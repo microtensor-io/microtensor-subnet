@@ -113,6 +113,7 @@ class ProbeSpec:
     revision: str
     file: str
     max_tokens: int = DEFAULT_PROBE_TOKENS
+    max_input_tokens: int = MAX_MODEL_LEN
 
     @classmethod
     def from_definition(cls, definition: Mapping[str, Any]) -> ProbeSpec:
@@ -125,6 +126,7 @@ class ProbeSpec:
             revision=str(probe.get("revision") or "main"),
             file=str(probe["file"]),
             max_tokens=int(probe.get("max_tokens") or DEFAULT_PROBE_TOKENS),
+            max_input_tokens=int(probe.get("max_input_tokens") or MAX_MODEL_LEN),
         )
 
 
@@ -150,6 +152,7 @@ class ProbeAgent:
     model_dir: Path
     gpu: str
     max_tokens: int = DEFAULT_PROBE_TOKENS
+    max_model_len: int = MAX_MODEL_LEN
     memory_share: float = MEMORY_SHARE
     quantization: str = ""
     backend: str = VLLM_BACKEND
@@ -177,7 +180,7 @@ class ProbeAgent:
                     *llama_command(
                         f"{LLAMA_GUEST}/{self.model_file}",
                         threads=threads,
-                        max_model_len=MAX_MODEL_LEN,
+                        max_model_len=self.max_model_len,
                     ),
                     "--cache-reuse",
                     str(LLAMA_CACHE_REUSE),

@@ -541,9 +541,11 @@ def start_probe_agent(
     context.judge = compress.Judge(
         count_tokens=probe_judge.token_counter(tokenizer_dir),
         answer=agent.answer,
-        pass_threshold=float(grading.get("pass_threshold") or 0.8),
-        min_output_tokens=int(grading.get("min_output_tokens") or 300),
-        max_output_share=float(grading.get("max_output_share") or 0.1),
+        pass_threshold=float(grading.get("pass_threshold") or 0.6),
+        min_output_tokens=int(grading.get("min_output_tokens") or 1000),
+        max_output_share=float(grading.get("max_output_share") or 0.05),
+        max_output_tokens=int(grading.get("max_output_tokens") or 3072),
+        headings=tuple(str(h) for h in grading.get("headings") or compress.HEADINGS),
     )
     return agent
 
@@ -1212,6 +1214,7 @@ def start_miner_mode_probe(
         model_file.parent,
         "",
         max_tokens=spec.max_tokens,
+        max_model_len=spec.max_input_tokens,
         backend=probe_judge.LLAMA_BACKEND,
         model_file=model_file.name,
         threads=threads,
@@ -1226,9 +1229,11 @@ def start_miner_mode_probe(
     context.judge = compress.Judge(
         count_tokens=probe_judge.token_counter(tokenizer_dir),
         answer=agent.answer,
-        pass_threshold=float(grading.get("pass_threshold") or 0.8),
-        min_output_tokens=int(grading.get("min_output_tokens") or 300),
-        max_output_share=float(grading.get("max_output_share") or 0.1),
+        pass_threshold=float(grading.get("pass_threshold") or 0.6),
+        min_output_tokens=int(grading.get("min_output_tokens") or 1000),
+        max_output_share=float(grading.get("max_output_share") or 0.05),
+        max_output_tokens=int(grading.get("max_output_tokens") or 3072),
+        headings=tuple(str(h) for h in grading.get("headings") or compress.HEADINGS),
     )
     return agent
 
