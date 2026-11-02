@@ -40,7 +40,7 @@ mt submit commit --arena ctx_compress --hf-user <user> --artifact-sha <sha> --pr
 
 ## The evaluation window
 
-After Freeze 1 the server mirrors every revealed submission by content hash. Check your status at `GET /v2/arenas/<arena>/epochs/<n>/mirror`; only `mirrored` miners can run. When the window opens the inputs bundle (items, seeds, databases, reference harnesses, escalation drafts) is published, with no labels.
+A sealed commitment is revealed with `mt submit reveal --arena <arena>` at any time from the commit until Freeze 2. A reveal sent before Freeze 1 is held by the server and applied when the roster is built; keep both repositories private until Freeze 1, then make them public. `reveal_blocks` after Freeze 1 the server mirrors every revealed submission by content hash and retries a `missing` repository every ten minutes until Freeze 2. Check your entry at `GET /v2/arenas/<arena>/epochs/<n>/mirror` under `body.miners.<hotkey>`; only `mirrored` miners can run. Three blocks after the mirror pass the inputs bundle (items, seeds, databases, reference harnesses, escalation drafts) is published, with no labels. A commitment never revealed is `missed` at Freeze 2.
 
 Run the job:
 
@@ -78,7 +78,7 @@ Validators replay your `main.py` on CPU and answer every call from your transcri
 Test before uploading:
 
 ```bash
-mt miner replay --arena ctx_compress --epoch <n> \
+mt miner replay --arena ctx_compress --epoch <n> --home /var/lib/microtensor \
   --transcript /var/lib/microtensor/work/ctx_compress/<n>/transcript.json
 ```
 
