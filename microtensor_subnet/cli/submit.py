@@ -109,7 +109,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_common_arguments(commit)
     commit.set_defaults(handler=_commit)
 
-    reveal = inner.add_parser("reveal", help="reveal a sealed commitment once the window closes")
+    reveal = inner.add_parser(
+        "reveal", help="reveal a sealed commitment, any time before the epoch closes"
+    )
     reveal.add_argument("--arena", required=True)
     reveal.add_argument("--epoch", type=int, default=None, help="defaults to the latest epoch")
     reveal.add_argument("--server", default=PUBLIC_SERVER_URL)
@@ -335,8 +337,9 @@ def _commit(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
         print(f"sealed     {commitment.digest}")
-        print(f"reveal     saved to {path}; keep the repositories private until the window closes,")
-        print(f"           then run: mt submit reveal --arena {args.arena}")
+        print(f"reveal     saved to {path}; run mt submit reveal --arena {args.arena} any time")
+        print("           before the epoch closes; keep both repositories private until the")
+        print("           commit window closes, then make them public")
     else:
         print(
             f"artifact   https://huggingface.co/{commitment.artifact_repo}/tree/{commitment.artifact_sha}"
@@ -379,12 +382,16 @@ def _reveal(args: argparse.Namespace) -> int:
         return fail(f"the server refused the reveal: {exc.read().decode('utf-8', 'replace')[:300]}")
     except (urllib.error.URLError, ValueError) as exc:
         return fail(f"the reveal could not be sent: {exc}")
-    print(f"revealed   epoch {epoch}  {found.get('reveal_state')}")
+    state = found.get("reveal_state")
+    print(f"revealed   epoch {epoch}  {state}")
     print(
         f"artifact   https://huggingface.co/{found.get('artifact_repo')}/tree/{saved['artifact_sha']}"
     )
-    if found.get("reveal_state") == "unsealed":
-        print("make both repositories public now; validators fetch them at release")
+    if state == "held":
+        print("the server holds this reveal and applies it when the commit window closes;")
+        print("keep both repositories private until then, then make them public")
+    elif state == "unsealed":
+        print("make both repositories public now; the server mirrors them from the mirror pass")
     return 0
 
 
