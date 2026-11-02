@@ -387,11 +387,13 @@ def _reveal(args: argparse.Namespace) -> int:
     print(
         f"artifact   https://huggingface.co/{found.get('artifact_repo')}/tree/{saved['artifact_sha']}"
     )
-    if state == "held":
-        print("the server holds this reveal and applies it when the commit window closes;")
-        print("keep both repositories private until then, then make them public")
-    elif state == "unsealed":
-        print("make both repositories public now; the server mirrors them from the mirror pass")
+    if state == "unsealed":
+        after = int(found.get("publish_after_block") or 0)
+        if after:
+            print(f"keep both repos private until the commit window closes at block {after},")
+            print("then make them public; the server mirrors them from the mirror pass")
+        else:
+            print("make both repositories public now; the server mirrors them from the mirror pass")
     return 0
 
 
