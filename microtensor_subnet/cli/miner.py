@@ -5,7 +5,9 @@ import datetime as dt
 import json
 import logging
 import os
+import signal
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from microtensor_subnet.chain.client import ChainError
@@ -21,6 +23,7 @@ from microtensor_subnet.cli.common import (
 from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
 from microtensor_subnet.validator import items, runner, spotcheck
 from microtensor_subnet.validator.client import ServerClient, ServerError
+from microtensor_subnet.validator.sandbox import SandboxError
 from microtensor_subnet.validator.sandbox.docker import DockerError
 
 log = logging.getLogger("microtensor_subnet.cli.miner")
@@ -50,6 +53,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="the bearer token of the remote engine",
     )
     run.set_defaults(handler=_run)
+
+    upload = inner.add_parser("upload", help="send a finished transcript without running again")
+    upload.add_argument("--arena", required=True)
+    upload.add_argument("--epoch", type=int, required=True)
+    upload.add_argument("--transcript", type=Path, required=True)
+    upload.add_argument("--server", default=os.environ.get("MT_SERVER_URL", PUBLIC_SERVER_URL))
+    add_chain_arguments(upload)
+    add_common_arguments(upload)
+    upload.set_defaults(handler=_upload)
 
     replay = inner.add_parser("replay", help="replay a transcript on the CPU like a validator")
     _add_run_arguments(replay)
@@ -155,21 +167,16 @@ def _commitment(args: argparse.Namespace, config: Any, wallet: Any, hotkey: str)
     )
 
 
-def _run(args: argparse.Namespace) -> int:
-    config = chain_config(args)
-    wallet = open_wallet(config)
-    hotkey = hotkey_address(wallet)
-    _show_logs()
-    server = ServerClient(args.server, hotkey, wallet)
-    try:
-        epoch_index = _epoch_index(server, args.arena, args.epoch)
-        commitment = _commitment(args, config, wallet, hotkey)
-        settings = _settings(args, epoch_index, commitment)
-        upload = runner.run(settings, client=server, wallet=wallet)
-    except (runner.RunnerError, ServerError, DockerError, OSError) as exc:
-        return fail(str(exc))
-    print(f"epoch       {epoch_index}")
-    print(f"items       {upload.items}")
+def _stop_on_sigterm() -> None:
+    def stop(signum: int, frame: FrameType | None) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        log.warning("stopping; the finished rows are kept, run the same command to continue")
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
+def _print_receipt(upload: runner.Upload) -> None:
     print(f"transcript  {upload.transcript_sha256}")
     print(f"saved       {upload.path}")
     if upload.receipt:
@@ -177,6 +184,43 @@ def _run(args: argparse.Namespace) -> int:
         print(f"receipt     {upload.receipt.get('receipt_sig', '')}")
     else:
         print("upload      skipped (dry run)")
+
+
+def _upload(args: argparse.Namespace) -> int:
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    hotkey = hotkey_address(wallet)
+    _show_logs()
+    server = ServerClient(args.server, hotkey, wallet)
+    try:
+        upload = runner.upload_saved(
+            Path(args.transcript), args.arena, int(args.epoch), client=server
+        )
+    except (runner.RunnerError, ServerError, OSError, ValueError) as exc:
+        return fail(str(exc))
+    print(f"epoch       {args.epoch}")
+    print(f"items       {upload.items}")
+    _print_receipt(upload)
+    return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    hotkey = hotkey_address(wallet)
+    _show_logs()
+    _stop_on_sigterm()
+    server = ServerClient(args.server, hotkey, wallet)
+    try:
+        epoch_index = _epoch_index(server, args.arena, args.epoch)
+        commitment = _commitment(args, config, wallet, hotkey)
+        settings = _settings(args, epoch_index, commitment)
+        upload = runner.run(settings, client=server, wallet=wallet)
+    except (runner.RunnerError, ServerError, DockerError, SandboxError, OSError) as exc:
+        return fail(str(exc))
+    print(f"epoch       {epoch_index}")
+    print(f"items       {upload.items}")
+    _print_receipt(upload)
     return 0
 
 
@@ -195,7 +239,7 @@ def _replay(args: argparse.Namespace) -> int:
             recorded=recorded,
             artifact_dir=args.artifact,
         )
-    except (runner.RunnerError, ServerError, DockerError, OSError) as exc:
+    except (runner.RunnerError, ServerError, DockerError, SandboxError, OSError) as exc:
         return fail(str(exc))
     print(f"epoch       {epoch_index}")
     print(f"items       {outcome.items}")

@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import subprocess
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -140,6 +141,23 @@ def unpack(
 TESTNET = "test"
 TEMPLATE_REPO = "https://github.com/microtensor-io/microtensor-miner-template"
 TEMPLATE_COMMIT = "014dd81ceccc90b7d114b6772cf55ef0c59601e7"
+TEMPLATE_COMMITS = (
+    TEMPLATE_COMMIT,
+    "8e4f02e2f8e910161247dd0f7f4b66f62afdc617",
+    "643cc2dbbaf1ce0339a73bd8f38cf1e07a16dc2b",
+    "1ea91287bc1abe686f943f0bc4717fa01d32987a",
+    "04f4d89bb423a6885e76a827960a83bb43608556",
+    "b3127d6196995363f7e6829bf6b74d13cb9d804b",
+    "8ec565a8b48ce441cfe518e0d4e9d20685d1331d",
+    "bd48655af38b3e99120374543ca6ac2ecb68923e",
+    "4b5103e2d722201f16c289a209846c66bc0b35f6",
+    "3c7919338b5f764b65e051121eaa3b97bac9a16a",
+    "c091e9376eee92deddcda33f0ee2621ef5ed2d04",
+    "d53a2b51e80aea6409d8848cd2a92041b39f29cc",
+    "c2238e3a53959e99e1dd30203ed70fc9ab781470",
+)
+TEMPLATE_ATTEMPTS = 4
+TEMPLATE_PAUSE_SECONDS = 5.0
 TEMPLATE_FILES = ("main.py", "config.json", "requirements.txt")
 TEMPLATE_DIRS = ("harness", "escalation")
 
@@ -154,30 +172,39 @@ def _git(clone: Path, *args: str) -> str:
     return found.stdout.decode("utf-8").strip()
 
 
-def _fetch_template(clone: Path) -> None:
+def _fetch_template(clone: Path, commit: str = TEMPLATE_COMMIT) -> None:
     working = clone.with_name(clone.name + ".partial")
     shutil.rmtree(working, ignore_errors=True)
     shutil.rmtree(clone, ignore_errors=True)
     working.mkdir(parents=True)
     try:
         _git(working, "init", "--quiet")
-        _git(working, "fetch", "--quiet", "--depth", "1", TEMPLATE_REPO, TEMPLATE_COMMIT)
+        _git(working, "fetch", "--quiet", "--depth", "1", TEMPLATE_REPO, commit)
         _git(working, "checkout", "--quiet", "--detach", "FETCH_HEAD")
         head = _git(working, "rev-parse", "HEAD")
     except (OSError, subprocess.SubprocessError) as exc:
         shutil.rmtree(working, ignore_errors=True)
         reason = f"the reference harness could not be built from the template: {exc}"
         raise ReleaseError(reason) from exc
-    if head != TEMPLATE_COMMIT:
+    if head != commit:
         shutil.rmtree(working, ignore_errors=True)
-        raise ReleaseError(f"the template fetched {head}, not the pinned {TEMPLATE_COMMIT}")
+        raise ReleaseError(f"the template fetched {head}, not the pinned {commit}")
     working.rename(clone)
 
 
-def template_tree(cache_dir: Path) -> Path:
-    clone = cache_dir / f"reference-template-{TEMPLATE_COMMIT}"
-    if not (clone / "main.py").is_file():
-        _fetch_template(clone)
+def template_tree(cache_dir: Path, commit: str = TEMPLATE_COMMIT) -> Path:
+    clone = cache_dir / f"reference-template-{commit}"
+    if (clone / "main.py").is_file():
+        return clone
+    for attempt in range(1, TEMPLATE_ATTEMPTS + 1):
+        try:
+            _fetch_template(clone, commit)
+            return clone
+        except ReleaseError as exc:
+            if attempt == TEMPLATE_ATTEMPTS:
+                raise
+            log.warning("template %s fetch %d failed: %s", commit[:7], attempt, exc)
+            time.sleep(TEMPLATE_PAUSE_SECONDS * attempt)
     return clone
 
 

@@ -12,12 +12,27 @@ TIMEOUT_SECONDS: Final[float] = 180.0
 REPAIR: Final[str] = "repair"
 SYSTEM: Final[str] = "system"
 REFERENCE: Final[str] = "reference"
+UNREACHABLE: Final[str] = "unreachable"
+UNAVAILABLE: Final[str] = "unavailable"
+TRANSIENT: Final[frozenset[str]] = frozenset({UNREACHABLE, UNAVAILABLE})
+PROVIDER_CODES: Final[frozenset[str]] = frozenset({"provider_error", "timeout"})
+BUSY_STATUS: Final[int] = 429
+RETRY_SECONDS: Final[float] = 1800.0
+PAUSE_CAP_SECONDS: Final[float] = 60.0
+
+
+def retry_pause(attempt: int) -> float:
+    return min(PAUSE_CAP_SECONDS, 2.0 ** min(attempt, 16))
 
 
 class RelayError(RuntimeError):
     def __init__(self, code: str, detail: str = "") -> None:
         super().__init__(detail or code)
         self.code = code
+
+    @property
+    def transient(self) -> bool:
+        return self.code in TRANSIENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,17 +84,21 @@ class RelayClient:
                     path, json=body, headers={"authorization": f"Bearer {self.token}"}
                 )
         except httpx.HTTPError as exc:
-            raise RelayError("unreachable", f"the relay could not be reached: {exc}") from exc
+            raise RelayError(UNREACHABLE, f"the relay could not be reached: {exc}") from exc
         if response.status_code >= 400:
             detail: Any = {}
             try:
-                detail = response.json().get("detail", {})
+                parsed = response.json()
             except ValueError:
-                detail = {}
+                parsed = {}
+            detail = parsed.get("detail", {}) if isinstance(parsed, dict) else {}
             code = str(detail.get("code", "refused")) if isinstance(detail, dict) else "refused"
             message = (
                 str(detail.get("message", "")) if isinstance(detail, dict) else response.text[:200]
             )
+            busy = response.status_code == BUSY_STATUS or response.status_code >= 500
+            if busy and code not in PROVIDER_CODES:
+                code = UNAVAILABLE
             raise RelayError(code, message or f"the relay answered {response.status_code}")
         return dict(response.json())
 
@@ -90,7 +109,7 @@ class RelayClient:
                     path, params=params, headers={"authorization": f"Bearer {self.token}"}
                 )
         except httpx.HTTPError as exc:
-            raise RelayError("unreachable", f"the relay could not be reached: {exc}") from exc
+            raise RelayError(UNREACHABLE, f"the relay could not be reached: {exc}") from exc
         if response.status_code >= 400:
             raise RelayError("refused", f"the relay answered {response.status_code}")
         return dict(response.json())

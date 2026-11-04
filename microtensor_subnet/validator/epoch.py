@@ -836,6 +836,30 @@ BASE_ROWS: Final[str] = "base"
 MIRROR_COMMIT_BLOCK_KEYS: Final[tuple[str, ...]] = ("commit_block", "block", "committed_at")
 
 
+def unmirrored_records(
+    context: EpochContext, body: Mapping[str, Any], coldkeys: Mapping[str, str]
+) -> dict[str, MinerRecord]:
+    miners = body.get("miners")
+    listed: Mapping[str, Any] = miners if isinstance(miners, Mapping) else {}
+    found: dict[str, MinerRecord] = {}
+    for hotkey, row in context.roster.items():
+        raw = listed.get(hotkey)
+        entry: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+        state = str(entry.get("status") or "missing")
+        if state == MIRRORED:
+            continue
+        record = MinerRecord(
+            hotkey,
+            str(row.get("coldkey") or coldkeys.get(hotkey, "")),
+            str(entry.get("artifact_sha") or row.get("artifact_sha") or ""),
+            _commit_block(row),
+        )
+        reason = str(entry.get("reason") or "not on the mirror document")
+        record.failure = f"mirror: {state}: {reason}"
+        found[hotkey] = record
+    return found
+
+
 def mirrored_miners(document: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
     body = dict((document or {}).get("body") or {})
     found: dict[str, dict[str, Any]] = {}
@@ -1211,7 +1235,9 @@ def set_up_miner_mode(
     if transcripts.merkle_root(leaves) != root.lower():
         raise EpochError("the receipts document's leaves do not hash to its merkle root")
     warn_on_chain_root(chain, context, root)
-    mirror = mirrored_miners({"body": signed_body(client, context, key, MIRROR_KIND)})
+    mirror_body = signed_body(client, context, key, MIRROR_KIND)
+    mirror = mirrored_miners({"body": mirror_body})
+    coldkeys = chain_coldkeys(chain)
     close_block = int(receipts.get("close_block") or inputs.close_block or 0)
     close_hash = chain.block_hash(close_block) if close_block else context.open_block_hash
     try:
@@ -1261,7 +1287,8 @@ def set_up_miner_mode(
         server_key=key,
         reporter=reporter,
         chain=chain,
-        coldkeys=chain_coldkeys(chain),
+        coldkeys=coldkeys,
+        records=unmirrored_records(context, mirror_body, coldkeys),
         agent=agent,
         base_dirs=base_dirs,
         known_public=provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json"),
@@ -1277,7 +1304,10 @@ def set_up_miner_mode(
 
 def pinned_template(config: EpochConfig) -> duplicates.Template | None:
     try:
-        return duplicates.template_of(items.template_tree(config.cache_dir))
+        return duplicates.merged_templates(
+            duplicates.template_of(items.template_tree(config.cache_dir, commit))
+            for commit in items.TEMPLATE_COMMITS
+        )
     except (items.ReleaseError, OSError) as exc:
         log.error("the pinned template was not read; code is not compared this epoch: %s", exc)
         return None
@@ -1920,6 +1950,12 @@ def pull_router_weights(runner: MinerModeRunner) -> None:
             log.warning("%s router has no change sketch: %s", hotkey, exc)
 
 
+def outputs_checked(spot: spotcheck.SpotCheck | None, outputs: Mapping[str, Sequence[int]]) -> bool:
+    if spot is None or spot.mismatched or spot.unsettled or not spot.matched:
+        return False
+    return any(item_id in outputs for item_id, _ in spot.timing)
+
+
 def duplicates_phase(runner: MinerModeRunner, queue: Sequence[str]) -> None:
     entries: list[duplicates.Entry] = []
     for hotkey in queue:
@@ -1931,6 +1967,7 @@ def duplicates_phase(runner: MinerModeRunner, queue: Sequence[str]) -> None:
         held = runner.miner_transcripts.get(hotkey)
         clean = record is not None and not record.failure
         part.outputs = duplicates.outputs_of(held) if clean and held is not None else {}
+        part.outputs_checked = outputs_checked(runner.spot_checks.get(hotkey), part.outputs)
         entries.append(part)
     zeroed = duplicates.compare(entries)
     for hotkey, record in runner.records.items():

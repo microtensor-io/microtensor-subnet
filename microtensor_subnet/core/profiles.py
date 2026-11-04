@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -35,7 +35,14 @@ GPU_QUERY: Final[tuple[str, ...]] = (
     "--query-gpu=compute_cap",
     "--format=csv,noheader",
 )
+CARD_QUERY: Final[tuple[str, ...]] = (
+    "nvidia-smi",
+    "--query-gpu=index,name",
+    "--format=csv,noheader",
+)
 QUERY_SECONDS: Final[float] = 20.0
+PUBLISHED_CARDS: Final[dict[str, tuple[str, ...]]] = {"P1": ("RTX 4090",)}
+BRAND_WORDS: Final[tuple[str, ...]] = ("NVIDIA", "GeForce")
 
 
 class ProfileError(ValueError):
@@ -110,6 +117,32 @@ def compute_caps(run: Any = subprocess.run) -> list[str]:
     return [line.strip() for line in str(found.stdout).splitlines() if line.strip()]
 
 
+def card_names(run: Any = subprocess.run) -> dict[str, str]:
+    try:
+        found = run(
+            list(CARD_QUERY),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=QUERY_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if found.returncode != 0:
+        return {}
+    names: dict[str, str] = {}
+    for line in str(found.stdout).splitlines():
+        index, _, name = line.partition(",")
+        if index.strip() and name.strip():
+            names[index.strip()] = name.strip()
+    return names
+
+
+def plain_card(name: str) -> str:
+    return " ".join(word for word in name.split() if word not in BRAND_WORDS)
+
+
 @dataclass(frozen=True, slots=True)
 class Detection:
     profile: str
@@ -131,6 +164,26 @@ def detect(env: Mapping[str, str] | None = None, run: Any = subprocess.run) -> D
         if profile:
             return Detection(profile, tuple(caps), "nvidia-smi")
     return Detection(CPU_PROFILE, tuple(caps), "nvidia-smi" if caps else "no gpu")
+
+
+def card_problem(profile: str, gpus: Sequence[str], run: Any = subprocess.run) -> str:
+    published = PUBLISHED_CARDS.get(profile)
+    if published is None:
+        found = detect({}, run)
+        if found.profile == profile:
+            return ""
+        return f"this host is profile {found.profile} ({found.source}), not {profile}"
+    names = card_names(run)
+    if not names:
+        return f"nvidia-smi lists no GPU; profile {profile} needs {' or '.join(published)}"
+    for gpu in gpus[: tensor_parallel(profile)]:
+        held = names.get(str(gpu), "")
+        if plain_card(held) not in published:
+            return (
+                f"GPU {gpu} is {held or 'not on this host'}; profile {profile} is published for "
+                f"{' or '.join(published)} only, because another card can produce other tokens"
+            )
+    return ""
 
 
 def allowed_profiles(definition: Mapping[str, Any]) -> tuple[str, ...]:

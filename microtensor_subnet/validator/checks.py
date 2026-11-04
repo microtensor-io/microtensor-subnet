@@ -12,6 +12,7 @@ from microtensor_subnet.artifact import contract, gguf
 from microtensor_subnet.artifact.params import (
     ParameterError,
     format_problem,
+    index_problem,
     model_parameters,
     safetensors_in,
 )
@@ -204,6 +205,9 @@ def config_problem(context: EpochContext, config: Mapping[str, Any]) -> str:
 def file_problem(context: EpochContext, artifact: Artifact) -> str:
     if artifact.slm_dir is None:
         return ""
+    unlisted = index_problem(artifact.slm_dir)
+    if unlisted:
+        return unlisted
     try:
         found = format_problem(artifact.slm_dir, allowed_formats(context))
     except (OSError, ParameterError) as exc:

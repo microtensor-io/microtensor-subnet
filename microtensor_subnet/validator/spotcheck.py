@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -37,16 +38,21 @@ class SpotCheckError(RuntimeError):
 
 def _float(row: Mapping[str, Any], key: str) -> float:
     try:
-        return float(row.get(key) or 0.0)
-    except (TypeError, ValueError):
+        found = float(row.get(key) or 0.0)
+    except (TypeError, ValueError, OverflowError):
         return 0.0
+    return found if math.isfinite(found) else 0.0
 
 
 def _int(row: Mapping[str, Any], key: str) -> int:
     try:
         return int(row.get(key) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _listed(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, (list, tuple)) else []
 
 
 @dataclass(slots=True)
@@ -100,11 +106,11 @@ class SpotCheck:
     @classmethod
     def from_dict(cls, row: Mapping[str, Any]) -> SpotCheck:
         timing: dict[tuple[str, int], tuple[float, float]] = {}
-        for entry in row.get("timing") or []:
+        for entry in _listed(row.get("timing")):
             if isinstance(entry, (list, tuple)) and len(entry) == 4:
                 try:
                     timing[(str(entry[0]), int(entry[1]))] = (float(entry[2]), float(entry[3]))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
         latency = row.get("router_latency_p95_ms")
         return cls(
@@ -226,14 +232,90 @@ def stands(entry: Mapping[str, Any]) -> bool:
 def _take_reference(found: Coordinated, block: Mapping[str, Any]) -> None:
     if TIMING_KEYS & set(block):
         found.reference = ReferenceTiming.from_dict(block)
-    for row in block.get(DRAFTS_KEY) or []:
+    for row in _listed(block.get(DRAFTS_KEY)):
         if isinstance(row, Mapping) and row.get("item_id"):
             found.drafts[str(row["item_id"])] = str(row.get("draft") or "")
     found.drafts_complete = found.drafts_complete or bool(block.get(DRAFTS_DONE_KEY))
-    for row in block.get(ROWS_KEY) or []:
+    for row in _listed(block.get(ROWS_KEY)):
         if isinstance(row, Mapping) and row.get("item_id"):
             found.rows[(str(row.get("pool") or ""), str(row["item_id"]))] = dict(row)
     found.rows_complete = found.rows_complete or bool(block.get(ROWS_DONE_KEY))
+
+
+def _take_miner(
+    found: Coordinated,
+    epoch_index: int,
+    hotkey: str,
+    row: Mapping[str, Any],
+    leaves: Mapping[str, str] | None,
+) -> None:
+    if leaves is not None:
+        leaf = str(leaves.get(hotkey) or "").lower()
+        if not leaf or str(row.get("transcript_sha256") or "").lower() != leaf:
+            return
+    spot = row.get("spot_check")
+    if isinstance(spot, Mapping):
+        found.spot_checks[hotkey] = SpotCheck.from_dict(spot)
+        found.failures.pop(hotkey, None)
+    elif row.get("failure") and hotkey not in found.spot_checks:
+        found.failures[hotkey] = str(row.get("failure"))[:FAILURE_CHARS]
+    canary = row.get("canary")
+    if isinstance(canary, Mapping):
+        found.canaries[hotkey] = {
+            "checked": _int(canary, "checked"),
+            "hits": _int(canary, "hits"),
+        }
+    flags = found.flags.setdefault(hotkey, [])
+    seen = {flag.key for flag in flags}
+    for entry in _listed(row.get("evidence")):
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("kind", "")) not in FLAG_KINDS or not stands(entry):
+            continue
+        flag = Flag(
+            epoch_index,
+            hotkey,
+            str(entry.get("kind", "")),
+            str(entry.get("item_id", "")),
+            _int(entry, "call_seq"),
+        )
+        if flag.key not in seen:
+            seen.add(flag.key)
+            flags.append(flag)
+
+
+def _take_report(
+    found: Coordinated,
+    epoch_index: int,
+    body: Mapping[str, Any],
+    leaves: Mapping[str, str] | None,
+) -> None:
+    found.coordinators.add(str(body.get("coordinator_hotkey", "")))
+    found.complete = found.complete or bool(body.get("complete"))
+    reference = body.get("reference")
+    if isinstance(reference, Mapping):
+        try:
+            _take_reference(found, reference)
+        except Exception as exc:
+            log.warning("a coordinator reference block was skipped: %s", exc)
+    miners = body.get("miners")
+    for hotkey, row in miners.items() if isinstance(miners, Mapping) else ():
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            _take_miner(found, epoch_index, str(hotkey), row, leaves)
+        except Exception as exc:
+            log.warning("the coordinator row for %s was skipped: %s", hotkey, exc)
+    for outcome in _listed(body.get("appeals")):
+        if isinstance(outcome, Mapping) and bool(outcome.get("upheld")):
+            found.upheld.add(
+                (
+                    str(outcome.get("miner_hotkey", "")),
+                    str(outcome.get("kind", "")),
+                    str(outcome.get("item_id", "")),
+                    _int(outcome, "call_seq"),
+                )
+            )
 
 
 def merge(
@@ -243,63 +325,16 @@ def merge(
 ) -> Coordinated:
     found = Coordinated(epoch_index=epoch_index)
     for body in reports:
-        if not isinstance(body, Mapping) or not verify_report(body):
-            log.warning("a coordinator report for epoch %d does not verify; skipped", epoch_index)
-            continue
-        if body.get("epoch_index") != epoch_index:
-            continue
-        found.coordinators.add(str(body.get("coordinator_hotkey", "")))
-        found.complete = found.complete or bool(body.get("complete"))
-        reference = body.get("reference")
-        if isinstance(reference, Mapping):
-            _take_reference(found, reference)
-        for hotkey, row in (body.get("miners") or {}).items():
-            if not isinstance(row, Mapping):
+        try:
+            if not isinstance(body, Mapping) or not verify_report(body):
+                log.warning(
+                    "a coordinator report for epoch %d does not verify; skipped", epoch_index
+                )
                 continue
-            hotkey = str(hotkey)
-            if leaves is not None:
-                leaf = str(leaves.get(hotkey) or "").lower()
-                if not leaf or str(row.get("transcript_sha256") or "").lower() != leaf:
-                    continue
-            spot = row.get("spot_check")
-            if isinstance(spot, Mapping):
-                found.spot_checks[hotkey] = SpotCheck.from_dict(spot)
-                found.failures.pop(hotkey, None)
-            elif row.get("failure") and hotkey not in found.spot_checks:
-                found.failures[hotkey] = str(row.get("failure"))[:FAILURE_CHARS]
-            canary = row.get("canary")
-            if isinstance(canary, Mapping):
-                found.canaries[hotkey] = {
-                    "checked": _int(canary, "checked"),
-                    "hits": _int(canary, "hits"),
-                }
-            flags = found.flags.setdefault(hotkey, [])
-            seen = {flag.key for flag in flags}
-            for entry in row.get("evidence") or []:
-                if not isinstance(entry, Mapping):
-                    continue
-                if str(entry.get("kind", "")) not in FLAG_KINDS or not stands(entry):
-                    continue
-                flag = Flag(
-                    epoch_index,
-                    hotkey,
-                    str(entry.get("kind", "")),
-                    str(entry.get("item_id", "")),
-                    _int(entry, "call_seq"),
-                )
-                if flag.key not in seen:
-                    seen.add(flag.key)
-                    flags.append(flag)
-        for outcome in body.get("appeals") or []:
-            if isinstance(outcome, Mapping) and bool(outcome.get("upheld")):
-                found.upheld.add(
-                    (
-                        str(outcome.get("miner_hotkey", "")),
-                        str(outcome.get("kind", "")),
-                        str(outcome.get("item_id", "")),
-                        _int(outcome, "call_seq"),
-                    )
-                )
+            if body.get("epoch_index") == epoch_index:
+                _take_report(found, epoch_index, body, leaves)
+        except Exception as exc:
+            log.warning("a coordinator report for epoch %d was skipped: %s", epoch_index, exc)
     return found
 
 
@@ -309,11 +344,11 @@ def receipt_leaves(client: Any, arena_id: str, epoch_index: int, key: str) -> di
         if not document:
             return {}
         items.verify_document(document, key)
+        leaves = dict(document.get("body") or {}).get("leaves") or {}
+        return {str(h): str(s).lower() for h, s in dict(leaves).items() if h and s}
     except Exception as exc:
         log.warning("the receipts of epoch %d were not read: %s", epoch_index, exc)
         return {}
-    leaves = dict(document.get("body") or {}).get("leaves") or {}
-    return {str(h): str(s).lower() for h, s in dict(leaves).items() if h and s}
 
 
 def fetch(
@@ -335,9 +370,13 @@ def fetch(
     except Exception as exc:
         log.warning("the coordinator document for epoch %d does not verify: %s", epoch_index, exc)
         return None
-    body = dict(document.get("body") or {})
-    held = receipt_leaves(client, arena_id, epoch_index, key) if leaves is None else leaves
-    return merge(epoch_index, body.get("reports") or [], held)
+    try:
+        body = dict(document.get("body") or {})
+        held = receipt_leaves(client, arena_id, epoch_index, key) if leaves is None else leaves
+        return merge(epoch_index, _listed(body.get("reports")), held)
+    except Exception as exc:
+        log.warning("the coordinator document for epoch %d was not read: %s", epoch_index, exc)
+        return None
 
 
 def ban_epochs(definition: Mapping[str, Any]) -> int:

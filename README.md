@@ -117,7 +117,7 @@ An epoch is a measurement under fixed conditions, separated into phases by two f
 
 1. **Commit.** The miner commits its artifact revision, weights digest and declared hardware profile on chain, with a submission fee set per arena.
 2. **Freeze 1.** Commitments close. The owner mirrors every committed artifact and weight file by sha256; a miner whose files are missing or do not match is excluded.
-3. **Evaluation window.** Task inputs and per item seeds are released, without labels. Each miner pulls its own frozen files from the mirror and runs every pool in the official images, on its own GPU or against a remote engine, which record every model, tool and relay call into a signed transcript. A miner may upload at most 3 times per epoch; a reupload replaces the earlier transcript.
+3. **Evaluation window.** Task inputs and per item seeds are released, without labels. Each miner pulls its own frozen files from the mirror and runs every pool in the official images on its own RTX 4090, which record every model, tool and relay call into a signed transcript. A miner may upload at most 3 times per epoch; a reupload replaces the earlier transcript.
 4. **Freeze 2.** Uploads close. Transcript receipts are sealed under a Merkle root posted on chain, so no transcript can change afterwards.
 5. **Grading.** Labels and probe questions are released. Validators replay and grade every miner, apply the coordinator's spot checks, zero any duplicated parts, then sign one report each.
 6. **Weights.** Validators set weights with commit reveal; the published figure is the stake weighted median of the reports that agree on bundle, seed, roster and snapshot.
@@ -134,17 +134,17 @@ The miner performs the expensive computation; validators verify it cheaply. No v
 
 **Spot check (GPU, sampled).** A coordinator run by the subnet owner loads the committed weights and re-runs a sample of model calls set by the arena (200 by default), requiring an exact token match. Validators read its signed reports from the server. The sample is drawn from the block hash and the coordinator's hotkey after Freeze 2, weighted toward twin items. Faulted calls are not checked. A call only becomes evidence when a second run after an engine restart agrees with the first and both differ from the miner. A miner that falsified 5% of its calls escapes a 200 call check with probability $0.95^{200} \approx 3.5 \times 10^{-5}$. On the profile card, the coordinator also times first token latency, time per output token and peak memory against the base model on the same card, so nothing timed on the miner's machine is used. On any other card it checks tokens only. A miner's own timings are never used: without a measurement from the profile card, speed limits pass, speed earns no efficiency gain, and memory is computed from the model.
 
-**Determinism.** Exact matching is possible because a profile is one GPU architecture, one driver line and one image digest, decoding is greedy, and the inference engine runs in batch invariant mode. Different architectures disagree under bf16, so a profile never mixes them, and a new card joins a profile only after a pair test.
+**Determinism.** Exact matching is possible because a profile is one GPU architecture, one driver line and one image digest, decoding is greedy, and the inference engine runs one request at a time on P1 and in batch invariant mode on P2 and P3. Different architectures disagree under bf16, so a profile never mixes them, and a new card joins a profile only after a pair test.
 
 | Profile | Hardware | Precision | Batching |
 |---|---|---|---|
-| P1 | RTX 4090 (sm89); L4 and L40S after the pair test | bf16 | batch invariant |
+| P1 | RTX 4090 only | bf16 | single sequence |
 | P2 | A100 80 GB (sm80) | bf16 | batch invariant |
 | P3 | H100 (sm90); H200 after the pair test | bf16 | batch invariant |
 | K | 2 × T4 (sm75), small models only | fp16 | single sequence |
 | C | x86 CPU, GGUF | GGUF | single sequence |
 
-**Duplicates (CPU, every validator).** Each submission is compared with all earlier ones, part by part, and the earliest commit on chain wins. The model is compared by its weights hash, by a fixed sketch of its change from the arena's base model, and by its outputs on common items. Harness and repair code are compared after removing comments, whitespace and names, ignoring anything in the pinned miner template. Routers are compared by weights hash and change sketch. A duplicated part scores zero in its own pool and in the system pool; the miner's other parts are still scored.
+**Duplicates (CPU, every validator).** Each submission is compared with all earlier ones, part by part, and the earliest commit on chain wins. The model is compared by its weights hash, by a fixed sketch of its change from the arena's base model, and by its outputs on common items. Harness and repair code are compared after removing comments, whitespace and names, ignoring anything in the pinned list of miner template commits. Routers are compared by weights hash and change sketch. A duplicated part scores zero in its own pool and in the system pool; the miner's other parts are still scored.
 
 **Disputes.** A mismatch that both coordinator runs agree on is published as evidence in its signed report. Validators check the signatures and the evidence, then zero the miner for a number of epochs set by the arena. The server never bans anyone. A miner can appeal within one epoch; the coordinator reruns the call and a match lifts the flag.
 
@@ -214,7 +214,7 @@ Every known attack maps to a check that any validator can run on its own.
 
 | Role | Hardware | What you do | Guide |
 |---|---|---|---|
-| **System miner** | A GPU of an accepted profile (P1 today), local or as a remote engine | Fine tune the arena base, build the harness, router and escalation, commit, run your evaluation each epoch | [docs/miner.md](docs/miner.md) · [miner template](https://github.com/microtensor-io/microtensor-miner-template) |
+| **System miner** | One RTX 4090 with driver 580 or newer, 8 CPU cores, 32 GB RAM and 100 GB of disk (profile P1) | Fine tune the arena base, build the harness, router and escalation, commit, run your evaluation each epoch | [docs/miner.md](docs/miner.md) · [miner template](https://github.com/microtensor-io/microtensor-miner-template) |
 | **Validator** | One CPU box (8 cores, 32 GB RAM, 200 GB NVMe) | Replay, grade and set weights; spot checks come from the coordinator | [docs/validator_setup.md](docs/validator_setup.md) |
 | **Inference miner** | GPUs that hold a certified system | Serve customer requests through the gateway; paid on metered usage | [docs/inference_miner.md](docs/inference_miner.md) |
 

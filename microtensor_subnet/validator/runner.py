@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import os
 import secrets
 import subprocess
 import time
@@ -49,12 +50,20 @@ from microtensor_subnet.validator.items import (
     template_harness,
     verify_document,
 )
-from microtensor_subnet.validator.relay import REPAIR, RelayClient, RelayError, TicketDesk
+from microtensor_subnet.validator.relay import (
+    REPAIR,
+    RETRY_SECONDS,
+    RelayClient,
+    RelayError,
+    TicketDesk,
+    retry_pause,
+)
 from microtensor_subnet.validator.relay import SYSTEM as SYSTEM_PURPOSE
 from microtensor_subnet.validator.sandbox import (
     GATEWAY_PORT,
     MAIN_PORT,
     READY_SECONDS,
+    Call,
     Limits,
     SandboxHost,
     call_main,
@@ -94,6 +103,9 @@ REFERENCE_ESCALATION: Final[str] = "escalation"
 REFERENCE_ROUTER: Final[str] = "router"
 VARIANT_PREFIX: Final[str] = "variant-"
 TRANSCRIPT_FILE: Final[str] = "transcript.json"
+DRY_TRANSCRIPT_FILE: Final[str] = "transcript.dry.json"
+JOURNAL_FILE: Final[str] = "rows.jsonl"
+DRY_JOURNAL_FILE: Final[str] = "rows.dry.jsonl"
 RECEIPT_FILE: Final[str] = "receipt.json"
 MIRRORED: Final[str] = "mirrored"
 RUNNING: Final[str] = "running"
@@ -101,7 +113,11 @@ UPLOADED: Final[str] = "uploaded"
 ERRORS_TEXT: Final[str] = "the draft returned the wrong result"
 DEFAULT_CONTEXT: Final[int] = 8192
 ENGINE_ATTEMPTS: Final[int] = 3
-UNREACHABLE: Final[str] = "unreachable"
+ROW_ATTEMPTS: Final[int] = 3
+RECORD_SECONDS: Final[float] = 600.0
+UPLOAD_RETRY_SECONDS: Final[float] = 3 * 24 * 3600.0
+UPLOAD_PAUSE_CAP_SECONDS: Final[float] = 300.0
+ENGINE_PORT: int = 8000
 PROGRESS_SECONDS: Final[float] = 15.0
 ENV_RUNNER_DIGEST: Final[str] = "MT_RUNNER_DIGEST"
 IMAGE_KINDS: Final[tuple[str, ...]] = ("engine", "runner", "sandbox")
@@ -129,6 +145,7 @@ class RunnerConfig:
     sandbox_memory: str = SANDBOX_MEMORY
     sandbox_pids: int = SANDBOX_PIDS
     request_seconds: float = REQUEST_SECONDS
+    record_seconds: float = RECORD_SECONDS
     slm_ready_seconds: int = SLM_READY_SECONDS
     host_services_port: int = 9702
     slm_memory_share: float = 0.0
@@ -478,6 +495,66 @@ class Miner:
         return self.manifest.has
 
 
+def row_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (str(row.get("pool", "")), str(row.get("condition", "")), str(row.get("item_id", "")))
+
+
+@dataclass(slots=True)
+class Journal:
+    path: Path
+    identity: dict[str, Any]
+    rows: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
+
+    @classmethod
+    def opened(cls, path: Path, identity: Mapping[str, Any]) -> Journal:
+        journal = cls(path, dict(identity))
+        journal._load()
+        return journal
+
+    def _load(self) -> None:
+        raw = self.path.read_bytes() if self.path.is_file() else b""
+        good = 0
+        position = raw.find(b"\n")
+        start = 0
+        while position >= 0:
+            try:
+                parsed = json.loads(raw[start:position])
+            except ValueError:
+                break
+            if not good:
+                if parsed != {"journal": self.identity}:
+                    log.warning("%s belongs to other inputs; starting over", self.path.name)
+                    break
+            elif isinstance(parsed, dict):
+                self.rows[row_key(parsed)] = parsed
+            else:
+                break
+            good = start = position + 1
+            position = raw.find(b"\n", start)
+        if not good:
+            self.path.write_bytes(self._line({"journal": self.identity}))
+            return
+        if good < len(raw):
+            with self.path.open("r+b") as handle:
+                handle.truncate(good)
+        if self.rows:
+            log.info("%s holds %d finished rows; they are reused", self.path.name, len(self.rows))
+
+    @staticmethod
+    def _line(value: Mapping[str, Any]) -> bytes:
+        return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    def take(self, pool: str, condition: str, item_id: str) -> dict[str, Any] | None:
+        return self.rows.get((pool, condition, item_id))
+
+    def add(self, row: Mapping[str, Any]) -> None:
+        self.rows[row_key(row)] = dict(row)
+        with self.path.open("ab") as handle:
+            handle.write(self._line(row))
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
 @dataclass(slots=True)
 class Session:
     config: RunnerConfig
@@ -506,6 +583,7 @@ class Session:
     tickets: dict[tuple[str, str], str] = field(default_factory=dict)
     remote_engine: RemoteEngine | None = None
     bridge: EngineBridge | None = None
+    journal: Journal | None = None
 
     @property
     def limits(self) -> Limits:
@@ -537,30 +615,35 @@ class Session:
     def _start_remote_engine(self) -> None:
         engine = RemoteEngine(self.config.engine_url, self.config.engine_key)
         self.remote_engine = engine
-        entry = self.miner.entry
-        name = f"miner-{(entry.weights_sha256 or entry.artifact_sha)[:32]}"
         try:
             card = engine.health().get("gpu_name") or "an unknown card"
             log.info("the remote engine runs on %s", card)
-            engine.prepare(name, entry.slm_files)
-            engine.start(
-                name,
-                engine_command(
-                    compat.GUEST,
-                    profile=self.profile,
-                    max_model_len=max_model_len_of(self.definition, self.miner.config),
-                    memory_share=memory_share_of(
-                        self.definition, self.profile, self.config.slm_memory_share
-                    ),
-                ),
-                engine_env(self.profile),
-                float(self.config.slm_ready_seconds),
-            )
+            engine.prepare(self._remote_name(), self.miner.entry.slm_files)
+            self._launch_remote(engine)
         except RemoteEngineError as exc:
             raise RunnerError(f"the remote engine: {exc}") from exc
         self.bridge = EngineBridge(engine)
         self.bridge.start()
         self.engine_url = self.bridge.url
+
+    def _remote_name(self) -> str:
+        entry = self.miner.entry
+        return f"miner-{(entry.weights_sha256 or entry.artifact_sha)[:32]}"
+
+    def _launch_remote(self, engine: RemoteEngine) -> None:
+        engine.start(
+            self._remote_name(),
+            engine_command(
+                compat.GUEST,
+                profile=self.profile,
+                max_model_len=max_model_len_of(self.definition, self.miner.config),
+                memory_share=memory_share_of(
+                    self.definition, self.profile, self.config.slm_memory_share
+                ),
+            ),
+            engine_env(self.profile),
+            float(self.config.slm_ready_seconds),
+        )
 
     def _engine(self) -> None:
         if self.config.remote:
@@ -606,7 +689,7 @@ class Session:
                 )
             )
         self.engine_container = name
-        self.engine_url = f"http://{self.docker.address(name, self.network)}:8000"
+        self.engine_url = f"http://{self.docker.address(name, self.network)}:{ENGINE_PORT}"
         client = SlmClient(self.engine_url)
         deadline = time.monotonic() + self.config.slm_ready_seconds
         while time.monotonic() < deadline:
@@ -647,7 +730,7 @@ class Session:
             gpu=self.config.gpus[0],
             config=self.miner.config,
             limits=self.limits,
-            device="cpu" if self.config.remote else "",
+            device="cpu",
         )
 
     def start_gateway(self) -> None:
@@ -746,6 +829,34 @@ class Session:
         wait_main(self.docker, name, self.main_url)
         return self.main_url
 
+    def stop_main(self) -> None:
+        if self.main_container:
+            self.docker.kill(self.main_container)
+        self.main_container = ""
+        self.main_url = ""
+        self.current_tree = None
+
+    def revive_engine(self, *, force: bool = False) -> None:
+        if self.remote_engine is not None:
+            try:
+                if force or not self.remote_engine.ready():
+                    log.warning("the remote engine is not ready; starting it again")
+                    self._launch_remote(self.remote_engine)
+            except RemoteEngineError as exc:
+                raise RunnerError(f"the remote engine: {exc}") from exc
+            return
+        if not self.engine_container:
+            return
+        running = not force and not self.docker.exited(self.engine_container)
+        if running and SlmClient(self.engine_url).ready():
+            return
+        log.warning("the engine is not answering; starting it again")
+        self.docker.kill(self.engine_container)
+        self.engine_container = ""
+        self._engine()
+        if self.session is not None:
+            self.session.slm_url = self.engine_url
+
     def close(self) -> None:
         if self.key:
             self.served.detach(self.key)
@@ -770,17 +881,21 @@ class Session:
         prompt = render_prompt(slm_prompt_of(self.definition), item.task)
         max_tokens = max_tokens_of(self.definition)
         stop = stop_of(self.definition)
-        client = SlmClient(self.engine_url)
         last = ""
         for attempt in range(1, ENGINE_ATTEMPTS + 1):
+            client = SlmClient(self.engine_url, timeout=self.config.record_seconds)
             try:
                 found = client.generate(
                     prompt, max_tokens=max_tokens, stop=stop, seed=item.seed, logprobs=1
                 )
+                if found.text and not found.output_tokens:
+                    raise SlmError("the engine answered with text but no token ids")
             except SlmError as exc:
                 last = str(exc)
                 log.warning("%s: engine call %d failed: %s", item.item_id, attempt, exc)
                 time.sleep(2.0 * attempt)
+                if attempt < ENGINE_ATTEMPTS:
+                    self.revive_engine(force=attempt > 1)
                 continue
             call = transcript.slm_call(
                 0,
@@ -817,7 +932,7 @@ class Session:
         planned = self.planned_repairs + len(self.inputs.pool(SYSTEM, self.config.item_limit))
         return max(1, self.allowance_micros // max(1, planned))
 
-    def ticket(self, item_id: str, purpose: str) -> str:
+    def ticket(self, item_id: str, purpose: str, *, renew: bool = False) -> str:
         if self.config.dry_run:
             return ""
         if self.desk is None:
@@ -825,13 +940,18 @@ class Session:
                 f"{item_id}: no relay token, so no {purpose} ticket; nothing uploaded"
             )
         found = self.tickets.get((item_id, purpose))
-        if found is None:
+        if found is None or renew:
+            if found is not None:
+                self.desk.forget(found)
             found = self._issue(self.desk, item_id, purpose)
             self.tickets[(item_id, purpose)] = found
         return found
 
     def _issue(self, desk: TicketDesk, item_id: str, purpose: str) -> str:
-        for attempt in range(1, ENGINE_ATTEMPTS + 1):
+        deadline = time.monotonic() + RETRY_SECONDS
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 return desk.issue(
                     miner=self.miner.hotkey,
@@ -840,13 +960,13 @@ class Session:
                     cap_micros=self.cap_micros,
                 )
             except RelayError as exc:
-                if exc.code != UNREACHABLE or attempt == ENGINE_ATTEMPTS:
+                if not exc.transient or time.monotonic() >= deadline:
                     raise RunnerError(
                         f"{item_id}: the relay refused the {purpose} ticket ({exc.code}: {exc}); "
                         "nothing uploaded"
                     ) from exc
-                time.sleep(2.0 * attempt)
-        raise RunnerError(f"{item_id}: no {purpose} ticket; nothing uploaded")
+                log.warning("%s: no %s ticket yet, retrying: %s", item_id, purpose, exc)
+                time.sleep(retry_pause(attempt))
 
     def run_main(
         self,
@@ -861,26 +981,78 @@ class Session:
     ) -> dict[str, Any]:
         if self.session is None:
             raise RunnerError("the recording session is not open")
-        url = self.main(tree)
-        request = {**body, "seed": item.seed}
-        self.session.begin_item(
-            item.item_id,
-            item.seed,
-            pool=pool,
-            condition=condition,
-            request=transcript.compact_request(request),
-            purpose=purpose,
-            cap_micros=self.cap_micros if purpose else 0,
-        )
-        call = call_main(url, route, request, timeout=self.config.request_seconds)
-        output: Any = call.body if call.ok else {"error": call.error}
-        entry = self.session.recorded(output)
-        self.session.finish_item()
-        return entry
+        failures = 0
+        outages = 0
+        outage_ends = 0.0
+        renew = False
+        while True:
+            request = {**body, "seed": item.seed}
+            if purpose:
+                request["ticket"] = self.ticket(item.item_id, purpose, renew=renew)
+            url = self.main(tree)
+            self.session.begin_item(
+                item.item_id,
+                item.seed,
+                pool=pool,
+                condition=condition,
+                request=transcript.compact_request(request),
+                purpose=purpose,
+                cap_micros=self.cap_micros if purpose else 0,
+            )
+            call = call_main(url, route, request, timeout=self.config.record_seconds)
+            output: Any = call.body if call.ok else {"error": call.error}
+            problem, source = self._row_problem(call)
+            if not problem:
+                entry = self.session.recorded(output)
+                self.session.finish_item()
+                return entry
+            self.session.finish_item()
+            renew = True
+            self.stop_main()
+            where = f"{item.item_id} ({pool} {condition})"
+            log.warning("%s has to run again: %s", where, problem)
+            if source == services.RELAY_SOURCE:
+                outages += 1
+                outage_ends = outage_ends or time.monotonic() + RETRY_SECONDS
+                if time.monotonic() < outage_ends:
+                    time.sleep(retry_pause(outages))
+                    continue
+            failures += 1
+            if failures >= ROW_ATTEMPTS or source == services.RELAY_SOURCE:
+                raise RunnerError(
+                    f"{where} failed {failures} times: {problem}; nothing uploaded. "
+                    "Run the same command to continue from this row"
+                )
+            time.sleep(2.0 * failures)
+            if source == services.ENGINE_SOURCE:
+                self.revive_engine(force=failures > 1)
+
+    def _row_problem(self, call: Call) -> tuple[str, str]:
+        if call.error == "timeout":
+            limit = self.config.record_seconds
+            return f"main.py did not answer within {limit:.0f} s", services.SERVICE_SOURCE
+        if call.error.startswith("unreachable") or not self.docker.running(self.main_container):
+            detail = self.docker.logs(self.main_container, 40)[-300:]
+            return f"main.py died: {call.error} {detail}".strip(), services.SERVICE_SOURCE
+        return self.session.row_problem() if self.session is not None else ("", "")
 
     def record(self, entry: dict[str, Any]) -> None:
         self.entries.append(entry)
         self.progress.step(str(entry.get("pool", "")), str(entry.get("condition", "")))
+
+    def reused(self, item: InputItem, pool: str, condition: str) -> bool:
+        kept = None
+        if self.journal is not None:
+            kept = self.journal.take(pool, condition, item.item_id)
+        if kept is None:
+            return False
+        self.record(kept)
+        return True
+
+    def finish(self, entry: dict[str, Any]) -> None:
+        if self.journal is not None:
+            self.journal.add(entry)
+        self.record(entry)
 
     def harness_tree(self) -> Path:
         if {"harness", "escalation"} & self.miner.has:
@@ -907,11 +1079,14 @@ class Session:
     def run_pools(self) -> None:
         limit = self.config.item_limit
         for item in [*self.inputs.originals(SLM, limit), *self.inputs.twins(SLM, limit)]:
-            self.record(self.generate(item, SLM, transcript.MINER))
+            if not self.reused(item, SLM, transcript.MINER):
+                self.finish(self.generate(item, SLM, transcript.MINER))
         harness_items = self.inputs.pool(HARNESS, limit)
         if "harness" in self.miner.has:
             for item in harness_items:
-                self.record(
+                if self.reused(item, HARNESS, transcript.MINER):
+                    continue
+                self.finish(
                     self.run_main(
                         self.miner.artifact_dir,
                         contract.HARNESS_RUN,
@@ -922,26 +1097,29 @@ class Session:
                     )
                 )
         for item in harness_items:
-            self.record(self.generate(item, HARNESS, transcript.BARE))
+            if not self.reused(item, HARNESS, transcript.BARE):
+                self.finish(self.generate(item, HARNESS, transcript.BARE))
         for index, tree in enumerate(self.reference_trees(), start=1):
+            condition = transcript.reference_condition(index)
             for item in harness_items:
-                self.record(
+                if self.reused(item, HARNESS, condition):
+                    continue
+                self.finish(
                     self.run_main(
                         tree,
                         contract.HARNESS_RUN,
                         item,
                         HARNESS,
-                        transcript.reference_condition(index),
+                        condition,
                         {"item_id": item.item_id, "task": dict(item.task)},
                     )
                 )
         if "escalation" in self.miner.has:
             for item in self.inputs.pool(ESCALATION, limit):
                 draft = self.inputs.drafts.get(item.item_id)
-                if draft is None:
+                if draft is None or self.reused(item, ESCALATION, transcript.REPAIR):
                     continue
-                opaque = self.ticket(item.item_id, REPAIR)
-                self.record(
+                self.finish(
                     self.run_main(
                         self.miner.artifact_dir,
                         contract.ESCALATION_REPAIR,
@@ -954,27 +1132,27 @@ class Session:
                             "draft": draft,
                             "trace": "",
                             "errors": ERRORS_TEXT,
-                            "ticket": opaque,
                         },
                         purpose=REPAIR,
                     )
                 )
         system_items = self.inputs.pool(SYSTEM, limit)
         for floor in floors_of(self.definition):
+            condition = transcript.system_condition(floor)
             for item in system_items:
-                opaque = self.ticket(item.item_id, SYSTEM_PURPOSE)
-                self.record(
+                if self.reused(item, SYSTEM, condition):
+                    continue
+                self.finish(
                     self.run_main(
                         self.harness_tree(),
                         contract.SYSTEM_RUN,
                         item,
                         SYSTEM,
-                        transcript.system_condition(floor),
+                        condition,
                         {
                             "item_id": item.item_id,
                             "task": dict(item.task),
                             "floor": floor,
-                            "ticket": opaque,
                         },
                         purpose=SYSTEM_PURPOSE,
                     )
@@ -1143,14 +1321,10 @@ def fetch_miner(
     )
 
 
-def check_profile(entry: MirrorEntry) -> None:
-    detected = profiles.detect()
-    if detected.profile != entry.profile:
-        raise RunnerError(
-            f"this host is profile {detected.profile} ({detected.source}); the commitment "
-            f"declares {entry.profile}. Run on the declared hardware or set "
-            f"{profiles.ENV_PROFILE}={entry.profile} to override"
-        )
+def check_profile(entry: MirrorEntry, gpus: Sequence[str]) -> None:
+    problem = profiles.card_problem(entry.profile, gpus)
+    if problem:
+        raise RunnerError(f"{problem}. The commitment declares {entry.profile}")
 
 
 def runner_digest(config: RunnerConfig, images: Images) -> str:
@@ -1161,9 +1335,23 @@ def runner_digest(config: RunnerConfig, images: Images) -> str:
     return images.runner_digest
 
 
+def relay_token(client: ServerClient, arena_id: str) -> dict[str, Any]:
+    deadline = time.monotonic() + RETRY_SECONDS
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return client.miner_relay_token(arena_id)
+        except ServerError as exc:
+            if not exc.retryable or time.monotonic() >= deadline:
+                raise
+            log.warning("no miner relay token yet, retrying: %s", exc)
+            time.sleep(retry_pause(attempt))
+
+
 def open_relay(client: ServerClient, config: RunnerConfig) -> tuple[TicketDesk | None, int]:
     try:
-        token = client.miner_relay_token(config.arena_id)
+        token = relay_token(client, config.arena_id)
     except ServerError as exc:
         log.warning("no miner relay token (%s); escalation and system calls are refused", exc)
         return None, 0
@@ -1220,6 +1408,70 @@ class Upload:
     items: int
 
 
+def send_transcript(
+    client: ServerClient, arena_id: str, epoch_index: int, signed: Mapping[str, Any], path: Path
+) -> dict[str, Any]:
+    compressed = gzip.compress(transcript.encode(signed))
+    deadline = time.monotonic() + UPLOAD_RETRY_SECONDS
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            receipt = client.upload_transcript(arena_id, epoch_index, compressed)
+            break
+        except ServerError as exc:
+            if exc.retryable and time.monotonic() < deadline:
+                pause = min(UPLOAD_PAUSE_CAP_SECONDS, 2.0 ** min(attempt, 16))
+                log.warning("upload %d failed, retrying in %.0f s: %s", attempt, pause, exc)
+                time.sleep(pause)
+                continue
+            raise RunnerError(
+                f"upload: {exc}. The transcript is kept at {path}; send it with "
+                f"mt miner upload --arena {arena_id} --epoch {epoch_index} --transcript {path}"
+            ) from exc
+    if str(receipt.get("transcript_sha256") or "").lower() != transcript.transcript_sha256(signed):
+        raise RunnerError("the server receipt names another transcript sha256")
+    path.with_name(RECEIPT_FILE).write_text(json.dumps(receipt, indent=2), "utf-8")
+    return receipt
+
+
+def upload_saved(path: Path, arena_id: str, epoch_index: int, *, client: ServerClient) -> Upload:
+    found = load_transcript(path)
+    if str(found.get("arena_id")) != arena_id or str(found.get("epoch")) != str(epoch_index):
+        raise RunnerError(f"{path} is for {found.get('arena_id')} epoch {found.get('epoch')}")
+    if str(found.get("miner_hotkey")) != client.hotkey:
+        raise RunnerError(f"{path} belongs to {found.get('miner_hotkey')}, not this hotkey")
+    if not transcript.verify_signature(found):
+        raise RunnerError(f"{path} is not signed by {client.hotkey}")
+    receipt = send_transcript(client, arena_id, epoch_index, found, path)
+    items = found.get("items") or []
+    return Upload(transcript.transcript_sha256(found), path, receipt, len(items))
+
+
+def journal_identity(config: RunnerConfig, miner: Miner, inputs: Inputs) -> dict[str, Any]:
+    return {
+        "arena_id": config.arena_id,
+        "epoch": config.epoch_index,
+        "manifest_sha256": miner.entry.manifest_sha256,
+        "weights_sha256": miner.entry.weights_sha256,
+        "inputs_sha256": inputs.bundle_sha256,
+    }
+
+
+def signed_again(path: Path, body: Mapping[str, Any], wallet: Any) -> dict[str, Any]:
+    try:
+        held = transcript.decode(path.read_bytes()) if path.is_file() else {}
+    except (OSError, transcript.TranscriptError):
+        held = {}
+    if (
+        held
+        and transcript.canonical_equal(transcript.unsigned(held), transcript.unsigned(body))
+        and transcript.verify_signature(held)
+    ):
+        return held
+    return transcript.sign(body, wallet)
+
+
 def services_listen() -> str:
     return "0.0.0.0" if own_container() else host_ip()  # noqa: S104
 
@@ -1237,7 +1489,8 @@ def run(
         raise RunnerError(str(exc)) from exc
     entry = mirror_entry(client, config, hotkey, key)
     if not config.remote:
-        check_profile(entry)
+        check_profile(entry, config.gpus)
+    engine.sweep()
     config.work_dir.mkdir(parents=True, exist_ok=True)
     inputs = fetch_inputs(client, config, key, definition)
     miner = fetch_miner(client, config, definition, entry)
@@ -1264,6 +1517,10 @@ def run(
         progress=Progress(
             None if config.dry_run else client, config.arena_id, config.epoch_index, hotkey, 0
         ),
+        journal=Journal.opened(
+            config.work_dir / (DRY_JOURNAL_FILE if config.dry_run else JOURNAL_FILE),
+            journal_identity(config, miner, inputs),
+        ),
     )
     session.progress.total = session.plan()
     try:
@@ -1275,22 +1532,15 @@ def run(
         session.close()
         served.stop()
     body = build_transcript(config, miner, images, session.entries)
-    signed = transcript.sign(body, wallet)
-    raw = transcript.encode(signed)
+    path = config.work_dir / (DRY_TRANSCRIPT_FILE if config.dry_run else TRANSCRIPT_FILE)
+    signed = signed_again(path, body, wallet)
     sha = transcript.transcript_sha256(signed)
-    path = config.work_dir / TRANSCRIPT_FILE
-    path.write_bytes(raw)
+    saving = path.with_name(path.name + ".part")
+    saving.write_bytes(transcript.encode(signed))
+    os.replace(saving, path)
     receipt: dict[str, Any] = {}
     if not config.dry_run:
-        try:
-            receipt = client.upload_transcript(
-                config.arena_id, config.epoch_index, gzip.compress(raw)
-            )
-        except ServerError as exc:
-            raise RunnerError(f"upload: {exc}") from exc
-        if str(receipt.get("transcript_sha256") or "").lower() != sha:
-            raise RunnerError("the server receipt names another transcript sha256")
-        (config.work_dir / RECEIPT_FILE).write_text(json.dumps(receipt, indent=2), "utf-8")
+        receipt = send_transcript(client, config.arena_id, config.epoch_index, signed, path)
         session.progress.uploaded()
     return Upload(transcript_sha256=sha, path=path, receipt=receipt, items=len(session.entries))
 

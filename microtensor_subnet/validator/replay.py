@@ -389,6 +389,10 @@ class Replayer:
         if len(calls) != 1 or str(calls[0].get("kind", "")) != transcripts.KIND_SLM:
             return "extra call" if len(calls) > 1 else "missing call"
         call = calls[0]
+        if call.get("fault"):
+            return "direct call carries a fault"
+        if call.get("output_text") and not call.get("output_tokens"):
+            return "direct call has text but no tokens"
         prompt = render_prompt(self.context.slm_prompt, item.task)
         if str(call.get("prompt_sha256", "")) != transcripts.prompt_sha256(prompt):
             return "slm prompt differs"

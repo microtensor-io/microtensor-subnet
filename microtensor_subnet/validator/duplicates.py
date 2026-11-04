@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from microtensor_subnet.artifact import contract
-from microtensor_subnet.artifact.params import QUANT_SUFFIXES, read_header, safetensors_in
+from microtensor_subnet.artifact.params import QUANT_SUFFIXES, loaded_weights, read_header
 from microtensor_subnet.validator import transcripts
 from microtensor_subnet.validator.context import ESCALATION, HARNESS, ROUTER, SLM, SYSTEM
 
@@ -73,7 +73,7 @@ class Stored:
 
 def stored_tensors(root: Path) -> dict[str, Stored]:
     found: dict[str, Stored] = {}
-    for path in safetensors_in(root):
+    for path in loaded_weights(root):
         for name, entry in read_header(path).items():
             if name == METADATA or not isinstance(entry, Mapping):
                 continue
@@ -315,6 +315,14 @@ def template_of(root: Path) -> Template:
     )
 
 
+def merged_templates(templates: Iterable[Template]) -> Template:
+    chosen = list(templates)
+    return Template(
+        hashes=frozenset(digest for found in chosen for digest in found.hashes),
+        fragments=frozenset(fragment for found in chosen for fragment in found.fragments),
+    )
+
+
 def own_code(root: Path, part: str, template: Template) -> Code | None:
     digest, fragments = code_fingerprint(root, part)
     if not digest or digest in template.hashes:
@@ -331,6 +339,8 @@ def outputs_of(transcript: Mapping[str, Any]) -> dict[str, tuple[int, ...]]:
         if str(row.get("condition", "")) != transcripts.CONDITION_MINER:
             continue
         calls = transcripts.slm_calls(row)
+        if calls and calls[0].get("fault"):
+            continue
         tokens = tuple(int(t) for t in (calls[0].get("output_tokens") or ())) if calls else ()
         if tokens:
             found[str(row.get("item_id", ""))] = tokens
@@ -357,6 +367,7 @@ class Entry:
     router_sha256: str = ""
     router_sketch: list[float] | None = None
     outputs: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    outputs_checked: bool = False
 
 
 def _same_weights(
@@ -375,6 +386,8 @@ def _same_weights(
 def _same_model(later: Entry, earlier: Entry) -> bool:
     if _same_weights(later.weights_sha256, earlier.weights_sha256, later.sketch, earlier.sketch):
         return True
+    if not earlier.outputs_checked:
+        return False
     share, common = behaviour_overlap(later.outputs, earlier.outputs)
     return common >= MIN_COMMON_ITEMS and share >= SAME_OUTPUTS
 

@@ -31,13 +31,21 @@ MIRROR_ATTEMPTS: Final[int] = 6
 MIRROR_PAUSE_SECONDS: Final[float] = 2.0
 MIRROR_READ_SECONDS: Final[float] = 120.0
 RANGE_START: Final[re.Pattern[str]] = re.compile(r"bytes (\d+)-")
+NOT_SENT: Final[int] = -1
+UNREACHED: Final[int] = 0
 
 
 ARENA_NETWORKS: dict[str, str] = {"test": "testnet", "finney": "mainnet"}
 
 
 class ServerError(RuntimeError):
-    pass
+    def __init__(self, message: str = "", status: int = NOT_SENT) -> None:
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def retryable(self) -> bool:
+        return self.status == UNREACHED or self.status == 429 or self.status >= 500
 
 
 class MirrorDropped(ServerError):
@@ -90,12 +98,13 @@ class ServerClient:
             ) as http:
                 response = http.request(method, path, content=raw or None, headers=headers)
         except httpx.HTTPError as exc:
-            raise ServerError(f"{method} {path}: {exc}") from exc
+            raise ServerError(f"{method} {path}: {exc}", UNREACHED) from exc
         if response.status_code == 404 and missing_ok:
             return None
         if response.status_code >= 400:
             raise ServerError(
-                f"{method} {path} answered {response.status_code}: {response.text[:300]}"
+                f"{method} {path} answered {response.status_code}: {response.text[:300]}",
+                response.status_code,
             )
         return response.json() if response.content else None
 
