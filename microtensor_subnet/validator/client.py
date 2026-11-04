@@ -292,14 +292,12 @@ class ServerClient:
         )
         return dict(found or {})
 
-    def post_evidence(self, body: dict[str, Any]) -> dict[str, Any]:
-        found = self._request("POST", "/v2/reports/evidence", body, signed=True)
+    def coordinator_report(self, body: dict[str, Any]) -> dict[str, Any]:
+        found = self._request("POST", "/v2/coordinator/reports", body, signed=True)
         return dict(found or {})
 
-    def confirm_evidence(self, evidence_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        found = self._request(
-            "POST", f"/v2/reports/evidence/{evidence_id}/confirm", body, signed=True
-        )
+    def appeal(self, body: dict[str, Any]) -> dict[str, Any]:
+        found = self._request("POST", "/v2/appeals", body, signed=True)
         return dict(found or {})
 
 

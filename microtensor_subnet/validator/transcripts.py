@@ -99,7 +99,7 @@ def client_method(client: Any, name: str) -> Callable[..., Any]:
 def fetch(client: Any, sha256: str, into: Path) -> dict[str, Any]:
     target = into / TRANSCRIPTS_DIR / f"{sha256.lower()}.bin"
     try:
-        path = Path(client_method(client, "mirror_blob")(sha256, target))
+        path = Path(client_method(client, "mirror_file")(sha256, target))
         raw = path.read_bytes()
     except Exception as exc:
         raise TranscriptError(f"transcript {sha256[:12]} could not be fetched: {exc}") from exc

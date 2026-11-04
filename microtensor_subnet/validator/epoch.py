@@ -8,6 +8,7 @@ import math
 import platform
 import shutil
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -36,7 +37,6 @@ from microtensor_subnet.validator import (
     checks,
     collect,
     compress,
-    evidence,
     items,
     progress,
     provenance,
@@ -47,7 +47,7 @@ from microtensor_subnet.validator import (
 )
 from microtensor_subnet.validator import replay as replaying
 from microtensor_subnet.validator.client import ServerClient, ServerError
-from microtensor_subnet.validator.config import EpochConfig, gpu_profile, profile_memory_bytes
+from microtensor_subnet.validator.config import CPU_PROFILE, EpochConfig
 from microtensor_subnet.validator.context import (
     ESCALATION,
     HARNESS,
@@ -78,7 +78,12 @@ from microtensor_subnet.validator.sandbox import (
 )
 from microtensor_subnet.validator.sandbox import judge as probe_judge
 from microtensor_subnet.validator.sandbox import tools as tool_faults
-from microtensor_subnet.validator.sandbox.docker import Docker, DockerError, own_container
+from microtensor_subnet.validator.sandbox.docker import (
+    Docker,
+    DockerError,
+    own_container,
+    pinned,
+)
 from microtensor_subnet.validator.sandbox.slm import SlmClient
 
 log = logging.getLogger("microtensor_subnet.validator.epoch")
@@ -88,6 +93,7 @@ RECORDS_DIR: Final[str] = "records"
 ROUTERS_DIR: Final[str] = "routers"
 REPORT_FILE: Final[str] = "report.json"
 KEPT_AT_CLOSE: Final[frozenset[str]] = frozenset({REPORT_FILE, probe_sets.PROBE_DIR})
+COORDINATOR_WAIT_SECONDS: Final[int] = 5 * 3600
 
 
 class EpochError(RuntimeError):
@@ -494,62 +500,6 @@ class Runner:
         self.host.docker.sweep()
 
 
-def place_probe(
-    engine: Docker, config: EpochConfig, context: EpochContext
-) -> probe_judge.Placement:
-    memory = engine.gpu_memory(config.cuda_image, tuple(config.gpus or ("0",)))
-    spec = context.grading.get("probe_agent") or {}
-    reference_model = str((context.definition.get("references") or {}).get("slm") or "")
-    placement = probe_judge.place(memory, spec, config.chain.network, reference_model)
-    log.info(
-        "probe agent %s on GPU %s at memory share %.2f; miners on %s",
-        placement.model,
-        placement.gpu,
-        placement.memory_share,
-        ",".join(placement.slots),
-    )
-    if placement.reference is not None:
-        log.warning(
-            "testnet small card: probe agent %s, reference runs the quantised build %s",
-            placement.model,
-            placement.reference[0],
-        )
-    return placement
-
-
-def start_probe_agent(
-    config: EpochConfig, context: EpochContext, engine: Docker, placement: probe_judge.Placement
-) -> probe_judge.ProbeAgent:
-    grading = context.grading
-    spec = grading.get("probe_agent") or {}
-    named = str(spec.get("model") or "")
-    model_dir = collect.download(placement.model, placement.revision, config.cache_dir)
-    tokenizer = str(grading.get("tokenizer") or named)
-    tokenizer_dir = (
-        model_dir if tokenizer == named else collect.download(tokenizer, "main", config.cache_dir)
-    )
-    agent = probe_judge.ProbeAgent(
-        engine,
-        config.vllm_image,
-        model_dir,
-        placement.gpu,
-        max_tokens=int(spec.get("max_tokens") or 64),
-        memory_share=placement.memory_share,
-        quantization=placement.quantization,
-    )
-    agent.start(config.slm_ready_seconds)
-    context.judge = compress.Judge(
-        count_tokens=probe_judge.token_counter(tokenizer_dir),
-        answer=agent.answer,
-        pass_threshold=float(grading.get("pass_threshold") or 0.6),
-        min_output_tokens=int(grading.get("min_output_tokens") or 1000),
-        max_output_share=float(grading.get("max_output_share") or 0.05),
-        max_output_tokens=int(grading.get("max_output_tokens") or 3072),
-        headings=tuple(str(h) for h in grading.get("headings") or compress.HEADINGS),
-    )
-    return agent
-
-
 def declared_bases(config: EpochConfig, context: EpochContext) -> set[str]:
     from huggingface_hub import hf_hub_download
 
@@ -865,7 +815,6 @@ MIRROR_KIND: Final[str] = "mirror"
 RECEIPT_ROOT_TAG: Final[str] = "mtrc"
 REPAIR_ROWS: Final[str] = "repair"
 BASE_ROWS: Final[str] = "base"
-DEFAULT_BAN_CONFIRMATIONS: Final[int] = 2
 MIRROR_COMMIT_BLOCK_KEYS: Final[tuple[str, ...]] = ("commit_block", "block", "committed_at")
 
 
@@ -900,7 +849,7 @@ def _safe_name(name: str) -> str:
 def materialise_tree(
     client: ServerClient, files: Mapping[str, str], into: Path, *, weights: bool
 ) -> Path:
-    fetch = transcripts.client_method(client, "mirror_blob")
+    fetch = transcripts.client_method(client, "mirror_file")
     into.mkdir(parents=True, exist_ok=True)
     for name, digest in sorted(files.items()):
         if _is_weight(name) != weights:
@@ -1031,26 +980,6 @@ def warn_on_chain_root(chain: Any, context: EpochContext, root: str) -> None:
         )
 
 
-def validators_on_profile(
-    client: ServerClient, context: EpochContext, profile: str, me: str
-) -> int:
-    try:
-        rows = transcripts.client_method(client, "epoch_validators")(
-            context.arena_id, context.epoch_index
-        )
-    except Exception as exc:
-        log.warning("the epoch validators were not listed: %s", exc)
-        rows = []
-    found = {
-        str(row.get("hotkey", ""))
-        for row in rows
-        if isinstance(row, Mapping) and profile in [str(p) for p in row.get("profiles") or []]
-    }
-    found.add(me)
-    found.discard("")
-    return len(found)
-
-
 def chain_coldkeys(chain: Any) -> dict[str, str]:
     try:
         snapshot = chain.snapshot(refresh=True)
@@ -1099,7 +1028,7 @@ class MinerModeRunner:
     profile: str
     server_key: str
     reporter: progress.Reporter
-    validators: int = 1
+    chain: Any = None
     coldkeys: dict[str, str] = field(default_factory=dict)
     agent: probe_judge.ProbeAgent | None = None
     base_dirs: dict[str, Path] = field(default_factory=dict)
@@ -1118,7 +1047,7 @@ class MinerModeRunner:
     spot_checks: dict[str, spotcheck.SpotCheck] = field(default_factory=dict)
     canaries: dict[str, dict[str, int]] = field(default_factory=dict)
     fraud: dict[str, str] = field(default_factory=dict)
-    sampled: list[str] = field(default_factory=list)
+    coordinated: spotcheck.Coordinated | None = None
     seen_manifests: dict[str, str] = field(default_factory=dict)
     seen_weights: dict[str, str] = field(default_factory=dict)
     serving: dict[str, Any] | None = None
@@ -1133,18 +1062,8 @@ class MinerModeRunner:
         return Limits.from_definition(self.context.definition, self.context.max_model_len)
 
     @property
-    def gpu(self) -> bool:
-        return gpu_profile(self.profile)
-
-    @property
-    def settings(self) -> spotcheck.Settings:
-        return spotcheck.Settings.from_definition(self.context.definition)
-
-    @property
-    def ban_confirmations(self) -> int:
-        ban = self.evaluation.get("ban") or {}
-        found = ban.get("confirmations") if isinstance(ban, Mapping) else None
-        return int(found or DEFAULT_BAN_CONFIRMATIONS)
+    def ban_epochs(self) -> int:
+        return spotcheck.ban_epochs(self.context.definition)
 
     @property
     def relay_allowance(self) -> int:
@@ -1152,16 +1071,6 @@ class MinerModeRunner:
 
     def miner_dir(self, hotkey: str) -> Path:
         return self.config.mirror_dir / hotkey
-
-    def evidence_fields(self, hotkey: str) -> dict[str, Any]:
-        entry = self.mirror.get(hotkey) or {}
-        return {
-            "arena_id": self.context.arena_id,
-            "epoch": self.context.epoch_index,
-            "miner_hotkey": hotkey,
-            "profile": str(entry.get("profile") or self.profile),
-            "weights_sha256": str(entry.get("weights_sha256") or ""),
-        }
 
     def claim(self, hotkey: str, entry: Mapping[str, Any]) -> str:
         manifest = str(entry.get("manifest_sha256") or "")
@@ -1188,24 +1097,18 @@ class MinerModeRunner:
 
 
 def start_miner_mode_probe(
-    config: EpochConfig, context: EpochContext, engine: Docker, *, gpu: bool
+    config: EpochConfig, context: EpochContext, engine: Docker
 ) -> probe_judge.ProbeAgent | None:
     if context.grader != compress.GRADER:
         return None
     grading = context.grading
-    if gpu and grading.get("probe_agent"):
-        try:
-            placement = place_probe(engine, config, context)
-            return start_probe_agent(config, context, engine, placement)
-        except (DockerError, probe_judge.JudgeError, collect.CollectError) as exc:
-            log.warning("the vLLM probe agent did not start, using llama.cpp: %s", exc)
     spec = probe_judge.ProbeSpec.from_definition(context.definition)
     model_file = probe_judge.fetch_probe(spec, config.cache_dir)
     images = (context.definition.get("evaluation") or {}).get("images") or {}
     llama = images.get("llama") if isinstance(images, Mapping) else None
     image = config.llama_image
     if isinstance(llama, Mapping) and llama.get("image") and llama.get("digest"):
-        image = spotcheck.pinned(str(llama["image"]), str(llama["digest"]))
+        image = pinned(str(llama["image"]), str(llama["digest"]))
     engine.ensure_image(image)
     threads = int(config.extra.get("probe_threads") or probe_judge.LLAMA_THREADS)
     agent = probe_judge.ProbeAgent(
@@ -1292,7 +1195,7 @@ def set_up_miner_mode(
     reporter: progress.Reporter,
 ) -> MinerModeRunner:
     key = items.server_key(client)
-    profile = config.resolved_profile()
+    profile = CPU_PROFILE
     inputs_body, inputs_blob = items.fetch_inputs(client, config.arena_id, context.epoch_index, key)
     inputs = items.unpack_inputs(
         inputs_body, inputs_blob, epoch_seed=context.seed, work_dir=context.work_dir
@@ -1325,7 +1228,7 @@ def set_up_miner_mode(
     tap.start()
     agent: probe_judge.ProbeAgent | None = None
     try:
-        agent = start_miner_mode_probe(config, context, engine, gpu=gpu_profile(profile))
+        agent = start_miner_mode_probe(config, context, engine)
     except (DockerError, probe_judge.JudgeError, collect.CollectError) as exc:
         services.stop()
         tap.stop()
@@ -1353,7 +1256,7 @@ def set_up_miner_mode(
         profile=profile,
         server_key=key,
         reporter=reporter,
-        validators=validators_on_profile(client, context, profile, hotkey),
+        chain=chain,
         coldkeys=chain_coldkeys(chain),
         agent=agent,
         base_dirs=base_dirs,
@@ -1608,8 +1511,10 @@ def apply_spot_check(
     run = outcome.slm
     if run is None:
         return
-    run.ttft_p95_ms = spot.ttft_p95_ms
-    run.tpot_p95_ms = spot.tpot_p95_ms
+    if spot.ttft_p95_ms:
+        run.ttft_p95_ms = spot.ttft_p95_ms
+    if spot.tpot_p95_ms:
+        run.tpot_p95_ms = spot.tpot_p95_ms
     if spot.vram_peak_bytes:
         run.vram_peak_bytes = spot.vram_peak_bytes
     first_seq = {
@@ -1624,242 +1529,121 @@ def apply_spot_check(
             item.latency_ms = timing[0] + timing[1] * max(0, item.completion_tokens - 1)
 
 
-def spot_check_engine(runner: MinerModeRunner, model_dir: Path) -> spotcheck.Engine:
-    config = runner.config
-    return spotcheck.engine_for(
-        runner.docker,
-        definition=runner.context.definition,
-        model_dir=model_dir,
-        gpu=(config.gpus or ("0",))[0],
-        profile=runner.profile,
-        profile_bytes=profile_memory_bytes(runner.profile),
-        max_model_len=runner.context.max_model_len,
-        memory_share=config.slm_memory_share,
-        ready_seconds=config.slm_ready_seconds,
-        cuda_image=config.cuda_image,
+def coordinator_deadline(runner: MinerModeRunner) -> int:
+    try:
+        found = runner.client.epoch(runner.context.arena_id, runner.context.epoch_index) or {}
+    except Exception as exc:
+        log.warning("the epoch window was not read: %s", exc)
+        return 0
+    end = int((found.get("window") or {}).get("end_block") or 0)
+    margin = int(
+        runner.config.extra.get("coordinator_margin_blocks") or spotcheck.DEFAULT_MARGIN_BLOCKS
     )
+    return max(0, end - margin) if end else 0
 
 
-def calls_for(runner: MinerModeRunner, hotkey: str) -> list[spotcheck.Call]:
-    outcome = runner.outcomes.get(hotkey)
-    result = runner.replays.get(hotkey)
-    transcript = runner.miner_transcripts.get(hotkey)
-    if outcome is None or result is None or transcript is None:
-        return []
-    passed: dict[tuple[str, str], bool] = {}
-    if outcome.slm is not None:
-        for item in [*outcome.slm.runs, *outcome.slm.twins]:
-            passed[(item.item_id, transcripts.CONDITION_MINER)] = item.success
-    if outcome.harness is not None:
-        for item in outcome.harness.miner.runs:
-            passed[(item.item_id, transcripts.CONDITION_MINER)] = item.success
-        for condition in outcome.harness.baselines:
-            for item in condition.runs:
-                passed[(item.item_id, condition.name)] = item.success
-    if outcome.escalation is not None:
-        for item in outcome.escalation.repairs:
-            passed[(item.item_id, transcripts.CONDITION_REPAIR)] = item.success
-    if outcome.system is not None:
-        for floor in outcome.system.floors:
-            for item in floor.runs:
-                passed[(item.item_id, f"{transcripts.SYSTEM_PREFIX}{floor.floor}")] = item.success
-    twin_of = {i.item_id: i.twin_of for i in runner.context.items.items(SLM) if i.twin_of}
-    pairs = {**twin_of, **{twin: item_id for item_id, twin in twin_of.items()}}
-    moved = (
-        spotcheck.moved_items(outcome.slm, runner.reference_slm, pairs)
-        if outcome.slm is not None
-        else set()
-    )
-    return spotcheck.collect_calls(
-        transcript, result.prompts, passed=passed, twins=twin_of, moved=moved
-    )
+def head_block(runner: MinerModeRunner) -> int:
+    try:
+        return int(runner.chain.block()) if runner.chain is not None else 0
+    except Exception as exc:
+        log.debug("head block not read: %s", exc)
+        return 0
 
 
-def post_evidence(runner: MinerModeRunner, bodies: Sequence[Mapping[str, Any]]) -> list[str]:
-    posted: list[str] = []
-    for body in bodies:
-        signed = evidence.sign(body, runner.wallet, runner.hotkey)
-        if runner.config.dry_run:
-            log.info("dry run, evidence for %s not posted", body.get("miner_hotkey"))
-            continue
-        try:
-            posted.append(evidence.post(runner.client, signed))
-        except Exception as exc:
-            log.warning("evidence for %s not posted: %s", body.get("miner_hotkey"), exc)
-    return posted
-
-
-def spot_check_phase(runner: MinerModeRunner) -> None:
-    if not runner.gpu:
-        return
-    settings = runner.settings
-    candidates = [
-        h
-        for h, r in runner.records.items()
-        if not r.failure
-        and h in runner.outcomes
-        and str((runner.mirror.get(h) or {}).get("profile") or "") == runner.profile
-    ]
-    runner.sampled = spotcheck.sample_miners(
-        candidates,
-        close_block_hash=runner.close_block_hash,
-        validator_hotkey=runner.hotkey,
-        validators_on_profile=runner.validators,
-        validators_per_miner=settings.validators_per_miner,
-    )
-    log.info(
-        "spot check: %d of %d miners on %s", len(runner.sampled), len(candidates), runner.profile
-    )
-    rules = score.Rules.from_definition(runner.context.definition)
-    for hotkey in runner.sampled:
-        record = runner.records[hotkey]
-        try:
-            model_dir = pull_weights(runner, hotkey)
-        except (ServerError, EpochError, OSError, RuntimeError) as exc:
-            log.warning("%s weights not pulled for the spot check: %s", hotkey, exc)
-            continue
-        if model_dir is None:
-            continue
-        calls = calls_for(runner, hotkey)
-        uniform, weighted = spotcheck.sample_calls(
-            calls,
-            min_calls=settings.min_calls,
-            rng=spotcheck.seeded(runner.close_block_hash, runner.hotkey, hotkey),
+def wait_for_coordinator(runner: MinerModeRunner) -> spotcheck.Coordinated | None:
+    context = runner.context
+    wanted = {h for h, r in runner.records.items() if not r.failure and h in runner.outcomes}
+    if not wanted:
+        return spotcheck.fetch(
+            runner.client, context.arena_id, context.epoch_index, runner.server_key
         )
-        fields = runner.evidence_fields(hotkey)
-        try:
-            engine = spot_check_engine(runner, model_dir)
-            engine.start()
-        except (spotcheck.SpotCheckError, DockerError, SandboxError) as exc:
-            log.warning("%s spot check engine did not start: %s", hotkey, exc)
+    deadline = coordinator_deadline(runner)
+    poll = int(
+        runner.config.extra.get("coordinator_poll_seconds") or spotcheck.DEFAULT_POLL_SECONDS
+    )
+    give_up = time.monotonic() + float(
+        runner.config.extra.get("coordinator_wait_seconds") or COORDINATOR_WAIT_SECONDS
+    )
+    while True:
+        found = spotcheck.fetch(
+            runner.client, context.arena_id, context.epoch_index, runner.server_key
+        )
+        if found is not None and (found.complete or all(found.covers(h) for h in wanted)):
+            return found
+        head = head_block(runner)
+        if runner.config.dry_run or time.monotonic() >= give_up or (deadline and head >= deadline):
+            return found
+        log.info(
+            "block %d: waiting for the coordinator's spot checks of %d miners until block %d",
+            head,
+            len(wanted),
+            deadline,
+        )
+        time.sleep(max(10, poll))
+
+
+def coordinator_phase(runner: MinerModeRunner) -> None:
+    found = wait_for_coordinator(runner)
+    runner.coordinated = found
+    if found is None:
+        log.warning("no coordinator spot checks were published; scored without them")
+        return
+    timing = found.reference
+    if timing is not None:
+        runner.reference_timing = timing
+        if runner.reference_slm is not None:
+            if timing.ttft_p95_ms:
+                runner.reference_slm.ttft_p95_ms = timing.ttft_p95_ms
+            if timing.tpot_p95_ms:
+                runner.reference_slm.tpot_p95_ms = timing.tpot_p95_ms
+            if timing.vram_peak_bytes:
+                runner.reference_slm.vram_peak_bytes = timing.vram_peak_bytes
+    for hotkey, spot in found.spot_checks.items():
+        record = runner.records.get(hotkey)
+        outcome = runner.outcomes.get(hotkey)
+        transcript = runner.miner_transcripts.get(hotkey)
+        if record is None or record.failure or outcome is None or transcript is None:
             continue
-        try:
-            spot = spotcheck.check_miner(
-                engine,
-                uniform,
-                weighted,
-                budgets=runner.context.budgets,
-                violation_share=rules.violation_share,
-                evidence_fields=fields,
-            )
-            checked, hits = spotcheck.canary_check(
-                engine, runner.labels.canaries, evidence_fields=fields
-            )
-        except (spotcheck.SpotCheckError, DockerError) as exc:
-            log.warning("%s spot check failed: %s", hotkey, exc)
-            continue
-        finally:
-            engine.stop()
+        if timing is not None:
+            spot.reference_ttft_p95_ms = timing.ttft_p95_ms
+            spot.reference_tpot_p95_ms = timing.tpot_p95_ms
+            spot.reference_vram_peak_bytes = timing.vram_peak_bytes
         runner.spot_checks[hotkey] = spot
-        runner.canaries[hotkey] = {"checked": checked, "hits": len(hits)}
-        apply_spot_check(runner.outcomes[hotkey], spot, runner.miner_transcripts[hotkey])
+        apply_spot_check(outcome, spot, transcript)
         note_checks_for(runner, record)
-        post_evidence(runner, [*spot.evidence, *hits])
         runner.reporter.post(
             hotkey, progress.SPOT_CHECKED, detail={"matched": spot.matched, "calls": spot.calls}
         )
-
-
-def reference_timing_phase(runner: MinerModeRunner) -> None:
-    if not runner.gpu or runner.reference_slm is None:
-        return
-    try:
-        engine = spot_check_engine(runner, runner.context.reference.slm_dir)
-        engine.start()
-    except (spotcheck.SpotCheckError, DockerError, SandboxError) as exc:
-        log.warning("the reference engine did not start: %s", exc)
-        return
-    try:
-        timing = spotcheck.time_reference(
-            engine,
-            runner.context,
-            count=runner.settings.reference_calls,
-            drafts={i: r.answer for i, r in runner.labels.rows(SLM).items()},
-            seeds=runner.inputs.seeds(),
-        )
-    except (spotcheck.SpotCheckError, DockerError) as exc:
-        log.warning("the reference timing failed: %s", exc)
-        return
-    finally:
-        engine.stop()
-    runner.reference_timing = timing
-    runner.reference_slm.ttft_p95_ms = timing.ttft_p95_ms
-    runner.reference_slm.tpot_p95_ms = timing.tpot_p95_ms
-    if timing.vram_peak_bytes:
-        runner.reference_slm.vram_peak_bytes = timing.vram_peak_bytes
-    for spot in runner.spot_checks.values():
-        spot.reference_ttft_p95_ms = timing.ttft_p95_ms
-        spot.reference_tpot_p95_ms = timing.tpot_p95_ms
-        spot.reference_vram_peak_bytes = timing.vram_peak_bytes
-
-
-def confirm_phase(runner: MinerModeRunner) -> None:
-    if not runner.gpu:
-        return
-    rows = evidence.fetch(runner.client, runner.context.arena_id, runner.context.epoch_index)
-    pending: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        if str(row.get("profile", "")) != runner.profile or not evidence.verify(row):
-            continue
-        if evidence.already_confirmed(row, runner.hotkey) or not evidence.evidence_id(row):
-            continue
-        pending.setdefault(str(row.get("miner_hotkey", "")), []).append(row)
-    canaries = {str(c.get("item_id", "")): c for c in runner.labels.canaries}
-    for hotkey, cited in pending.items():
-        if hotkey not in runner.records or runner.records[hotkey].failure:
-            continue
-        calls = {(c.item_id, c.seq): c for c in calls_for(runner, hotkey)}
-        try:
-            model_dir = pull_weights(runner, hotkey)
-            if model_dir is None:
-                continue
-            engine = spot_check_engine(runner, model_dir)
-            engine.start()
-        except (
-            spotcheck.SpotCheckError,
-            DockerError,
-            SandboxError,
-            ServerError,
-            EpochError,
-            OSError,
-            RuntimeError,
-        ) as exc:
-            log.warning("%s evidence not re-run: %s", hotkey, exc)
-            continue
-        try:
-            for row in cited:
-                try:
-                    found = spotcheck.recheck(engine, row, calls=calls, canaries=canaries)
-                except Exception as exc:
-                    log.warning("evidence %s not re-run: %s", evidence.evidence_id(row), exc)
-                    continue
-                if found is None:
-                    continue
-                confirmed, tokens = found
-                body = evidence.confirmation(
-                    confirmed=confirmed,
-                    recomputed_tokens=tokens,
-                    wallet=runner.wallet,
-                    hotkey=runner.hotkey,
-                )
-                if runner.config.dry_run:
-                    continue
-                try:
-                    evidence.confirm(runner.client, evidence.evidence_id(row), body)
-                except Exception as exc:
-                    log.warning("confirmation of %s not posted: %s", evidence.evidence_id(row), exc)
-        finally:
-            engine.stop()
+    for hotkey, canary in found.canaries.items():
+        runner.canaries[hotkey] = dict(canary)
+    log.info(
+        "coordinator: %d spot checks, %s",
+        len(found.spot_checks),
+        "complete" if found.complete else "partial",
+    )
 
 
 def collect_fraud(runner: MinerModeRunner) -> None:
-    rows = evidence.fetch(runner.client, runner.context.arena_id, runner.context.epoch_index)
-    runner.fraud = evidence.confirmed_by_miner(rows, runner.ban_confirmations)
-    for hotkey, found in runner.fraud.items():
+    context = runner.context
+    index = context.epoch_index
+    runner.fraud = {}
+    for past in range(max(0, index - runner.ban_epochs + 1), index + 1):
+        found = (
+            runner.coordinated
+            if past == index
+            else spotcheck.fetch(runner.client, context.arena_id, past, runner.server_key)
+        )
+        if found is None:
+            continue
+        for hotkey in found.flags:
+            standing = found.standing(hotkey)
+            if standing:
+                runner.fraud.setdefault(hotkey, standing[0].label())
+    for hotkey, label in runner.fraud.items():
         record = runner.records.get(hotkey)
         if record is not None and not record.failure:
-            record.failure = f"fraud: {found}"
-            log.warning("%s zeroed on confirmed evidence %s", hotkey, found)
+            record.failure = f"fraud: {label}"
+            log.warning("%s zeroed on the coordinator's evidence %s", hotkey, label)
 
 
 def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[PoolScore]:
@@ -2271,9 +2055,7 @@ def run_miner_mode_epoch(
             except Exception as exc:
                 runner.records[miner].failure = f"grading: {exc}"
                 log.warning("%s grading failed: %s", miner, exc)
-        reference_timing_phase(runner)
-        spot_check_phase(runner)
-        confirm_phase(runner)
+        coordinator_phase(runner)
         collect_fraud(runner)
         router_phase(runner)
         for miner, record in runner.records.items():
