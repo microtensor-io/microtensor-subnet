@@ -24,7 +24,7 @@ from microtensor_subnet.artifact.validate import (
 )
 from microtensor_subnet.core import profiles, transcript
 from microtensor_subnet.core.items import ItemError, unpack_bundle
-from microtensor_subnet.validator import collect, preflight
+from microtensor_subnet.validator import collect, preflight, spotcheck
 from microtensor_subnet.validator.client import ARENA_NETWORKS, ServerClient, ServerError
 from microtensor_subnet.validator.config import (
     REQUEST_SECONDS,
@@ -70,6 +70,11 @@ from microtensor_subnet.validator.sandbox.docker import (
     DockerError,
     own_container,
 )
+from microtensor_subnet.validator.sandbox.remote import (
+    EngineBridge,
+    RemoteEngine,
+    RemoteEngineError,
+)
 from microtensor_subnet.validator.sandbox.slm import (
     MEMORY_SHARE,
     SlmClient,
@@ -96,6 +101,7 @@ UPLOADED: Final[str] = "uploaded"
 ERRORS_TEXT: Final[str] = "the draft returned the wrong result"
 DEFAULT_CONTEXT: Final[int] = 8192
 ENGINE_ATTEMPTS: Final[int] = 3
+UNREACHABLE: Final[str] = "unreachable"
 PROGRESS_SECONDS: Final[float] = 15.0
 ENV_RUNNER_DIGEST: Final[str] = "MT_RUNNER_DIGEST"
 IMAGE_KINDS: Final[tuple[str, ...]] = ("engine", "runner", "sandbox")
@@ -134,6 +140,12 @@ class RunnerConfig:
     llama_image: str = ""
     sandbox_image: str = ""
     gateway_image: str = ""
+    engine_url: str = ""
+    engine_key: str = field(default="", repr=False)
+
+    @property
+    def remote(self) -> bool:
+        return bool(self.engine_url)
 
     @property
     def work_dir(self) -> Path:
@@ -492,6 +504,8 @@ class Session:
     session: services.ArtifactSession | None = None
     entries: list[dict[str, Any]] = field(default_factory=list)
     tickets: dict[tuple[str, str], str] = field(default_factory=dict)
+    remote_engine: RemoteEngine | None = None
+    bridge: EngineBridge | None = None
 
     @property
     def limits(self) -> Limits:
@@ -520,7 +534,38 @@ class Session:
             self.close()
             raise
 
+    def _start_remote_engine(self) -> None:
+        engine = RemoteEngine(self.config.engine_url, self.config.engine_key)
+        self.remote_engine = engine
+        entry = self.miner.entry
+        name = f"miner-{(entry.weights_sha256 or entry.artifact_sha)[:32]}"
+        try:
+            card = engine.health().get("gpu_name") or "an unknown card"
+            log.info("the remote engine runs on %s", card)
+            engine.prepare(name, entry.slm_files)
+            engine.start(
+                name,
+                engine_command(
+                    compat.GUEST,
+                    profile=self.profile,
+                    max_model_len=max_model_len_of(self.definition, self.miner.config),
+                    memory_share=memory_share_of(
+                        self.definition, self.profile, self.config.slm_memory_share
+                    ),
+                ),
+                engine_env(self.profile),
+                float(self.config.slm_ready_seconds),
+            )
+        except RemoteEngineError as exc:
+            raise RunnerError(f"the remote engine: {exc}") from exc
+        self.bridge = EngineBridge(engine)
+        self.bridge.start()
+        self.engine_url = self.bridge.url
+
     def _engine(self) -> None:
+        if self.config.remote:
+            self._start_remote_engine()
+            return
         name = f"mt-engine-{self.key}"
         max_len = max_model_len_of(self.definition, self.miner.config)
         limits = self.limits
@@ -602,6 +647,7 @@ class Session:
             gpu=self.config.gpus[0],
             config=self.miner.config,
             limits=self.limits,
+            device="cpu" if self.config.remote else "",
         )
 
     def start_gateway(self) -> None:
@@ -710,6 +756,15 @@ class Session:
             self.host.close_router(self.router_process)
         if self.network:
             self.docker.remove_network(self.network)
+        if self.bridge is not None:
+            self.bridge.stop()
+            self.bridge = None
+        if self.remote_engine is not None:
+            try:
+                self.remote_engine.cleanup()
+            except RemoteEngineError as exc:
+                log.warning("the remote engine was not cleaned: %s", exc)
+            self.remote_engine = None
 
     def generate(self, item: InputItem, pool: str, condition: str) -> dict[str, Any]:
         prompt = render_prompt(slm_prompt_of(self.definition), item.task)
@@ -763,18 +818,35 @@ class Session:
         return max(1, self.allowance_micros // max(1, planned))
 
     def ticket(self, item_id: str, purpose: str) -> str:
+        if self.config.dry_run:
+            return ""
         if self.desk is None:
-            raise RelayError("refused", "no relay token")
+            raise RunnerError(
+                f"{item_id}: no relay token, so no {purpose} ticket; nothing uploaded"
+            )
         found = self.tickets.get((item_id, purpose))
         if found is None:
-            found = self.desk.issue(
-                miner=self.miner.hotkey,
-                item_id=item_id,
-                purpose=purpose,
-                cap_micros=self.cap_micros,
-            )
+            found = self._issue(self.desk, item_id, purpose)
             self.tickets[(item_id, purpose)] = found
         return found
+
+    def _issue(self, desk: TicketDesk, item_id: str, purpose: str) -> str:
+        for attempt in range(1, ENGINE_ATTEMPTS + 1):
+            try:
+                return desk.issue(
+                    miner=self.miner.hotkey,
+                    item_id=item_id,
+                    purpose=purpose,
+                    cap_micros=self.cap_micros,
+                )
+            except RelayError as exc:
+                if exc.code != UNREACHABLE or attempt == ENGINE_ATTEMPTS:
+                    raise RunnerError(
+                        f"{item_id}: the relay refused the {purpose} ticket ({exc.code}: {exc}); "
+                        "nothing uploaded"
+                    ) from exc
+                time.sleep(2.0 * attempt)
+        raise RunnerError(f"{item_id}: no {purpose} ticket; nothing uploaded")
 
     def run_main(
         self,
@@ -868,11 +940,7 @@ class Session:
                 draft = self.inputs.drafts.get(item.item_id)
                 if draft is None:
                     continue
-                try:
-                    opaque = self.ticket(item.item_id, REPAIR)
-                except RelayError as exc:
-                    log.warning("%s: no repair ticket (%s); skipped", item.item_id, exc.code)
-                    continue
+                opaque = self.ticket(item.item_id, REPAIR)
                 self.record(
                     self.run_main(
                         self.miner.artifact_dir,
@@ -894,11 +962,7 @@ class Session:
         system_items = self.inputs.pool(SYSTEM, limit)
         for floor in floors_of(self.definition):
             for item in system_items:
-                try:
-                    opaque = self.ticket(item.item_id, SYSTEM_PURPOSE)
-                except RelayError as exc:
-                    log.warning("%s: no system ticket (%s); skipped", item.item_id, exc.code)
-                    continue
+                opaque = self.ticket(item.item_id, SYSTEM_PURPOSE)
                 self.record(
                     self.run_main(
                         self.harness_tree(),
@@ -1041,15 +1105,28 @@ def fetch_miner(
         raise RunnerError("the manifest profile does not match the commitment profile")
     slm_dir = config.cache_dir / "slm" / (entry.weights_sha256 or entry.artifact_sha)
     for name, sha in sorted(entry.slm_files.items()):
+        if config.remote and name.endswith(contract.WEIGHT_SUFFIXES):
+            continue
         try:
             client.mirror_file(sha, slm_dir / name)
         except ServerError as exc:
             raise RunnerError(f"slm file {name}: {exc}") from exc
+    if config.remote:
+        return Miner(
+            hotkey=entry.hotkey,
+            entry=entry,
+            artifact_dir=artifact_dir,
+            slm_dir=slm_dir,
+            manifest=manifest,
+            config=artifact_config(artifact_dir),
+            parameters=0,
+        )
     checked = preflight.check(
         slm_dir,
         profile=entry.profile,
         bounds=preflight.bounds_of(dict(definition)),
         max_len=preflight.max_len_of(dict(definition)),
+        formats=preflight.formats_of(dict(definition)),
     )
     if not checked.ok:
         raise RunnerError(f"pre-flight: {checked.message}")
@@ -1099,6 +1176,24 @@ def open_relay(client: ServerClient, config: RunnerConfig) -> tuple[TicketDesk |
     )
 
 
+def add_coordinator_drafts(
+    client: ServerClient, config: RunnerConfig, key: str, inputs: Inputs, miner: Miner
+) -> None:
+    if inputs.drafts or "escalation" not in miner.has or not inputs.pool(ESCALATION):
+        return
+    found = spotcheck.fetch(client, config.arena_id, config.epoch_index, key, leaves={})
+    if found is not None and found.drafts_complete:
+        inputs.drafts = dict(found.drafts)
+        return
+    if config.dry_run:
+        log.warning("the reference drafts are not published yet; this dry run has no repair rows")
+        return
+    raise RunnerError(
+        "the coordinator has not finished publishing the reference drafts for this epoch; "
+        "run again when it has, because a run without them has no repair rows"
+    )
+
+
 def build_transcript(
     config: RunnerConfig, miner: Miner, images: Images, entries: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
@@ -1141,11 +1236,13 @@ def run(
     except (ReleaseError, ServerError) as exc:
         raise RunnerError(str(exc)) from exc
     entry = mirror_entry(client, config, hotkey, key)
-    check_profile(entry)
+    if not config.remote:
+        check_profile(entry)
     config.work_dir.mkdir(parents=True, exist_ok=True)
     inputs = fetch_inputs(client, config, key, definition)
     miner = fetch_miner(client, config, definition, entry)
-    desk, allowance = open_relay(client, config)
+    add_coordinator_drafts(client, config, key, inputs, miner)
+    desk, allowance = (None, 0) if config.dry_run else open_relay(client, config)
     allowance = allowance or relay_allowance_of(definition)
     if desk is not None and not allowance:
         raise RunnerError("the arena sets no relay allowance; frontier calls cannot be capped")

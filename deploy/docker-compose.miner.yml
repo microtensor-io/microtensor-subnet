@@ -19,6 +19,8 @@ services:
       MT_PROFILE: "${MT_PROFILE:-}"
       MT_RUNNER_DIGEST: "${MT_RUNNER_DIGEST:-}"
       MT_SLM_MEMORY_SHARE: "${MT_SLM_MEMORY_SHARE:-0}"
+      MT_ENGINE_URL: "${MT_ENGINE_URL:-}"
+      MT_ENGINE_KEY: "${MT_ENGINE_KEY:-}"
       HF_HOME: /var/lib/microtensor/cache/hf
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

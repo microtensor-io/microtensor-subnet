@@ -39,6 +39,16 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default="",
         help="the on-chain commitment string; read from the chain when omitted",
     )
+    run.add_argument(
+        "--engine-url",
+        default=os.environ.get("MT_ENGINE_URL", ""),
+        help="send model calls to this remote engine and start no engine container",
+    )
+    run.add_argument(
+        "--engine-key",
+        default=os.environ.get("MT_ENGINE_KEY", ""),
+        help="the bearer token of the remote engine",
+    )
     run.set_defaults(handler=_run)
 
     replay = inner.add_parser("replay", help="replay a transcript on the CPU like a validator")
@@ -118,6 +128,8 @@ def _settings(
         item_limit=int(getattr(args, "item_limit", 0) or 0),
         runner_digest=os.environ.get(runner.ENV_RUNNER_DIGEST, "").strip(),
         commitment=commitment,
+        engine_url=str(getattr(args, "engine_url", "") or ""),
+        engine_key=str(getattr(args, "engine_key", "") or ""),
     )
 
 

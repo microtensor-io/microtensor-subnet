@@ -268,7 +268,7 @@ class ArtifactSession:
     item_tokens_in: int = 0
     item_tokens_out: int = 0
     item_receipts: list[dict[str, Any]] = field(default_factory=list)
-    prompts: dict[tuple[str, int], str] = field(default_factory=dict)
+    prompts: dict[tuple[str, str, int], str] = field(default_factory=dict)
     engine_failures: int = 0
     relay_purpose: str = ""
     relay_cap_micros: int = 0
@@ -707,7 +707,8 @@ class Services:
                 if str(expected.get("fault") or "") != fault:
                     raise replay.fail("model fault differs")
                 with session.lock:
-                    session.prompts[(replay.item_id, int(expected.get("seq") or 0))] = str(
+                    seq = int(expected.get("seq") or 0)
+                    session.prompts[(replay.item_id, session.item_condition, seq)] = str(
                         body.get("prompt") or ""
                     )
                 if fault in FAULT_STATUS:
@@ -728,7 +729,7 @@ class Services:
                     expected = replay.take(transcript.ROUTER)
                     if expected.get("route") != path:
                         raise replay.fail(f"expected router {expected.get('route')}, got {path}")
-                    if not transcript.canonical_equal(expected.get("request") or {}, body):
+                    if expected.get("request_sha256") != transcript.canonical_sha256(body):
                         raise replay.fail("router request differs")
                     self._json(int(expected.get("status") or 200), expected.get("response") or {})
                     return

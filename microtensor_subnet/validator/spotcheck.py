@@ -20,6 +20,15 @@ FLAG_KINDS: Final[tuple[str, ...]] = (SPOT_CHECK, CANARY)
 DEFAULT_MARGIN_BLOCKS: Final[int] = 150
 DEFAULT_POLL_SECONDS: Final[int] = 60
 DEFAULT_BAN_EPOCHS: Final[int] = 3
+FAILURE_CHARS: Final[int] = 300
+TIMING_KEYS: Final[frozenset[str]] = frozenset(
+    {"ttft_p95_ms", "tpot_p95_ms", "vram_peak_bytes", "drafts_checked", "drafts_mismatched"}
+)
+DRAFTS_KEY: Final[str] = "drafts"
+DRAFTS_DONE_KEY: Final[str] = "drafts_complete"
+ROWS_KEY: Final[str] = "rows"
+ROWS_DONE_KEY: Final[str] = "rows_complete"
+NO_TOKENS: Final[str] = hashlib.sha256(b"[]").hexdigest()
 
 
 class SpotCheckError(RuntimeError):
@@ -56,6 +65,13 @@ class SpotCheck:
     envelope_lb: float = 0.0
     envelope_ok: bool = True
     timing: dict[tuple[str, int], tuple[float, float]] = field(default_factory=dict)
+    unsettled: int = 0
+    errors: int = 0
+    skipped_prompt: int = 0
+    e2e_p95_ms: float = 0.0
+    memory_ok: bool = True
+    router_latency_p95_ms: float | None = None
+    router_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +88,13 @@ class SpotCheck:
             "over_budget": self.over_budget,
             "envelope_lb": round(self.envelope_lb, 6),
             "envelope_ok": self.envelope_ok,
+            "unsettled": self.unsettled,
+            "errors": self.errors,
+            "skipped_prompt": self.skipped_prompt,
+            "e2e_p95_ms": round(self.e2e_p95_ms, 1),
+            "memory_ok": self.memory_ok,
+            "router_latency_p95_ms": self.router_latency_p95_ms,
+            "router_reason": self.router_reason,
         }
 
     @classmethod
@@ -83,6 +106,7 @@ class SpotCheck:
                     timing[(str(entry[0]), int(entry[1]))] = (float(entry[2]), float(entry[3]))
                 except (TypeError, ValueError):
                     continue
+        latency = row.get("router_latency_p95_ms")
         return cls(
             calls=_int(row, "calls"),
             matched=_int(row, "matched"),
@@ -95,6 +119,15 @@ class SpotCheck:
             envelope_lb=_float(row, "envelope_lb"),
             envelope_ok=bool(row.get("envelope_ok", True)),
             timing=timing,
+            unsettled=_int(row, "unsettled"),
+            errors=_int(row, "errors"),
+            skipped_prompt=_int(row, "skipped_prompt"),
+            e2e_p95_ms=_float(row, "e2e_p95_ms"),
+            memory_ok=bool(row.get("memory_ok", True)),
+            router_latency_p95_ms=_float(row, "router_latency_p95_ms")
+            if latency is not None
+            else None,
+            router_reason=str(row.get("router_reason") or "")[:FAILURE_CHARS],
         )
 
 
@@ -153,6 +186,10 @@ class Coordinated:
     flags: dict[str, list[Flag]] = field(default_factory=dict)
     upheld: set[tuple[str, str, str, int]] = field(default_factory=set)
     coordinators: set[str] = field(default_factory=set)
+    drafts: dict[str, str] = field(default_factory=dict)
+    drafts_complete: bool = False
+    rows: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    rows_complete: bool = False
 
     def standing(self, hotkey: str) -> list[Flag]:
         return [f for f in self.flags.get(hotkey, []) if f.key not in self.upheld]
@@ -176,15 +213,34 @@ def verify_report(body: Mapping[str, Any]) -> bool:
 
 
 def stands(entry: Mapping[str, Any]) -> bool:
-    first = [int(t) for t in entry.get("first_tokens") or []]
-    second = [int(t) for t in entry.get("second_tokens") or []]
     if str(entry.get("kind", "")) == CANARY:
         return bool(entry.get("first_hit")) and bool(entry.get("second_hit"))
-    claimed = [int(t) for t in entry.get("claimed_tokens") or []]
-    return bool(first) and first == second and first != claimed
+    first = str(entry.get("first_sha256") or "").lower()
+    second = str(entry.get("second_sha256") or "").lower()
+    claimed = str(entry.get("claimed_sha256") or "").lower()
+    if not first or not claimed or first == NO_TOKENS:
+        return False
+    return first == second and first != claimed
 
 
-def merge(epoch_index: int, reports: Iterable[Mapping[str, Any]]) -> Coordinated:
+def _take_reference(found: Coordinated, block: Mapping[str, Any]) -> None:
+    if TIMING_KEYS & set(block):
+        found.reference = ReferenceTiming.from_dict(block)
+    for row in block.get(DRAFTS_KEY) or []:
+        if isinstance(row, Mapping) and row.get("item_id"):
+            found.drafts[str(row["item_id"])] = str(row.get("draft") or "")
+    found.drafts_complete = found.drafts_complete or bool(block.get(DRAFTS_DONE_KEY))
+    for row in block.get(ROWS_KEY) or []:
+        if isinstance(row, Mapping) and row.get("item_id"):
+            found.rows[(str(row.get("pool") or ""), str(row["item_id"]))] = dict(row)
+    found.rows_complete = found.rows_complete or bool(block.get(ROWS_DONE_KEY))
+
+
+def merge(
+    epoch_index: int,
+    reports: Iterable[Mapping[str, Any]],
+    leaves: Mapping[str, str] | None = None,
+) -> Coordinated:
     found = Coordinated(epoch_index=epoch_index)
     for body in reports:
         if not isinstance(body, Mapping) or not verify_report(body):
@@ -196,17 +252,21 @@ def merge(epoch_index: int, reports: Iterable[Mapping[str, Any]]) -> Coordinated
         found.complete = found.complete or bool(body.get("complete"))
         reference = body.get("reference")
         if isinstance(reference, Mapping):
-            found.reference = ReferenceTiming.from_dict(reference)
+            _take_reference(found, reference)
         for hotkey, row in (body.get("miners") or {}).items():
             if not isinstance(row, Mapping):
                 continue
             hotkey = str(hotkey)
+            if leaves is not None:
+                leaf = str(leaves.get(hotkey) or "").lower()
+                if not leaf or str(row.get("transcript_sha256") or "").lower() != leaf:
+                    continue
             spot = row.get("spot_check")
             if isinstance(spot, Mapping):
                 found.spot_checks[hotkey] = SpotCheck.from_dict(spot)
                 found.failures.pop(hotkey, None)
-            elif row.get("failure"):
-                found.failures[hotkey] = str(row.get("failure"))[:300]
+            elif row.get("failure") and hotkey not in found.spot_checks:
+                found.failures[hotkey] = str(row.get("failure"))[:FAILURE_CHARS]
             canary = row.get("canary")
             if isinstance(canary, Mapping):
                 found.canaries[hotkey] = {
@@ -243,7 +303,26 @@ def merge(epoch_index: int, reports: Iterable[Mapping[str, Any]]) -> Coordinated
     return found
 
 
-def fetch(client: Any, arena_id: str, epoch_index: int, key: str) -> Coordinated | None:
+def receipt_leaves(client: Any, arena_id: str, epoch_index: int, key: str) -> dict[str, str]:
+    try:
+        document = client.receipts(arena_id, epoch_index)
+        if not document:
+            return {}
+        items.verify_document(document, key)
+    except Exception as exc:
+        log.warning("the receipts of epoch %d were not read: %s", epoch_index, exc)
+        return {}
+    leaves = dict(document.get("body") or {}).get("leaves") or {}
+    return {str(h): str(s).lower() for h, s in dict(leaves).items() if h and s}
+
+
+def fetch(
+    client: Any,
+    arena_id: str,
+    epoch_index: int,
+    key: str,
+    leaves: Mapping[str, str] | None = None,
+) -> Coordinated | None:
     try:
         document = client.document(arena_id, epoch_index, SPOTCHECK_KIND)
     except Exception as exc:
@@ -257,7 +336,8 @@ def fetch(client: Any, arena_id: str, epoch_index: int, key: str) -> Coordinated
         log.warning("the coordinator document for epoch %d does not verify: %s", epoch_index, exc)
         return None
     body = dict(document.get("body") or {})
-    return merge(epoch_index, body.get("reports") or [])
+    held = receipt_leaves(client, arena_id, epoch_index, key) if leaves is None else leaves
+    return merge(epoch_index, body.get("reports") or [], held)
 
 
 def ban_epochs(definition: Mapping[str, Any]) -> int:

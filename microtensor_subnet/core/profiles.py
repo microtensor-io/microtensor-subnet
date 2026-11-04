@@ -26,7 +26,7 @@ PRECISION: Final[dict[str, str]] = {
 }
 MEMORY_GB: Final[dict[str, int]] = {"P1": 24, "P2": 80, "P3": 80, "K": 32, "C": 0}
 TENSOR_PARALLEL: Final[dict[str, int]] = {"K": 2}
-BATCH_INVARIANT: Final[frozenset[str]] = frozenset({"P1", "P2", "P3"})
+BATCH_INVARIANT: Final[frozenset[str]] = frozenset({"P2", "P3"})
 BATCHED_SEQS: Final[int] = 16
 CPU_THREADS: Final[int] = 8
 SINGLE_SEQ: Final[int] = 1

@@ -188,7 +188,7 @@ def router_call(
         "seq": seq,
         "kind": ROUTER,
         "route": route,
-        "request": dict(request),
+        "request_sha256": canonical_sha256(request),
         "response": dict(response),
         "status": int(status),
     }

@@ -21,7 +21,13 @@ from microtensor_subnet.artifact.params import (
     kv_cache_bytes,
     model_parameters,
 )
-from microtensor_subnet.artifact.validate import Manifest, ManifestError, SlmPin, load_manifest
+from microtensor_subnet.artifact.validate import (
+    Manifest,
+    ManifestError,
+    SlmPin,
+    load_manifest,
+    weights_sha256,
+)
 from microtensor_subnet.chain.client import ChainError
 from microtensor_subnet.chain.commitment import CommitmentError, SubmissionCommitment
 from microtensor_subnet.chain.epochs import Epoch, epoch_seed
@@ -38,6 +44,7 @@ from microtensor_subnet.validator import (
     checks,
     collect,
     compress,
+    duplicates,
     items,
     progress,
     provenance,
@@ -95,6 +102,8 @@ ROUTERS_DIR: Final[str] = "routers"
 REPORT_FILE: Final[str] = "report.json"
 KEPT_AT_CLOSE: Final[frozenset[str]] = frozenset({REPORT_FILE, probe_sets.PROBE_DIR})
 COORDINATOR_WAIT_SECONDS: Final[int] = 5 * 3600
+REFERENCE_POOLS: Final[tuple[str, ...]] = (SLM, SYSTEM, ESCALATION)
+GRADED_REFERENCE_POOLS: Final[tuple[str, ...]] = (SYSTEM, ESCALATION)
 
 
 class EpochError(RuntimeError):
@@ -129,6 +138,10 @@ class MinerRecord:
     checks: list[dict[str, Any]] = field(default_factory=list)
     cleared: bool = False
     shared: set[str] = field(default_factory=set)
+    duplicates: dict[str, str] = field(default_factory=dict)
+    over_limits: dict[str, str] = field(default_factory=dict)
+    file_issue: str = ""
+    memory_bytes: int = 0
 
     def wire(self) -> dict[str, Any]:
         return {
@@ -143,6 +156,8 @@ class MinerRecord:
             "failure": self.failure,
             "drafts": {i: [text, ok] for i, (text, ok) in (self.drafts or {}).items()},
             "posted": self.posted,
+            "duplicates": dict(self.duplicates),
+            "over_limits": dict(self.over_limits),
         }
 
 
@@ -544,6 +559,7 @@ def declared_bases(config: EpochConfig, context: EpochContext) -> set[str]:
 def cached_bases(config: EpochConfig, context: EpochContext) -> dict[str, Path]:
     found: dict[str, Path] = {}
     allowed = [str(b) for b in context.definition.get("allowed_bases") or []]
+    references = dict(context.definition.get("references") or {})
     wanted = (
         declared_bases(config, context) & set(allowed) if config.chain.network == "test" else set()
     )
@@ -554,7 +570,8 @@ def cached_bases(config: EpochConfig, context: EpochContext) -> dict[str, Path]:
         allowed = [b for b in allowed if b in wanted]
     for base in allowed:
         try:
-            found[base] = collect.download(base, "main", config.cache_dir)
+            pinned_revision = base == references.get("slm") and references.get("slm_revision")
+            found[base] = collect.download(base, str(pinned_revision or "main"), config.cache_dir)
         except Exception as exc:
             log.warning("base %s could not be fetched: %s", base, exc)
     return found
@@ -1049,8 +1066,9 @@ class MinerModeRunner:
     canaries: dict[str, dict[str, int]] = field(default_factory=dict)
     fraud: dict[str, str] = field(default_factory=dict)
     coordinated: spotcheck.Coordinated | None = None
-    seen_manifests: dict[str, str] = field(default_factory=dict)
-    seen_weights: dict[str, str] = field(default_factory=dict)
+    spot_failures: dict[str, str] = field(default_factory=dict)
+    parts: dict[str, duplicates.Entry] = field(default_factory=dict)
+    template: duplicates.Template | None = None
     serving: dict[str, Any] | None = None
 
     @property
@@ -1072,21 +1090,6 @@ class MinerModeRunner:
 
     def miner_dir(self, hotkey: str) -> Path:
         return self.config.mirror_dir / hotkey
-
-    def claim(self, hotkey: str, entry: Mapping[str, Any]) -> str:
-        manifest = str(entry.get("manifest_sha256") or "")
-        weights = str(entry.get("weights_sha256") or "")
-        first = self.seen_manifests.get(manifest) if manifest else None
-        if first is not None and first != hotkey:
-            return f"artifact duplicates the earlier commitment by {first}"
-        first = self.seen_weights.get(weights) if weights else None
-        if first is not None and first != hotkey:
-            return f"model weights duplicate the earlier commitment by {first}"
-        if manifest:
-            self.seen_manifests.setdefault(manifest, hotkey)
-        if weights:
-            self.seen_weights.setdefault(weights, hotkey)
-        return ""
 
     def close(self) -> None:
         self.reporter.close()
@@ -1262,7 +1265,9 @@ def set_up_miner_mode(
         agent=agent,
         base_dirs=base_dirs,
         known_public=provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json"),
+        template=pinned_template(config),
     )
+    coordinator_reference(runner)
     reference_figures_from_labels(runner)
     for banned in banned_hotkeys(client, context):
         if runner.mirror.pop(banned, None) is not None:
@@ -1270,12 +1275,20 @@ def set_up_miner_mode(
     return runner
 
 
-def ordered_miners(runner: MinerModeRunner) -> list[str]:
-    def key(hotkey: str) -> tuple[int, str]:
-        row = runner.context.roster.get(hotkey) or {}
-        return (_commit_block(row) or _commit_block(runner.mirror[hotkey]), hotkey)
+def pinned_template(config: EpochConfig) -> duplicates.Template | None:
+    try:
+        return duplicates.template_of(items.template_tree(config.cache_dir))
+    except (items.ReleaseError, OSError) as exc:
+        log.error("the pinned template was not read; code is not compared this epoch: %s", exc)
+        return None
 
-    return sorted(runner.mirror, key=key)
+
+def ordered_miners(runner: MinerModeRunner) -> list[str]:
+    blocks = {
+        hotkey: _commit_block(runner.context.roster.get(hotkey) or {}) or _commit_block(entry)
+        for hotkey, entry in runner.mirror.items()
+    }
+    return duplicates.commit_order(runner.chain, blocks)
 
 
 def replayer_for(runner: MinerModeRunner) -> replaying.Replayer:
@@ -1299,21 +1312,13 @@ def replayer_for(runner: MinerModeRunner) -> replaying.Replayer:
         reference_harness_dir=harness,
         variant_dirs=variants,
         request_seconds=runner.config.request_seconds,
-        caps=replay_caps(runner.labels),
         seeds=runner.inputs.seeds(),
         drafts=runner.inputs.drafts,
         relay_allowance_micros=runner.relay_allowance,
         max_input_tokens=int(budgets.get("max_input_tokens") or 0),
         max_output_tokens=int(budgets.get("max_output_tokens") or 0),
+        keep_prompts=False,
     )
-
-
-def replay_caps(labels: items.LabelsBundle) -> dict[str, int]:
-    found: dict[str, int] = {}
-    for pool in (ESCALATION, SYSTEM):
-        for item_id, row in labels.rows(pool).items():
-            found[item_id] = max(1, int(row.cost_micros * 1.5))
-    return found
 
 
 def transcript_reason(runner: MinerModeRunner, hotkey: str, transcript: Mapping[str, Any]) -> str:
@@ -1375,8 +1380,68 @@ def single_base(definition: Mapping[str, Any]) -> str:
     return allowed[0] if len(allowed) == 1 else ""
 
 
+def weight_digest(files: Mapping[str, str]) -> str:
+    weights = {name: digest for name, digest in files.items() if _is_weight(name)}
+    return weights_sha256(weights) if weights else ""
+
+
+def parts_entry(hotkey: str, entry: Mapping[str, Any]) -> duplicates.Entry:
+    has_weights = any(_is_weight(name) for name in _files_of(entry, SLM_DIR))
+    router_files = {
+        name: digest
+        for name, digest in _files_of(entry, ARTIFACT_DIR).items()
+        if name.startswith(f"{ROUTER}/")
+    }
+    return duplicates.Entry(
+        hotkey=hotkey,
+        weights_sha256=str(entry.get("weights_sha256") or "") if has_weights else "",
+        router_sha256=weight_digest(router_files),
+    )
+
+
+def note_code(runner: MinerModeRunner, record: MinerRecord, artifact: Artifact) -> None:
+    problem = checks.code_problem(runner.context, artifact.artifact_dir)
+    if problem:
+        record.over_limits.update(dict.fromkeys((HARNESS, ESCALATION, SYSTEM), problem))
+    part = runner.parts[record.hotkey]
+    template = runner.template
+    if template is None:
+        return
+    if HARNESS in artifact.has:
+        part.harness = duplicates.own_code(artifact.artifact_dir, duplicates.HARNESS_PART, template)
+    if ESCALATION in artifact.has:
+        part.repair = duplicates.own_code(artifact.artifact_dir, duplicates.REPAIR_PART, template)
+
+
+def model_sketch(runner: MinerModeRunner, hotkey: str, slm_dir: Path, base: str) -> None:
+    name = single_base(runner.context.definition) or base
+    base_dir = runner.base_dirs.get(name)
+    if base_dir is None:
+        log.warning("%s has no change sketch: base %s is not here", hotkey, name or "unknown")
+        return
+    try:
+        runner.parts[hotkey].sketch = duplicates.sketch_weights(slm_dir, base_dir)
+    except Exception as exc:
+        log.warning("%s has no change sketch: %s", hotkey, exc)
+
+
+def drop_weights(slm_dir: Path) -> None:
+    (slm_dir / ".complete").unlink(missing_ok=True)
+    for path in slm_dir.iterdir():
+        if path.is_file() and _is_weight(path.name):
+            path.unlink()
+
+
+def slim_transcript(runner: MinerModeRunner, hotkey: str) -> None:
+    held = runner.miner_transcripts.get(hotkey)
+    if held is not None:
+        kept = [row for row in transcripts.items_of(held) if str(row.get("pool", "")) == SLM]
+        runner.miner_transcripts[hotkey] = {"items": kept}
+
+
 def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Replayer) -> None:
     entry = runner.mirror[hotkey]
+    runner.parts[hotkey] = parts_entry(hotkey, entry)
     record = MinerRecord(
         hotkey,
         str(
@@ -1410,6 +1475,7 @@ def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Repl
             artifact_dir=artifact_dir,
             slm_dir=slm_dir,
         )
+        note_code(runner, record, record.artifact)
         sha = runner.leaves.get(hotkey, "")
         if not sha:
             raise EpochError("no transcript receipt under the Freeze 2 root")
@@ -1442,10 +1508,6 @@ def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Repl
         record.failure = f"replay: {result.reason}"
         log.info("%s replay failed: %s", hotkey, result.reason)
         return
-    record.claim = runner.claim(hotkey, entry)
-    if record.claim:
-        record.failure = record.claim
-        return
     try:
         slm_dir = pull_weights(runner, hotkey)
     except (ServerError, EpochError, OSError, RuntimeError) as exc:
@@ -1468,6 +1530,11 @@ def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Repl
         fallback=single_base(runner.context.definition),
     )
     record.provenance = dict(outcome.provenance)
+    model_sketch(runner, hotkey, slm_dir, str(record.provenance.get("declared_base") or ""))
+    record.file_issue = checks.file_problem(runner.context, artifact)
+    record.memory_bytes = miner_memory(runner, artifact)
+    checks.labels(slm_dir)
+    drop_weights(slm_dir)
 
 
 def grade_miner(runner: MinerModeRunner, hotkey: str) -> ArtifactOutcome | None:
@@ -1485,7 +1552,7 @@ def grade_miner(runner: MinerModeRunner, hotkey: str) -> ArtifactOutcome | None:
         runner.labels,
         result,
         parameters=artifact.slm_parameters,
-        memory_bytes=miner_memory(runner, artifact),
+        memory_bytes=record.memory_bytes,
         token_price=runner.context.token_price(
             artifact.slm_parameters or runner.context.reference.slm_parameters
         ),
@@ -1502,6 +1569,7 @@ def note_checks_for(runner: MinerModeRunner, record: MinerRecord) -> None:
     if record.artifact is None:
         return
     outcome = runner.outcomes.get(record.hotkey)
+    spot = runner.spot_checks.get(record.hotkey)
     try:
         record.checks = checks.build(
             runner.context,
@@ -1509,6 +1577,9 @@ def note_checks_for(runner: MinerModeRunner, record: MinerRecord) -> None:
             claim=record.claim,
             found=record.provenance or None,
             run=outcome.slm if outcome is not None else None,
+            memory_ok=spot.memory_ok if spot is not None else True,
+            speed_ok=spot.envelope_ok if spot is not None and spot.memory_ok else None,
+            file_issue=record.file_issue,
         )
     except Exception as exc:
         log.debug("%s checks not listed: %s", record.hotkey, exc)
@@ -1559,13 +1630,16 @@ def head_block(runner: MinerModeRunner) -> int:
         return 0
 
 
-def wait_for_coordinator(runner: MinerModeRunner) -> spotcheck.Coordinated | None:
+def fetch_coordinated(runner: MinerModeRunner) -> spotcheck.Coordinated | None:
     context = runner.context
-    wanted = {h for h, r in runner.records.items() if not r.failure and h in runner.outcomes}
-    if not wanted:
-        return spotcheck.fetch(
-            runner.client, context.arena_id, context.epoch_index, runner.server_key
-        )
+    return spotcheck.fetch(
+        runner.client, context.arena_id, context.epoch_index, runner.server_key, runner.leaves
+    )
+
+
+def poll_coordinator(
+    runner: MinerModeRunner, ready: Callable[[spotcheck.Coordinated], bool], what: str
+) -> spotcheck.Coordinated | None:
     deadline = coordinator_deadline(runner)
     poll = int(
         runner.config.extra.get("coordinator_poll_seconds") or spotcheck.DEFAULT_POLL_SECONDS
@@ -1574,21 +1648,91 @@ def wait_for_coordinator(runner: MinerModeRunner) -> spotcheck.Coordinated | Non
         runner.config.extra.get("coordinator_wait_seconds") or COORDINATOR_WAIT_SECONDS
     )
     while True:
-        found = spotcheck.fetch(
-            runner.client, context.arena_id, context.epoch_index, runner.server_key
-        )
-        if found is not None and (found.complete or all(found.covers(h) for h in wanted)):
+        found = fetch_coordinated(runner)
+        if found is not None and ready(found):
             return found
         head = head_block(runner)
         if runner.config.dry_run or time.monotonic() >= give_up or (deadline and head >= deadline):
             return found
-        log.info(
-            "block %d: waiting for the coordinator's spot checks of %d miners until block %d",
-            head,
-            len(wanted),
-            deadline,
-        )
+        log.info("block %d: waiting for the coordinator's %s until block %d", head, what, deadline)
         time.sleep(max(10, poll))
+
+
+def wait_for_coordinator(runner: MinerModeRunner) -> spotcheck.Coordinated | None:
+    wanted = {h for h, r in runner.records.items() if not r.failure and h in runner.outcomes}
+    if not wanted:
+        return fetch_coordinated(runner)
+    return poll_coordinator(
+        runner,
+        lambda found: found.complete or all(found.covers(h) for h in wanted),
+        f"spot checks of {len(wanted)} miners",
+    )
+
+
+def reference_row(runner: MinerModeRunner, row: Mapping[str, Any]) -> items.RedoRow | None:
+    context = runner.context
+    pool = str(row.get("pool") or "")
+    item_id = str(row.get("item_id") or "")
+    answer = str(row.get("answer") if row.get("answer") is not None else "")
+    correct = bool(row.get("correct"))
+    if pool in GRADED_REFERENCE_POOLS:
+        item = transcripts.items_by_id(context).get(item_id)
+        correct = item is not None and context.grade(item, answer).success
+    try:
+        return items.RedoRow(
+            item_id=item_id,
+            pool=pool,
+            correct=correct,
+            cost_micros=int(row.get("cost_micros") or 0),
+            latency_ms=float(row.get("latency_ms") or 0.0),
+            answer=answer,
+            model=str(row.get("model") or ""),
+            ttft_ms=float(row.get("ttft_ms") or 0.0),
+            tpot_ms=float(row.get("tpot_ms") or 0.0),
+        )
+    except (TypeError, ValueError) as exc:
+        log.warning("a reference row for %s was not read: %s", item_id, exc)
+        return None
+
+
+def add_reference_rows(runner: MinerModeRunner, found: spotcheck.Coordinated) -> None:
+    held = {(row.pool, row.item_id) for row in runner.labels.redo}
+    added = 0
+    for key, raw in sorted(found.rows.items()):
+        if key in held:
+            continue
+        try:
+            row = reference_row(runner, raw)
+        except Exception as exc:
+            log.warning("the reference answer %s was not graded: %s", key, exc)
+            continue
+        if row is not None:
+            runner.labels.redo.append(row)
+            added += 1
+    log.info("%d reference answers came from the coordinator", added)
+
+
+def coordinator_reference(runner: MinerModeRunner) -> None:
+    rows_missing = any(not runner.labels.rows(pool) for pool in REFERENCE_POOLS)
+    drafts_missing = not runner.inputs.drafts and bool(runner.context.items.items(ESCALATION))
+    if not rows_missing and not drafts_missing:
+        return
+    found = poll_coordinator(
+        runner,
+        lambda seen: seen.rows_complete if rows_missing else seen.drafts_complete,
+        "reference answers",
+    )
+    if found is None:
+        log.warning("the coordinator published no reference answers")
+        return
+    if drafts_missing and found.drafts_complete:
+        runner.inputs.drafts = dict(found.drafts)
+    if not rows_missing:
+        return
+    if not found.rows_complete:
+        log.error("the coordinator's reference answers are incomplete and are not used")
+        return
+    add_reference_rows(runner, found)
 
 
 def coordinator_phase(runner: MinerModeRunner) -> None:
@@ -1597,6 +1741,7 @@ def coordinator_phase(runner: MinerModeRunner) -> None:
     if found is None:
         log.warning("no coordinator spot checks were published; scored without them")
         return
+    runner.spot_failures = {h: why for h, why in found.failures.items() if h in runner.records}
     timing = found.reference
     if timing is not None:
         runner.reference_timing = timing
@@ -1655,6 +1800,18 @@ def collect_fraud(runner: MinerModeRunner) -> None:
             log.warning("%s zeroed on the coordinator's evidence %s", hotkey, label)
 
 
+def zero_score(held: PoolScore | None, pool: str, reason: str) -> PoolScore:
+    n = held.n if held is not None else 0
+    return PoolScore(pool, 0.0, 0.0, 0.0, n, False, {"reason": reason})
+
+
+def coordinator_latency(run: RouterRun, spot: spotcheck.SpotCheck | None) -> None:
+    measured = spot.router_latency_p95_ms if spot is not None else None
+    run.latency_p95_ms = float(measured) if measured is not None else 0.0
+    if spot is not None and spot.router_reason:
+        run.reason = run.reason or spot.router_reason
+
+
 def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[PoolScore]:
     context = runner.context
     artifact = record.artifact
@@ -1666,8 +1823,9 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
     if outcome.slm is not None and runner.reference_slm is not None and artifact.slm_dir:
         envelope = checks.Envelope.of(context)
         spot = runner.spot_checks.get(record.hotkey)
-        sized = envelope.sized(artifact.slm_parameters)
-        fits = envelope.fits(outcome.slm)
+        problem = record.file_issue
+        sized = envelope.sized(artifact.slm_parameters) and not problem
+        fits = envelope.fits(outcome.slm) and (spot.memory_ok if spot is not None else True)
         fast = spot.envelope_ok if spot is not None else True
         if rules.per_item_envelope:
             gate, envelope_ok = sized, fits and fast
@@ -1686,6 +1844,8 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
                 envelope_ok=envelope_ok,
             )
         )
+        if problem:
+            found[SLM].detail["reason"] = problem
     if outcome.harness is not None:
         found[HARNESS] = score.harness_score(
             outcome.harness, min_items=rules.min_items, limits=context.harness_limits
@@ -1700,7 +1860,13 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
     if outcome.system is not None:
         found[SYSTEM] = score.system_score(outcome.system, min_items=rules.min_items)
     if outcome.router is not None:
+        coordinator_latency(outcome.router, runner.spot_checks.get(record.hotkey))
         found[ROUTER] = router_pool_score(context, outcome.router, runner.reference_router)
+    for pool, reason in record.over_limits.items():
+        found[pool] = zero_score(found.get(pool), pool, reason)
+    for pool, earlier in record.duplicates.items():
+        reason = f"duplicates the earlier submission by {earlier}"
+        found[pool] = zero_score(found.get(pool), pool, reason)
     ordered = [found[pool] for pool in (*LIVE_POOLS, ROUTER) if pool in found]
     for pool, reason in runner.no_reference.items():
         if pool in found:
@@ -1712,7 +1878,23 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
     return ordered
 
 
+def router_base(runner: MinerModeRunner) -> Path | None:
+    references = dict(runner.context.definition.get("references") or {})
+    repo = str(references.get("router_base") or "")
+    if not repo:
+        log.info("the arena names no router base; routers are compared by hash only")
+        return None
+    try:
+        return collect.download(
+            repo, str(references.get("router_base_revision") or "main"), runner.config.cache_dir
+        )
+    except Exception as exc:
+        log.warning("the router base %s was not fetched: %s", repo, exc)
+        return None
+
+
 def pull_router_weights(runner: MinerModeRunner) -> None:
+    base = router_base(runner)
     for hotkey, record in runner.records.items():
         artifact = record.artifact
         if record.failure or artifact is None or "router" not in artifact.has:
@@ -1727,6 +1909,41 @@ def pull_router_weights(runner: MinerModeRunner) -> None:
             )
         except (ServerError, EpochError, OSError) as exc:
             log.warning("%s router weights not pulled: %s", hotkey, exc)
+            continue
+        if base is None or hotkey not in runner.parts:
+            continue
+        try:
+            runner.parts[hotkey].router_sketch = duplicates.sketch_weights(
+                artifact.artifact_dir / ROUTER, base
+            )
+        except Exception as exc:
+            log.warning("%s router has no change sketch: %s", hotkey, exc)
+
+
+def duplicates_phase(runner: MinerModeRunner, queue: Sequence[str]) -> None:
+    entries: list[duplicates.Entry] = []
+    for hotkey in queue:
+        part = runner.parts.get(hotkey) or duplicates.Entry(hotkey=hotkey)
+        record = runner.records.get(hotkey)
+        artifact = record.artifact if record is not None else None
+        if artifact is not None and ROUTER not in artifact.has:
+            part.router_sha256 = ""
+        held = runner.miner_transcripts.get(hotkey)
+        clean = record is not None and not record.failure
+        part.outputs = duplicates.outputs_of(held) if clean and held is not None else {}
+        entries.append(part)
+    zeroed = duplicates.compare(entries)
+    for hotkey, record in runner.records.items():
+        record.duplicates = dict(zeroed.get(hotkey) or {})
+        if record.artifact is None:
+            continue
+        record.claim = (
+            f"duplicates the earlier submission by {next(iter(record.duplicates.values()))}"
+            if record.duplicates
+            else ""
+        )
+        note_checks_for(runner, record)
+    runner.parts = {}
 
 
 def router_phase(runner: MinerModeRunner) -> None:
@@ -1755,7 +1972,7 @@ def router_phase(runner: MinerModeRunner) -> None:
         if record.failure or artifact is None or "router" not in artifact.has:
             continue
         outcome = runner.outcomes.get(hotkey)
-        if outcome is None:
+        if outcome is None or ROUTER in record.duplicates:
             continue
         own = record.drafts if record.drafts is not None else reference_drafts
         others = {h: d for h, d in peers.items() if h != hotkey}
@@ -1776,6 +1993,9 @@ def run_router(
 ) -> RouterRun:
     if not router_dir.is_dir():
         return RouterRun(sources=[], loaded=False, reason="no router was kept")
+    problem = checks.router_problem(router_dir, runner.limits.router_max_parameters)
+    if problem:
+        return RouterRun(sources=[], loaded=False, reason=problem)
     process = None
     try:
         process, url = runner.host.open_router(
@@ -2002,6 +2222,10 @@ def miner_mode_report(
         row["replay"] = replay.to_dict() if replay is not None else None
         row["spot_check"] = spot.to_dict() if spot is not None else None
         row["canary"] = dict(runner.canaries.get(hotkey) or {"checked": 0, "hits": 0})
+        row["spot_failure"] = runner.spot_failures.get(hotkey, "")
+        kept = runner.records.get(hotkey)
+        row["duplicates"] = dict(kept.duplicates) if kept is not None else {}
+        row["over_limits"] = dict(kept.over_limits) if kept is not None else {}
     signed = report.sign_body(body, runner.wallet)
     if runner.config.dry_run:
         log.info("dry run, the epoch report is not posted")
@@ -2076,15 +2300,16 @@ def run_miner_mode_epoch(
                 record = runner.records.setdefault(miner, MinerRecord(miner, "", "", 0))
                 record.failure = record.failure or f"evaluation: {exc}"
                 log.warning("%s failed: %s", miner, exc)
-        for miner in queue:
             try:
                 grade_miner(runner, miner)
             except Exception as exc:
                 runner.records[miner].failure = f"grading: {exc}"
                 log.warning("%s grading failed: %s", miner, exc)
+            slim_transcript(runner, miner)
         coordinator_phase(runner)
         collect_fraud(runner)
         pull_router_weights(runner)
+        duplicates_phase(runner, queue)
         router_phase(runner)
         for miner, record in runner.records.items():
             if not record.failure:

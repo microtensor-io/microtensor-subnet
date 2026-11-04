@@ -139,7 +139,7 @@ def unpack(
 
 TESTNET = "test"
 TEMPLATE_REPO = "https://github.com/microtensor-io/microtensor-miner-template"
-TEMPLATE_COMMIT = "8e4f02e2f8e910161247dd0f7f4b66f62afdc617"
+TEMPLATE_COMMIT = "014dd81ceccc90b7d114b6772cf55ef0c59601e7"
 TEMPLATE_FILES = ("main.py", "config.json", "requirements.txt")
 TEMPLATE_DIRS = ("harness", "escalation")
 
@@ -174,10 +174,15 @@ def _fetch_template(clone: Path) -> None:
     working.rename(clone)
 
 
-def template_harness(task: str, cache_dir: Path) -> Path:
+def template_tree(cache_dir: Path) -> Path:
     clone = cache_dir / f"reference-template-{TEMPLATE_COMMIT}"
     if not (clone / "main.py").is_file():
         _fetch_template(clone)
+    return clone
+
+
+def template_harness(task: str, cache_dir: Path) -> Path:
+    clone = template_tree(cache_dir)
     into = cache_dir / f"reference-harness-{task or 'generic'}"
     shutil.rmtree(into, ignore_errors=True)
     into.mkdir(parents=True)

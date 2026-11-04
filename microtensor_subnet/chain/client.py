@@ -27,6 +27,8 @@ class ChainError(RuntimeError):
 
 
 RAO_PER_TAO = 1_000_000_000
+COMMITMENT_MODULE = "Commitments"
+COMMITMENT_CALL = "set_commitment"
 
 
 def _address(value: Any) -> str:
@@ -401,6 +403,31 @@ class SubtensorClient:
             if str(getattr(extrinsic, "extrinsic_hash", "")).lower() == wanted:
                 return index
         raise ChainError(f"extrinsic {extrinsic_hash} is not in block {block}")
+
+    @_serialised
+    def commitment_position(self, block: int, hotkey: str) -> int:
+        substrate = getattr(self.subtensor, "substrate", None)
+        if substrate is None:
+            raise ChainError("this bittensor build exposes no substrate interface")
+
+        def read() -> Any:
+            block_hash = substrate.get_block_hash(block)
+            return substrate.get_block(block_hash=block_hash)
+
+        found = with_retry("get_block", read)
+        position = -1
+        for index, extrinsic in enumerate((found or {}).get("extrinsics") or []):
+            record = getattr(extrinsic, "value", extrinsic)
+            if not isinstance(record, dict) or _address(record.get("address")) != hotkey:
+                continue
+            call = record.get("call")
+            if not isinstance(call, dict) or call.get("call_module") != COMMITMENT_MODULE:
+                continue
+            if call.get("call_function") == COMMITMENT_CALL:
+                position = index
+        if position < 0:
+            raise ChainError(f"no commitment by {hotkey} in block {block}")
+        return position
 
     @_serialised
     def transfer_at(self, block: int, index: int) -> TransferEvent:

@@ -294,8 +294,9 @@ class ServerClient:
                     partial.unlink(missing_ok=True)
                     raise MirrorDropped(f"mirror blob {sha256} resumed at the wrong offset")
                 with partial.open("ab" if status == 206 else "wb") as handle:
-                    for chunk in response.iter_bytes(CHUNK_BYTES):
+                    for chunk in response.iter_bytes():
                         handle.write(chunk)
+                        handle.flush()
         except httpx.HTTPError as exc:
             raise MirrorDropped(f"mirror blob {sha256} failed: {exc}") from exc
 

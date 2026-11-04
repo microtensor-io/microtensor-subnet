@@ -10,6 +10,7 @@ from microtensor_subnet.artifact.params import (
     ParameterError,
     count_parameters,
     footprint_bytes,
+    format_problem,
     safetensors_in,
 )
 from microtensor_subnet.artifact.validate import sha256_of, weights_sha256
@@ -22,6 +23,7 @@ CONFIG: Final[str] = "config"
 TOKENIZER: Final[str] = "tokenizer"
 WEIGHTS: Final[str] = "weights"
 SIZE: Final[str] = "size"
+FORMAT: Final[str] = "format"
 PROBE_TEXT: Final[str] = "SELECT 1; def main(): return {'ok': True}"
 DEFAULT_MAX_LEN: Final[int] = 8192
 REASON_LIMIT: Final[int] = 300
@@ -110,6 +112,7 @@ def check(
     bounds: tuple[int, int] | None = None,
     max_len: int = DEFAULT_MAX_LEN,
     memory_bytes: int = 0,
+    formats: tuple[str, ...] = (),
 ) -> Preflight:
     root = Path(root)
     if not root.is_dir():
@@ -148,6 +151,9 @@ def check(
         return Preflight(WEIGHTS, _reason(exc))
     except Exception as exc:
         return Preflight(WEIGHTS, _reason(exc))
+    problem = format_problem(root, formats)
+    if problem:
+        return Preflight(FORMAT, problem, parameters=parameters)
     files = hash_weights(root)
     digest = weights_sha256(files)
     try:
@@ -192,6 +198,10 @@ def bounds_of(definition: dict[str, Any]) -> tuple[int, int] | None:
     if not isinstance(budgets, dict) or not budgets.get("max_parameters"):
         return None
     return int(budgets.get("min_parameters") or 0), int(budgets["max_parameters"])
+
+
+def formats_of(definition: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(str(name) for name in definition.get("allowed_formats") or ())
 
 
 def max_len_of(definition: dict[str, Any]) -> int:
