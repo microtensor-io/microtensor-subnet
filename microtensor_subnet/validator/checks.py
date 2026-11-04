@@ -8,8 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from microtensor_subnet.artifact import gguf
-from microtensor_subnet.artifact.params import safetensors_in
+from microtensor_subnet.artifact import contract, gguf
+from microtensor_subnet.artifact.params import (
+    ParameterError,
+    format_problem,
+    index_problem,
+    model_parameters,
+    safetensors_in,
+)
 from microtensor_subnet.validator import collect, provenance, score
 from microtensor_subnet.validator.context import Artifact, EpochContext
 from microtensor_subnet.validator.results import SlmRun
@@ -165,7 +171,7 @@ def weight_format(slm_dir: Path) -> str:
     return f"gguf {kind}".strip()
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=1024)
 def labels(slm_dir: Path) -> tuple[str, str, str]:
     return (
         collect.card_value(slm_dir, "license"),
@@ -174,13 +180,74 @@ def labels(slm_dir: Path) -> tuple[str, str, str]:
     )
 
 
-def _slm_rows(context: EpochContext, artifact: Artifact, run: SlmRun) -> list[dict[str, Any]]:
+def allowed_formats(context: EpochContext) -> tuple[str, ...]:
+    return tuple(str(name) for name in context.definition.get("allowed_formats") or ())
+
+
+def config_problem(context: EpochContext, config: Mapping[str, Any]) -> str:
+    budgets = context.budgets
+    block = config.get("slm")
+    slm = block if isinstance(block, Mapping) else {}
+    inputs = int(budgets.get("max_input_tokens") or 0)
+    outputs = int(budgets.get("max_output_tokens") or 0)
+    try:
+        context_length = int(slm.get("max_context") or 0)
+        new_tokens = int(slm.get("max_new_tokens") or 0)
+    except (TypeError, ValueError):
+        return "config.json holds a malformed slm block"
+    if inputs and context_length > inputs + outputs:
+        return f"config.json asks for a context of {context_length}, over {inputs + outputs}"
+    if outputs and new_tokens > outputs:
+        return f"config.json asks for {new_tokens} output tokens, over {outputs}"
+    return ""
+
+
+def file_problem(context: EpochContext, artifact: Artifact) -> str:
+    if artifact.slm_dir is None:
+        return ""
+    unlisted = index_problem(artifact.slm_dir)
+    if unlisted:
+        return unlisted
+    try:
+        found = format_problem(artifact.slm_dir, allowed_formats(context))
+    except (OSError, ParameterError) as exc:
+        return str(exc)
+    return found or config_problem(context, artifact.config)
+
+
+def code_problem(context: EpochContext, artifact_dir: Path) -> str:
+    limit = int(context.harness_limits.get("max_code_bytes") or contract.CODE_LIMIT_BYTES)
+    total = sum(
+        path.stat().st_size
+        for folder in contract.CODE_DIRS
+        for path in (artifact_dir / folder).rglob("*")
+        if path.is_file()
+    )
+    return f"harness and repair code is {total} bytes, over {limit}" if total > limit else ""
+
+
+def router_problem(router_dir: Path, limit: int) -> str:
+    try:
+        found = model_parameters(router_dir)
+    except ParameterError as exc:
+        return str(exc)
+    return f"router has {found} parameters, over {limit}" if found > limit else ""
+
+
+def _slm_rows(
+    context: EpochContext,
+    artifact: Artifact,
+    run: SlmRun,
+    *,
+    memory_ok: bool = True,
+    speed_ok: bool | None = None,
+) -> list[dict[str, Any]]:
     rules = score.Rules.from_definition(context.definition)
     envelope = Envelope.of(context)
     found = [
         row(
             ENVELOPE,
-            envelope.sized(artifact.slm_parameters) and envelope.fits(run),
+            envelope.sized(artifact.slm_parameters) and envelope.fits(run) and memory_ok,
             group=envelope.group,
             vram_peak_bytes=run.vram_peak_bytes,
             memory_cap_bytes=envelope.memory_cap,
@@ -202,7 +269,7 @@ def _slm_rows(context: EpochContext, artifact: Artifact, run: SlmRun) -> list[di
         fast = share <= rules.violation_share
     else:
         fast = envelope.fast(run)
-    found.append(row(SPEED, fast, **speed))
+    found.append(row(SPEED, fast if speed_ok is None else speed_ok, **speed))
     gap, _ = score.twin_factor(run, rules)
     found.append(
         row(
@@ -223,6 +290,9 @@ def build(
     claim: str | None = None,
     found: Mapping[str, Any] | None = None,
     run: SlmRun | None = None,
+    memory_ok: bool = True,
+    speed_ok: bool | None = None,
+    file_issue: str | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if found:
@@ -240,8 +310,9 @@ def build(
     if artifact.slm_dir is None:
         return tidy(rows)
     if run is not None:
-        rows += _slm_rows(context, artifact, run)
+        rows += _slm_rows(context, artifact, run, memory_ok=memory_ok, speed_ok=speed_ok)
     licence, licence_name, kind = labels(artifact.slm_dir)
     rows.append(row(LICENCE, True, licence=licence, licence_name=licence_name))
-    rows.append(row(FORMAT, True, format=kind))
+    issue = file_problem(context, artifact) if file_issue is None else file_issue
+    rows.append(row(FORMAT, not issue, format=kind))
     return tidy(rows)

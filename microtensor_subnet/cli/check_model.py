@@ -51,6 +51,7 @@ def _definition(server: str, arena_id: str) -> dict[str, Any]:
 def run(args: argparse.Namespace) -> int:
     bounds: tuple[int, int] | None = (int(args.min_parameters), int(args.max_parameters))
     max_len = int(args.max_len)
+    formats: tuple[str, ...] = ()
     if args.arena:
         try:
             definition = _definition(args.server, args.arena)
@@ -58,7 +59,10 @@ def run(args: argparse.Namespace) -> int:
             return fail(str(exc))
         bounds = preflight.bounds_of(definition) or bounds
         max_len = preflight.max_len_of(definition)
-    found = preflight.check(args.slm, profile=args.profile, bounds=bounds, max_len=max_len)
+        formats = preflight.formats_of(definition)
+    found = preflight.check(
+        args.slm, profile=args.profile, bounds=bounds, max_len=max_len, formats=formats
+    )
     if args.json:
         print(
             json.dumps(

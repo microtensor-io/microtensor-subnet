@@ -59,7 +59,9 @@ def load_wallet(config: ChainConfig) -> Any:
         _ = wallet.hotkey.ss58_address
     except Exception as exc:
         raise WalletError(
-            f"wallet {config.wallet_name}/{config.wallet_hotkey} could not be unlocked"
+            f"wallet {config.wallet_name}/{config.wallet_hotkey} could not be unlocked: {exc}. "
+            "This is usually a file permission problem: the job runs as uid 10001, so copy the "
+            "hotkey and coldkeypub.txt into a folder owned by that uid and set MT_WALLET_DIR to it"
         ) from exc
     return wallet
 

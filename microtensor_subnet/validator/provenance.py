@@ -218,8 +218,9 @@ def check(
     base_dirs: Mapping[str, Path],
     known_public: Iterable[str],
     threshold: float = DEFAULT_THRESHOLD,
+    fallback: str = "",
 ) -> dict[str, Any]:
-    base = declared_base(slm_dir)
+    base = declared_base(slm_dir) or fallback
     result: dict[str, Any] = {
         "declared_base": base,
         "public_match": [],

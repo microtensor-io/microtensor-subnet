@@ -94,7 +94,7 @@ def check(
         return "receipt signature does not verify against the server key"
     if arena_id and str(receipt.get("arena_id", "")) != arena_id:
         return "receipt names another arena"
-    if epoch_index is not None and int(receipt.get("epoch_index") or -1) != int(epoch_index):
+    if epoch_index is not None and receipt.get("epoch_index") != int(epoch_index):
         return "receipt names another epoch"
     if miner and str(receipt.get("miner", "")) != miner:
         return "receipt names another miner"

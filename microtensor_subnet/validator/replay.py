@@ -85,7 +85,7 @@ class ReplayResult:
     first_mismatch: dict[str, Any] | None = None
     added_ms: dict[str, float] = field(default_factory=dict)
     wall_ms: dict[tuple[str, str], float] = field(default_factory=dict)
-    prompts: dict[tuple[str, int], str] = field(default_factory=dict)
+    prompts: dict[tuple[str, str, int], str] = field(default_factory=dict)
     relay_cost_micros: int = 0
     item_failures: dict[tuple[str, str], str] = field(default_factory=dict)
     over_calls: set[str] = field(default_factory=set)
@@ -116,8 +116,9 @@ class ReplayResult:
 @dataclass(slots=True)
 class TapState:
     item_id: str = ""
+    condition: str = ""
     calls: int = 0
-    prompts: dict[tuple[str, int], str] = field(default_factory=dict)
+    prompts: dict[tuple[str, str, int], str] = field(default_factory=dict)
 
 
 class PromptTap:
@@ -140,13 +141,15 @@ class PromptTap:
         self._server.shutdown()
         self._server.server_close()
 
-    def begin(self, key: str, item_id: str) -> None:
+    def begin(self, key: str, item_id: str, condition: str = "") -> None:
         with self._lock:
             state = self._state.setdefault(key, TapState())
             state.item_id = item_id
+            state.condition = condition
             state.calls = 0
+            state.prompts = {}
 
-    def prompts(self, key: str) -> dict[tuple[str, int], str]:
+    def prompts(self, key: str) -> dict[tuple[str, str, int], str]:
         with self._lock:
             state = self._state.get(key)
             return dict(state.prompts) if state is not None else {}
@@ -170,7 +173,7 @@ class PromptTap:
                 return
             prompt = body.get("prompt") if isinstance(body, dict) else None
             if isinstance(prompt, str):
-                state.prompts[(state.item_id, seq)] = prompt
+                state.prompts[(state.item_id, state.condition, seq)] = prompt
 
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         tap = self
@@ -238,12 +241,12 @@ class Replayer:
     reference_harness_dir: Path
     variant_dirs: Sequence[Path]
     request_seconds: float
-    caps: Mapping[str, int] = field(default_factory=dict)
     seeds: Mapping[str, int] = field(default_factory=dict)
     drafts: Mapping[str, str] = field(default_factory=dict)
     relay_allowance_micros: int = 0
     max_input_tokens: int = 0
     max_output_tokens: int = 0
+    keep_prompts: bool = True
 
     @property
     def limits(self) -> Limits:
@@ -346,7 +349,7 @@ class Replayer:
         item_id: str,
         condition: str,
         calls: Sequence[Mapping[str, Any]],
-        prompts: Mapping[tuple[str, int], str],
+        prompts: Mapping[tuple[str, str, int], str],
         count_tokens: Callable[[str], int] | None,
     ) -> None:
         key = (item_id, condition)
@@ -360,7 +363,12 @@ class Replayer:
                 result.item_failures.setdefault(
                     key, f"{produced} output tokens, over {self.max_output_tokens}"
                 )
-            prompt = prompts.get((item_id, int(call.get("seq") or 0)))
+            claimed = int(call.get("prompt_tokens") or 0)
+            if self.max_input_tokens and claimed > self.max_input_tokens:
+                result.item_failures.setdefault(
+                    key, f"{claimed} prompt tokens, over {self.max_input_tokens}"
+                )
+            prompt = prompts.get((item_id, condition, int(call.get("seq") or 0)))
             if prompt is None or count_tokens is None or not self.max_input_tokens:
                 continue
             counted = count_tokens(prompt)
@@ -381,6 +389,10 @@ class Replayer:
         if len(calls) != 1 or str(calls[0].get("kind", "")) != transcripts.KIND_SLM:
             return "extra call" if len(calls) > 1 else "missing call"
         call = calls[0]
+        if call.get("fault"):
+            return "direct call carries a fault"
+        if call.get("output_text") and not call.get("output_tokens"):
+            return "direct call has text but no tokens"
         prompt = render_prompt(self.context.slm_prompt, item.task)
         if str(call.get("prompt_sha256", "")) != transcripts.prompt_sha256(prompt):
             return "slm prompt differs"
@@ -395,12 +407,14 @@ class Replayer:
             return "output differs"
         seq = int(call.get("seq") or 0)
         condition = str(row.get("condition", ""))
-        result.prompts[(item.item_id, seq)] = prompt
+        prompts = {(item.item_id, condition, seq): prompt}
+        if self.keep_prompts:
+            result.prompts.update(prompts)
         result.count(
             condition, int(call.get("prompt_tokens") or 0), len(call.get("output_tokens") or [])
         )
         result.calls += 1
-        self._budget(result, item.item_id, condition, calls, result.prompts, count_tokens)
+        self._budget(result, item.item_id, condition, calls, prompts, count_tokens)
         return ""
 
     def _request_reason(self, row: Mapping[str, Any], item: Item, pool: str, condition: str) -> str:
@@ -409,11 +423,10 @@ class Replayer:
             return "request missing"
         if str(request.get("item_id", "")) != item.item_id:
             return "request item"
-        if transcripts.canonical_json(request.get("task")) != transcripts.canonical_json(item.task):
+        if request.get("task_sha256") != transcripts.task_sha256(item.task):
             return "request task"
         if condition == transcripts.CONDITION_REPAIR:
-            draft = self.drafts.get(item.item_id)
-            if draft is not None and str(request.get("draft", "")) != draft:
+            if self.drafts and str(request.get("draft", "")) != self.drafts.get(item.item_id):
                 return "request draft"
             if str(request.get("errors", "")) != REPAIR_ERRORS:
                 return "request errors"
@@ -496,25 +509,23 @@ class Replayer:
                     max_model_calls=self.limits.max_model_calls,
                     model_faults=self.limits.model_faults,
                     sample_database=self.context.sample_database,
-                    item_databases=item_databases.get(item_id, ()),
+                    item_databases=item_databases,
                     arena_id=self.context.arena_id,
                     epoch_index=self.context.epoch_index,
-                    miner=hotkey,
+                    miner_hotkey=hotkey,
                     purpose=purpose,
-                    cap_micros=self.caps.get(item_id, 0) if purpose else 0,
                 )
                 self.services.attach(key, session)
-                self.tap.begin(key, item_id)
-                request = row.get("request")
+                self.tap.begin(key, item_id, condition)
                 call = call_main(
                     main_url,
                     route,
-                    dict(request) if isinstance(request, Mapping) else {},
+                    transcripts.posted_request(row["request"], item.task),
                     timeout=self.request_seconds,
                 )
-                verdict = str(session.replay.verdict())
-                if verdict:
-                    return result.fail(item_id, int(session.replay.served), verdict)
+                mismatch = session.replay.verdict()
+                if mismatch is not None:
+                    return result.fail(item_id, mismatch.seq, mismatch.what)
                 body: Any = call.body if call.ok else {"error": call.error}
                 if transcripts.canonical_json(body) != transcripts.canonical_json(
                     row.get("output")
@@ -529,7 +540,8 @@ class Replayer:
                     transcripts.relay_receipts(row)
                 )
                 prompts = self.tap.prompts(key)
-                result.prompts.update(prompts)
+                if self.keep_prompts:
+                    result.prompts.update(prompts)
                 self._budget(result, item_id, condition, calls, prompts, count_tokens)
         except SandboxError as exc:
             return result.fail("", 0, f"sandbox: {exc}")

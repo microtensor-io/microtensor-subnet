@@ -15,6 +15,9 @@ INT4_PACK = 8
 INT8_PACK = 4
 KV_BYTES = 2
 SKIPPED_SUFFIXES = (".absmax", ".quant_map", ".nested_absmax", ".nested_quant_map", ".quant_state")
+FLOAT_FORMATS = {"BF16": "bf16", "F16": "fp16", "F32": "f32", "F64": "f64"}
+INDEX_FILE = "model.safetensors.index.json"
+WEIGHT_SUFFIXES = (".safetensors", ".gguf")
 
 
 class ParameterError(ValueError):
@@ -73,6 +76,43 @@ def safetensors_in(root: Path) -> list[Path]:
     return sorted(p for p in root.glob("*.safetensors") if p.is_file())
 
 
+def listed_shards(root: Path) -> list[str] | None:
+    path = root / INDEX_FILE
+    if not path.is_file():
+        return None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ParameterError(f"{INDEX_FILE} cannot be read") from exc
+    listed = parsed.get("weight_map") if isinstance(parsed, Mapping) else None
+    if not isinstance(listed, Mapping) or not listed:
+        raise ParameterError(f"{INDEX_FILE} has no weight map")
+    names = sorted({str(name) for name in listed.values()})
+    if any(Path(name).name != name for name in names):
+        raise ParameterError(f"{INDEX_FILE} names a shard outside the model folder")
+    return names
+
+
+def loaded_weights(root: Path) -> list[Path]:
+    listed = listed_shards(root)
+    return safetensors_in(root) if listed is None else [root / name for name in listed]
+
+
+def index_problem(root: Path) -> str:
+    try:
+        listed = listed_shards(root)
+    except ParameterError as exc:
+        return str(exc)
+    if listed is None:
+        return ""
+    held = {p.name for p in root.iterdir() if p.is_file() and p.name.endswith(WEIGHT_SUFFIXES)}
+    unlisted = sorted(held - set(listed))
+    if unlisted:
+        return f"weight files not in {INDEX_FILE}: {', '.join(unlisted)}"
+    missing = sorted(set(listed) - held)
+    return f"shards in {INDEX_FILE} are missing: {', '.join(missing)}" if missing else ""
+
+
 def _text_config(root: Path) -> Mapping[str, Any]:
     try:
         config = json.loads((root / "config.json").read_text(encoding="utf-8"))
@@ -105,6 +145,49 @@ def model_parameters(root: Path) -> int:
         return gguf.read(found[0]).parameters
     except (OSError, gguf.GgufError) as exc:
         raise ParameterError(str(exc)) from exc
+
+
+def _quant_method(root: Path) -> str:
+    try:
+        config = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    block = config.get("quantization_config") if isinstance(config, Mapping) else None
+    return str(block.get("quant_method") or "").lower() if isinstance(block, Mapping) else ""
+
+
+def stored_formats(root: Path) -> set[str]:
+    found: set[str] = set()
+    for path in safetensors_in(root):
+        for name, entry in read_header(path).items():
+            if not isinstance(entry, Mapping):
+                continue
+            if name.endswith(".qweight"):
+                return {_quant_method(root) or "quantised"}
+            kind = FLOAT_FORMATS.get(str(entry.get("dtype", "")))
+            if kind:
+                found.add(kind)
+    return found
+
+
+def format_problem(root: Path, allowed: Iterable[str]) -> str:
+    wanted = {str(name).lower() for name in allowed}
+    if not wanted:
+        return ""
+    if safetensors_in(root):
+        over = sorted(stored_formats(root) - wanted)
+        return f"weights stored as {', '.join(over)}; allowed {sorted(wanted)}" if over else ""
+    found = gguf.gguf_in(root)
+    if len(found) != 1:
+        return "the model needs safetensors weights or exactly one GGUF file"
+    try:
+        kind = gguf.read(found[0]).file_type.lower()
+    except (OSError, gguf.GgufError) as exc:
+        return str(exc)
+    alias = "gguf_q8" if "q8" in kind else "gguf_q4" if "q4" in kind else ""
+    if kind in wanted or alias in wanted:
+        return ""
+    return f"GGUF type {kind or 'unknown'} is not allowed; allowed {sorted(wanted)}"
 
 
 def footprint_bytes(root: Path, max_len: int) -> int:

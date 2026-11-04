@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import logging
 import os
+import signal
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from microtensor_subnet.chain.client import ChainError
-from microtensor_subnet.chain.wallet import hotkey_address
+from microtensor_subnet.chain.wallet import hotkey_address, sign_bytes
 from microtensor_subnet.cli.common import (
     add_chain_arguments,
     add_common_arguments,
@@ -18,8 +21,9 @@ from microtensor_subnet.cli.common import (
     open_wallet,
 )
 from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
-from microtensor_subnet.validator import runner
+from microtensor_subnet.validator import items, runner, spotcheck
 from microtensor_subnet.validator.client import ServerClient, ServerError
+from microtensor_subnet.validator.sandbox import SandboxError
 from microtensor_subnet.validator.sandbox.docker import DockerError
 
 log = logging.getLogger("microtensor_subnet.cli.miner")
@@ -38,13 +42,45 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default="",
         help="the on-chain commitment string; read from the chain when omitted",
     )
+    run.add_argument(
+        "--engine-url",
+        default=os.environ.get("MT_ENGINE_URL", ""),
+        help="send model calls to this remote engine and start no engine container",
+    )
+    run.add_argument(
+        "--engine-key",
+        default=os.environ.get("MT_ENGINE_KEY", ""),
+        help="the bearer token of the remote engine",
+    )
     run.set_defaults(handler=_run)
+
+    upload = inner.add_parser("upload", help="send a finished transcript without running again")
+    upload.add_argument("--arena", required=True)
+    upload.add_argument("--epoch", type=int, required=True)
+    upload.add_argument("--transcript", type=Path, required=True)
+    upload.add_argument("--server", default=os.environ.get("MT_SERVER_URL", PUBLIC_SERVER_URL))
+    add_chain_arguments(upload)
+    add_common_arguments(upload)
+    upload.set_defaults(handler=_upload)
 
     replay = inner.add_parser("replay", help="replay a transcript on the CPU like a validator")
     _add_run_arguments(replay)
     replay.add_argument("--transcript", type=Path, required=True)
     replay.add_argument("--artifact", type=Path, default=None, help="artifact root to replay")
     replay.set_defaults(handler=_replay)
+
+    appeal = inner.add_parser(
+        "appeal", help="list the calls the coordinator flagged, or appeal one to be rerun"
+    )
+    appeal.add_argument("--arena", required=True)
+    appeal.add_argument("--epoch", type=int, required=True, help="the epoch of the flagged call")
+    appeal.add_argument("--item", default="", help="the flagged item id; lists flags when empty")
+    appeal.add_argument("--seq", type=int, default=0, help="the flagged call's sequence number")
+    appeal.add_argument("--kind", choices=spotcheck.FLAG_KINDS, default=spotcheck.SPOT_CHECK)
+    appeal.add_argument("--server", default=os.environ.get("MT_SERVER_URL", PUBLIC_SERVER_URL))
+    add_chain_arguments(appeal)
+    add_common_arguments(appeal)
+    appeal.set_defaults(handler=_appeal)
 
 
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
@@ -104,6 +140,8 @@ def _settings(
         item_limit=int(getattr(args, "item_limit", 0) or 0),
         runner_digest=os.environ.get(runner.ENV_RUNNER_DIGEST, "").strip(),
         commitment=commitment,
+        engine_url=str(getattr(args, "engine_url", "") or ""),
+        engine_key=str(getattr(args, "engine_key", "") or ""),
     )
 
 
@@ -129,21 +167,16 @@ def _commitment(args: argparse.Namespace, config: Any, wallet: Any, hotkey: str)
     )
 
 
-def _run(args: argparse.Namespace) -> int:
-    config = chain_config(args)
-    wallet = open_wallet(config)
-    hotkey = hotkey_address(wallet)
-    _show_logs()
-    server = ServerClient(args.server, hotkey, wallet)
-    try:
-        epoch_index = _epoch_index(server, args.arena, args.epoch)
-        commitment = _commitment(args, config, wallet, hotkey)
-        settings = _settings(args, epoch_index, commitment)
-        upload = runner.run(settings, client=server, wallet=wallet)
-    except (runner.RunnerError, ServerError, DockerError) as exc:
-        return fail(str(exc))
-    print(f"epoch       {epoch_index}")
-    print(f"items       {upload.items}")
+def _stop_on_sigterm() -> None:
+    def stop(signum: int, frame: FrameType | None) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        log.warning("stopping; the finished rows are kept, run the same command to continue")
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
+def _print_receipt(upload: runner.Upload) -> None:
     print(f"transcript  {upload.transcript_sha256}")
     print(f"saved       {upload.path}")
     if upload.receipt:
@@ -151,6 +184,43 @@ def _run(args: argparse.Namespace) -> int:
         print(f"receipt     {upload.receipt.get('receipt_sig', '')}")
     else:
         print("upload      skipped (dry run)")
+
+
+def _upload(args: argparse.Namespace) -> int:
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    hotkey = hotkey_address(wallet)
+    _show_logs()
+    server = ServerClient(args.server, hotkey, wallet)
+    try:
+        upload = runner.upload_saved(
+            Path(args.transcript), args.arena, int(args.epoch), client=server
+        )
+    except (runner.RunnerError, ServerError, OSError, ValueError) as exc:
+        return fail(str(exc))
+    print(f"epoch       {args.epoch}")
+    print(f"items       {upload.items}")
+    _print_receipt(upload)
+    return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    hotkey = hotkey_address(wallet)
+    _show_logs()
+    _stop_on_sigterm()
+    server = ServerClient(args.server, hotkey, wallet)
+    try:
+        epoch_index = _epoch_index(server, args.arena, args.epoch)
+        commitment = _commitment(args, config, wallet, hotkey)
+        settings = _settings(args, epoch_index, commitment)
+        upload = runner.run(settings, client=server, wallet=wallet)
+    except (runner.RunnerError, ServerError, DockerError, SandboxError, OSError) as exc:
+        return fail(str(exc))
+    print(f"epoch       {epoch_index}")
+    print(f"items       {upload.items}")
+    _print_receipt(upload)
     return 0
 
 
@@ -169,7 +239,7 @@ def _replay(args: argparse.Namespace) -> int:
             recorded=recorded,
             artifact_dir=args.artifact,
         )
-    except (runner.RunnerError, ServerError, DockerError, OSError) as exc:
+    except (runner.RunnerError, ServerError, DockerError, SandboxError, OSError) as exc:
         return fail(str(exc))
     print(f"epoch       {epoch_index}")
     print(f"items       {outcome.items}")
@@ -179,3 +249,48 @@ def _replay(args: argparse.Namespace) -> int:
         return 0
     print(f"replay      failed: {outcome.reason}")
     return 1
+
+
+def _appeal(args: argparse.Namespace) -> int:
+    config = chain_config(args)
+    wallet = open_wallet(config)
+    hotkey = hotkey_address(wallet)
+    server = ServerClient(args.server, hotkey, wallet)
+    try:
+        key = items.server_key(server)
+        found = spotcheck.fetch(server, args.arena, int(args.epoch), key)
+    except (ServerError, RuntimeError) as exc:
+        return fail(str(exc))
+    if found is None:
+        return fail(f"{args.arena} epoch {args.epoch} has no coordinator report")
+    flags = found.standing(hotkey)
+    if not args.item:
+        if not flags:
+            print(f"no standing flags for {hotkey} in epoch {args.epoch}")
+            return 0
+        for flag in flags:
+            print(f"{flag.kind:<11} item {flag.item_id}  seq {flag.call_seq}")
+        return 0
+    if not any(
+        f.kind == args.kind and f.item_id == args.item and f.call_seq == int(args.seq)
+        for f in flags
+    ):
+        return fail(f"{args.kind} {args.item}#{args.seq} is not a standing flag for {hotkey}")
+    body: dict[str, Any] = {
+        "arena_id": args.arena,
+        "epoch_index": int(args.epoch),
+        "miner_hotkey": hotkey,
+        "kind": args.kind,
+        "item_id": args.item,
+        "call_seq": int(args.seq),
+        "filed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    body[spotcheck.SIGNATURE] = sign_bytes(wallet, spotcheck.report_message(body))
+    try:
+        stored = server.appeal(body)
+    except ServerError as exc:
+        return fail(str(exc))
+    print(f"appealed    {args.kind} {args.item}#{args.seq} of epoch {args.epoch}")
+    print(f"received    {stored.get('received_at', '')}")
+    print("the coordinator reruns the call; a match lifts the flag")
+    return 0

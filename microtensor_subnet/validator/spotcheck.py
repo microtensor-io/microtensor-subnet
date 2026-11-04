@@ -3,89 +3,56 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-import random
-import secrets
-import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Final
 
-from microtensor_subnet.scoring.stats import percentile, wilson_lb
-from microtensor_subnet.validator import evidence, transcripts
-from microtensor_subnet.validator.context import SLM, EpochContext, render_prompt
-from microtensor_subnet.validator.results import SlmRun
-from microtensor_subnet.validator.sandbox import compat
-from microtensor_subnet.validator.sandbox.docker import ContainerSpec, Docker, DockerError
-from microtensor_subnet.validator.sandbox.slm import MEMORY_SHARE, SlmClient, SlmError
+from microtensor_subnet.chain.wallet import verify_bytes
+from microtensor_subnet.validator import items, transcripts
 
 log = logging.getLogger("microtensor_subnet.validator.spotcheck")
 
-SLM_MODULE: Final[str] = "microtensor_subnet.validator.sandbox.slm"
-DOCKER_MODULE: Final[str] = "microtensor_subnet.validator.sandbox.docker"
-DEFAULT_MIN_CALLS: Final[int] = 200
-DEFAULT_VALIDATORS_PER_MINER: Final[int] = 2
-DEFAULT_REFERENCE_CALLS: Final[int] = 20
-CANARY_TOKENS: Final[int] = 48
-WEIGHT_PASSED: Final[int] = 3
-WEIGHT_TWIN: Final[int] = 2
-WEIGHT_MOVED: Final[int] = 2
-WEIGHT_PLAIN: Final[int] = 1
-VRAM_QUERY: Final[tuple[str, ...]] = (
-    "nvidia-smi",
-    "--query-gpu=memory.used",
-    "--format=csv,noheader,nounits",
+SPOTCHECK_KIND: Final[str] = "spotcheck"
+APPEALS_KIND: Final[str] = "appeals"
+SIGNATURE: Final[str] = "signature"
+SPOT_CHECK: Final[str] = "spot_check"
+CANARY: Final[str] = "canary"
+FLAG_KINDS: Final[tuple[str, ...]] = (SPOT_CHECK, CANARY)
+DEFAULT_MARGIN_BLOCKS: Final[int] = 150
+DEFAULT_POLL_SECONDS: Final[int] = 60
+DEFAULT_BAN_EPOCHS: Final[int] = 3
+FAILURE_CHARS: Final[int] = 300
+TIMING_KEYS: Final[frozenset[str]] = frozenset(
+    {"ttft_p95_ms", "tpot_p95_ms", "vram_peak_bytes", "drafts_checked", "drafts_mismatched"}
 )
-MIB: Final[int] = 1024**2
-DEFAULT_MAX_MODEL_LEN: Final[int] = 8192
-
-engine_command: Callable[..., list[str]] = transcripts.resolve(SLM_MODULE, "engine_command")
-engine_env: Callable[[str], dict[str, str]] = transcripts.resolve(SLM_MODULE, "engine_env")
-pinned: Callable[[str, str], str] = transcripts.resolve(DOCKER_MODULE, "pinned")
+DRAFTS_KEY: Final[str] = "drafts"
+DRAFTS_DONE_KEY: Final[str] = "drafts_complete"
+ROWS_KEY: Final[str] = "rows"
+ROWS_DONE_KEY: Final[str] = "rows_complete"
+NO_TOKENS: Final[str] = hashlib.sha256(b"[]").hexdigest()
 
 
 class SpotCheckError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
-class Call:
-    item_id: str
-    condition: str
-    seq: int
-    prompt: str
-    max_tokens: int
-    stop: tuple[str, ...]
-    seed: int
-    claimed: tuple[int, ...]
-    passed: bool = False
-    twin: bool = False
-    moved: bool = False
-
-    @property
-    def weight(self) -> int:
-        weights = [WEIGHT_PLAIN]
-        if self.passed:
-            weights.append(WEIGHT_PASSED)
-        if self.twin:
-            weights.append(WEIGHT_TWIN)
-        if self.moved:
-            weights.append(WEIGHT_MOVED)
-        return max(weights)
-
-    @property
-    def prompt_sha256(self) -> str:
-        return transcripts.prompt_sha256(self.prompt)
+def _float(row: Mapping[str, Any], key: str) -> float:
+    try:
+        found = float(row.get(key) or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return found if math.isfinite(found) else 0.0
 
 
-@dataclass(frozen=True, slots=True)
-class Generated:
-    text: str
-    ids: tuple[int, ...]
-    prompt_tokens: int
-    ttft_ms: float
-    tpot_ms: float
-    total_ms: float
+def _int(row: Mapping[str, Any], key: str) -> int:
+    try:
+        return int(row.get(key) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _listed(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, (list, tuple)) else []
 
 
 @dataclass(slots=True)
@@ -104,7 +71,13 @@ class SpotCheck:
     envelope_lb: float = 0.0
     envelope_ok: bool = True
     timing: dict[tuple[str, int], tuple[float, float]] = field(default_factory=dict)
-    evidence: list[dict[str, Any]] = field(default_factory=list)
+    unsettled: int = 0
+    errors: int = 0
+    skipped_prompt: int = 0
+    e2e_p95_ms: float = 0.0
+    memory_ok: bool = True
+    router_latency_p95_ms: float | None = None
+    router_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,7 +94,47 @@ class SpotCheck:
             "over_budget": self.over_budget,
             "envelope_lb": round(self.envelope_lb, 6),
             "envelope_ok": self.envelope_ok,
+            "unsettled": self.unsettled,
+            "errors": self.errors,
+            "skipped_prompt": self.skipped_prompt,
+            "e2e_p95_ms": round(self.e2e_p95_ms, 1),
+            "memory_ok": self.memory_ok,
+            "router_latency_p95_ms": self.router_latency_p95_ms,
+            "router_reason": self.router_reason,
         }
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> SpotCheck:
+        timing: dict[tuple[str, int], tuple[float, float]] = {}
+        for entry in _listed(row.get("timing")):
+            if isinstance(entry, (list, tuple)) and len(entry) == 4:
+                try:
+                    timing[(str(entry[0]), int(entry[1]))] = (float(entry[2]), float(entry[3]))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        latency = row.get("router_latency_p95_ms")
+        return cls(
+            calls=_int(row, "calls"),
+            matched=_int(row, "matched"),
+            mismatched=_int(row, "mismatched"),
+            ttft_p95_ms=_float(row, "ttft_p95_ms"),
+            tpot_p95_ms=_float(row, "tpot_p95_ms"),
+            vram_peak_bytes=_int(row, "vram_peak_bytes"),
+            uniform_calls=_int(row, "uniform_calls"),
+            over_budget=_int(row, "over_budget"),
+            envelope_lb=_float(row, "envelope_lb"),
+            envelope_ok=bool(row.get("envelope_ok", True)),
+            timing=timing,
+            unsettled=_int(row, "unsettled"),
+            errors=_int(row, "errors"),
+            skipped_prompt=_int(row, "skipped_prompt"),
+            e2e_p95_ms=_float(row, "e2e_p95_ms"),
+            memory_ok=bool(row.get("memory_ok", True)),
+            router_latency_p95_ms=_float(row, "router_latency_p95_ms")
+            if latency is not None
+            else None,
+            router_reason=str(row.get("router_reason") or "")[:FAILURE_CHARS],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,452 +154,233 @@ class ReferenceTiming:
             "drafts_mismatched": self.drafts_mismatched,
         }
 
-
-@dataclass(frozen=True, slots=True)
-class Settings:
-    min_calls: int = DEFAULT_MIN_CALLS
-    validators_per_miner: int = DEFAULT_VALIDATORS_PER_MINER
-    reference_calls: int = DEFAULT_REFERENCE_CALLS
-
     @classmethod
-    def from_definition(cls, definition: Mapping[str, Any]) -> Settings:
-        block = definition.get("evaluation") or {}
-        spot = block.get("spot_check") if isinstance(block, Mapping) else None
-        spot = spot if isinstance(spot, Mapping) else {}
+    def from_dict(cls, row: Mapping[str, Any]) -> ReferenceTiming:
         return cls(
-            min_calls=int(spot.get("min_calls") or DEFAULT_MIN_CALLS),
-            validators_per_miner=int(
-                spot.get("validators_per_miner") or DEFAULT_VALIDATORS_PER_MINER
-            ),
-            reference_calls=int(spot.get("reference_calls") or DEFAULT_REFERENCE_CALLS),
+            ttft_p95_ms=_float(row, "ttft_p95_ms"),
+            tpot_p95_ms=_float(row, "tpot_p95_ms"),
+            vram_peak_bytes=_int(row, "vram_peak_bytes"),
+            drafts_checked=_int(row, "drafts_checked"),
+            drafts_mismatched=_int(row, "drafts_mismatched"),
         )
 
 
-def seeded(*parts: str) -> random.Random:
-    digest = hashlib.sha256(":".join(parts).encode("utf-8")).digest()
-    return random.Random(int.from_bytes(digest[:8], "big"))  # noqa: S311
+@dataclass(frozen=True, slots=True)
+class Flag:
+    epoch_index: int
+    miner_hotkey: str
+    kind: str
+    item_id: str
+    call_seq: int
 
+    @property
+    def key(self) -> tuple[str, str, str, int]:
+        return (self.miner_hotkey, self.kind, self.item_id, self.call_seq)
 
-def sample_miners(
-    miners: Sequence[str],
-    *,
-    close_block_hash: str,
-    validator_hotkey: str,
-    validators_on_profile: int,
-    validators_per_miner: int,
-) -> list[str]:
-    ordered = sorted(set(miners))
-    if not ordered:
-        return []
-    rng = seeded(close_block_hash, validator_hotkey)
-    rng.shuffle(ordered)
-    take = math.ceil(validators_per_miner * len(ordered) / max(1, validators_on_profile))
-    return ordered[: max(1, min(len(ordered), take))]
-
-
-def collect_calls(
-    transcript: Mapping[str, Any],
-    prompts: Mapping[tuple[str, int], str],
-    *,
-    passed: Mapping[tuple[str, str], bool],
-    twins: Mapping[str, str],
-    moved: set[str],
-) -> list[Call]:
-    found: list[Call] = []
-    for row in transcripts.items_of(transcript):
-        item_id = str(row.get("item_id", ""))
-        condition = str(row.get("condition", ""))
-        for call in transcripts.slm_calls(row):
-            seq = int(call.get("seq") or 0)
-            prompt = prompts.get((item_id, seq))
-            if prompt is None:
-                continue
-            found.append(
-                Call(
-                    item_id=item_id,
-                    condition=condition,
-                    seq=seq,
-                    prompt=prompt,
-                    max_tokens=int(call.get("max_tokens") or 0),
-                    stop=tuple(str(s) for s in call.get("stop") or []),
-                    seed=int(call.get("seed") or 0),
-                    claimed=tuple(int(t) for t in call.get("output_tokens") or []),
-                    passed=bool(passed.get((item_id, condition), False)),
-                    twin=item_id in twins,
-                    moved=item_id in moved,
-                )
-            )
-    return found
-
-
-def moved_items(run: SlmRun, reference: SlmRun | None, twins: Mapping[str, str]) -> set[str]:
-    mine = {r.item_id: r.success for r in [*run.runs, *run.twins]}
-    theirs = {r.item_id: r.success for r in reference.runs} if reference is not None else {}
-    found: set[str] = set()
-    for item_id, success in mine.items():
-        twin = twins.get(item_id)
-        if twin is not None and twin in mine and mine[twin] != success:
-            found.update({item_id, twin})
-        if item_id in theirs and theirs[item_id] != success:
-            found.add(item_id)
-    return found
-
-
-def sample_calls(
-    calls: Sequence[Call], *, min_calls: int, rng: random.Random
-) -> tuple[list[Call], list[Call]]:
-    if len(calls) <= min_calls:
-        return list(calls), []
-    uniform_n = min_calls // 2
-    uniform = rng.sample(list(calls), uniform_n)
-    chosen = {(c.item_id, c.seq) for c in uniform}
-    rest = [c for c in calls if (c.item_id, c.seq) not in chosen]
-    keyed = sorted(
-        ((rng.random() ** (1.0 / c.weight), index) for index, c in enumerate(rest)),
-        reverse=True,
-    )
-    weighted = [rest[index] for _, index in keyed[: min_calls - uniform_n]]
-    return uniform, weighted
-
-
-def _memory_share(definition: Mapping[str, Any], profile_bytes: int, configured: float) -> float:
-    if configured:
-        return configured
-    budgets = definition.get("budgets") or {}
-    cap = int(budgets.get("memory_bytes") or budgets.get("vram_bytes") or 0) if budgets else 0
-    if cap and profile_bytes:
-        return max(0.1, min(MEMORY_SHARE, cap / profile_bytes))
-    return MEMORY_SHARE
+    def label(self) -> str:
+        return f"epoch {self.epoch_index} {self.kind} {self.item_id}#{self.call_seq}"
 
 
 @dataclass(slots=True)
-class Engine:
-    docker: Docker
-    image: str
-    model_dir: Path
-    gpu: str
-    profile: str
-    max_model_len: int
-    memory_share: float = MEMORY_SHARE
-    ready_seconds: int = 900
-    cuda_image: str = ""
-    name: str = ""
-    network: str = ""
-    url: str = ""
-    mount: compat.Mount | None = None
-    vram_peak_bytes: int = 0
+class Coordinated:
+    epoch_index: int
+    complete: bool = False
+    reference: ReferenceTiming | None = None
+    spot_checks: dict[str, SpotCheck] = field(default_factory=dict)
+    canaries: dict[str, dict[str, int]] = field(default_factory=dict)
+    failures: dict[str, str] = field(default_factory=dict)
+    flags: dict[str, list[Flag]] = field(default_factory=dict)
+    upheld: set[tuple[str, str, str, int]] = field(default_factory=set)
+    coordinators: set[str] = field(default_factory=set)
+    drafts: dict[str, str] = field(default_factory=dict)
+    drafts_complete: bool = False
+    rows: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    rows_complete: bool = False
 
-    def start(self) -> None:
-        key = secrets.token_hex(4)
-        self.network = f"mt-spot-{key}"
-        self.name = f"mt-spot-{key}"
-        self.docker.create_network(self.network)
-        try:
-            self.mount = compat.plain(self.model_dir)
-            self.docker.start(
-                ContainerSpec(
-                    name=self.name,
-                    image=self.image,
-                    network=self.network,
-                    command=engine_command(
-                        compat.GUEST,
-                        profile=self.profile,
-                        max_model_len=self.max_model_len,
-                        memory_share=self.memory_share,
-                    ),
-                    env=engine_env(self.profile),
-                    volumes=self.mount.volumes,
-                    gpus=(self.gpu,),
-                    shm_size="8g",
-                    ipc_none=False,
-                )
-            )
-            self.url = f"http://{self.docker.address(self.name, self.network)}:8000"
-            self._wait()
-        except Exception:
-            self.stop()
-            raise
+    def standing(self, hotkey: str) -> list[Flag]:
+        return [f for f in self.flags.get(hotkey, []) if f.key not in self.upheld]
 
-    def _wait(self) -> None:
-        client = SlmClient(self.url)
-        deadline = time.monotonic() + self.ready_seconds
-        while time.monotonic() < deadline:
-            if self.docker.exited(self.name):
-                raise SpotCheckError(f"the engine exited: {self.docker.exit_note(self.name)}")
-            if client.ready():
-                return
-            time.sleep(5.0)
-        detail = self.docker.failure(self.name)
-        raise SpotCheckError("the engine did not become ready" + (f": {detail}" if detail else ""))
-
-    def stop(self) -> None:
-        if self.name:
-            self.docker.kill(self.name)
-        if self.network:
-            self.docker.remove_network(self.network)
-        self.name = self.network = self.url = ""
-        self.mount = None
-
-    def generate(
-        self, prompt: str, *, max_tokens: int, stop: Sequence[str], seed: int
-    ) -> Generated:
-        client = SlmClient(self.url)
-        found: Any = client.generate(
-            prompt, max_tokens=max_tokens, stop=stop, seed=seed, logprobs=1
-        )
-        return Generated(
-            text=str(found.text),
-            ids=tuple(int(t) for t in found.output_tokens),
-            prompt_tokens=int(found.prompt_tokens),
-            ttft_ms=float(found.ttft_ms),
-            tpot_ms=float(found.tpot_ms),
-            total_ms=float(found.total_ms),
-        )
-
-    def sample_vram(self) -> int:
-        if not self.cuda_image:
-            return self.vram_peak_bytes
-        try:
-            raw = self.docker.runner.run(
-                [
-                    "run",
-                    "--rm",
-                    "--network",
-                    "none",
-                    "--gpus",
-                    f"device={self.gpu}",
-                    self.cuda_image,
-                    *VRAM_QUERY,
-                ]
-            )
-        except DockerError as exc:
-            log.debug("vram not read: %s", exc)
-            return self.vram_peak_bytes
-        for line in raw.splitlines():
-            if line.strip().isdigit():
-                self.vram_peak_bytes = max(self.vram_peak_bytes, int(line.strip()) * MIB)
-                break
-        return self.vram_peak_bytes
+    def covers(self, hotkey: str) -> bool:
+        return hotkey in self.spot_checks or hotkey in self.failures
 
 
-def _over_budget(generated: Generated, budgets: Mapping[str, Any]) -> bool:
-    ttft = float(budgets.get("ttft_ms") or 0)
-    tpot = float(budgets.get("tpot_ms") or 0)
-    rate = float(budgets.get("min_tokens_per_s") or 0)
-    slowest = 1000.0 / rate if rate > 0 else 0.0
-    late = bool(ttft) and generated.ttft_ms > ttft
-    slow = len(generated.ids) > 1 and (
-        (bool(tpot) and generated.tpot_ms > tpot) or (bool(slowest) and generated.tpot_ms > slowest)
-    )
-    return late or slow
+def report_message(body: Mapping[str, Any]) -> bytes:
+    unsigned = {k: v for k, v in body.items() if k != SIGNATURE}
+    return hashlib.sha256(transcripts.canonical_json(unsigned)).hexdigest().encode("ascii")
 
 
-def check_miner(
-    engine: Engine,
-    uniform: Sequence[Call],
-    weighted: Sequence[Call],
-    *,
-    budgets: Mapping[str, Any],
-    violation_share: float,
-    evidence_fields: Mapping[str, Any],
-) -> SpotCheck:
-    found = SpotCheck()
-    ttfts: list[float] = []
-    tpots: list[float] = []
-    sampled_vram = False
-    for call, is_uniform in [*((c, True) for c in uniform), *((c, False) for c in weighted)]:
-        try:
-            generated = engine.generate(
-                call.prompt, max_tokens=call.max_tokens, stop=call.stop, seed=call.seed
-            )
-        except SlmError as exc:
-            raise SpotCheckError(f"the engine failed on {call.item_id}: {exc}") from exc
-        if not sampled_vram:
-            engine.sample_vram()
-            sampled_vram = True
-        found.calls += 1
-        found.timing[(call.item_id, call.seq)] = (generated.ttft_ms, generated.tpot_ms)
-        if is_uniform:
-            found.uniform_calls += 1
-            ttfts.append(generated.ttft_ms)
-            if len(generated.ids) > 1:
-                tpots.append(generated.tpot_ms)
-            if _over_budget(generated, budgets):
-                found.over_budget += 1
-        if generated.ids == call.claimed:
-            found.matched += 1
-            continue
-        found.mismatched += 1
-        found.evidence.append(
-            evidence.spot_check_body(
-                arena_id=str(evidence_fields["arena_id"]),
-                epoch=int(evidence_fields["epoch"]),
-                miner_hotkey=str(evidence_fields["miner_hotkey"]),
-                profile=str(evidence_fields["profile"]),
-                weights_sha256=str(evidence_fields["weights_sha256"]),
-                item_id=call.item_id,
-                call_seq=call.seq,
-                seed=call.seed,
-                prompt_sha256=call.prompt_sha256,
-                claimed_tokens=call.claimed,
-                recomputed_tokens=generated.ids,
-            )
-        )
-    found.vram_peak_bytes = engine.sample_vram()
-    found.ttft_p95_ms = percentile(ttfts, 0.95)
-    found.tpot_p95_ms = percentile(tpots, 0.95)
-    if found.uniform_calls:
-        found.envelope_lb = wilson_lb(found.over_budget, found.uniform_calls)
-        found.envelope_ok = found.envelope_lb <= violation_share
-    return found
-
-
-def reference_calls(context: EpochContext, count: int) -> list[tuple[str, str]]:
-    found: list[tuple[str, str]] = []
-    for item in context.items.originals(SLM)[: max(0, count)]:
-        found.append((item.item_id, render_prompt(context.slm_prompt, item.task)))
-    return found
-
-
-def time_reference(
-    engine: Engine,
-    context: EpochContext,
-    *,
-    count: int,
-    drafts: Mapping[str, str],
-    seeds: Mapping[str, int],
-) -> ReferenceTiming:
-    ttfts: list[float] = []
-    tpots: list[float] = []
-    checked = 0
-    mismatched = 0
-    for item_id, prompt in reference_calls(context, count):
-        try:
-            generated = engine.generate(
-                prompt,
-                max_tokens=context.max_tokens,
-                stop=context.stop,
-                seed=int(seeds.get(item_id, 0)),
-            )
-        except SlmError as exc:
-            raise SpotCheckError(f"the reference engine failed on {item_id}: {exc}") from exc
-        ttfts.append(generated.ttft_ms)
-        if len(generated.ids) > 1:
-            tpots.append(generated.tpot_ms)
-        draft = drafts.get(item_id)
-        if draft is None:
-            continue
-        checked += 1
-        if generated.text != draft:
-            mismatched += 1
-            log.warning("owner reference draft for %s does not match the reference model", item_id)
-    return ReferenceTiming(
-        ttft_p95_ms=percentile(ttfts, 0.95),
-        tpot_p95_ms=percentile(tpots, 0.95),
-        vram_peak_bytes=engine.sample_vram(),
-        drafts_checked=checked,
-        drafts_mismatched=mismatched,
+def verify_report(body: Mapping[str, Any]) -> bool:
+    hotkey = str(body.get("coordinator_hotkey", ""))
+    signature = str(body.get(SIGNATURE, ""))
+    message = report_message(body)
+    return verify_bytes(hotkey, message, signature) or verify_bytes(
+        hotkey, b"<Bytes>" + message + b"</Bytes>", signature
     )
 
 
-def canary_check(
-    engine: Engine,
-    canaries: Sequence[Mapping[str, Any]],
-    *,
-    evidence_fields: Mapping[str, Any],
-    max_tokens: int = CANARY_TOKENS,
-) -> tuple[int, list[dict[str, Any]]]:
-    hits: list[dict[str, Any]] = []
-    checked = 0
-    for canary in canaries:
-        prefix = str(canary.get("prefix", ""))
-        fact = str(canary.get("fact", ""))
-        marker = fact.rsplit(" ", 1)[-1].strip().lower() if fact else ""
-        if not prefix or not marker:
-            continue
-        try:
-            generated = engine.generate(prefix, max_tokens=max_tokens, stop=(), seed=0)
-        except SlmError as exc:
-            log.warning("canary %s not checked: %s", canary.get("item_id"), exc)
-            continue
-        checked += 1
-        if marker in generated.text.lower():
-            hits.append(
-                evidence.canary_body(
-                    arena_id=str(evidence_fields["arena_id"]),
-                    epoch=int(evidence_fields["epoch"]),
-                    miner_hotkey=str(evidence_fields["miner_hotkey"]),
-                    profile=str(evidence_fields["profile"]),
-                    weights_sha256=str(evidence_fields["weights_sha256"]),
-                    item_id=str(canary.get("item_id", "")),
-                    seed=0,
-                    prefix_sha256=transcripts.sha256_text(prefix),
-                    recomputed_tokens=generated.ids,
-                    completion_text=generated.text,
-                )
-            )
-    return checked, hits
+def stands(entry: Mapping[str, Any]) -> bool:
+    if str(entry.get("kind", "")) == CANARY:
+        return bool(entry.get("first_hit")) and bool(entry.get("second_hit"))
+    first = str(entry.get("first_sha256") or "").lower()
+    second = str(entry.get("second_sha256") or "").lower()
+    claimed = str(entry.get("claimed_sha256") or "").lower()
+    if not first or not claimed or first == NO_TOKENS:
+        return False
+    return first == second and first != claimed
 
 
-def recheck(
-    engine: Engine,
+def _take_reference(found: Coordinated, block: Mapping[str, Any]) -> None:
+    if TIMING_KEYS & set(block):
+        found.reference = ReferenceTiming.from_dict(block)
+    for row in _listed(block.get(DRAFTS_KEY)):
+        if isinstance(row, Mapping) and row.get("item_id"):
+            found.drafts[str(row["item_id"])] = str(row.get("draft") or "")
+    found.drafts_complete = found.drafts_complete or bool(block.get(DRAFTS_DONE_KEY))
+    for row in _listed(block.get(ROWS_KEY)):
+        if isinstance(row, Mapping) and row.get("item_id"):
+            found.rows[(str(row.get("pool") or ""), str(row["item_id"]))] = dict(row)
+    found.rows_complete = found.rows_complete or bool(block.get(ROWS_DONE_KEY))
+
+
+def _take_miner(
+    found: Coordinated,
+    epoch_index: int,
+    hotkey: str,
     row: Mapping[str, Any],
-    *,
-    calls: Mapping[tuple[str, int], Call],
-    canaries: Mapping[str, Mapping[str, Any]],
-) -> tuple[bool, list[int]] | None:
-    kind = str(row.get("kind", ""))
-    item_id = str(row.get("item_id", ""))
-    if kind == evidence.CANARY:
-        canary = canaries.get(item_id)
-        if canary is None:
-            return None
-        prefix = str(canary.get("prefix", ""))
-        if transcripts.sha256_text(prefix) != str(row.get("prefix_sha256", "")):
-            return None
-        marker = str(canary.get("fact", "")).rsplit(" ", 1)[-1].strip().lower()
-        generated = engine.generate(prefix, max_tokens=CANARY_TOKENS, stop=(), seed=0)
-        return marker in generated.text.lower(), list(generated.ids)
-    call = calls.get((item_id, int(row.get("call_seq") or 0)))
-    if call is None or call.prompt_sha256 != str(row.get("prompt_sha256", "")):
+    leaves: Mapping[str, str] | None,
+) -> None:
+    if leaves is not None:
+        leaf = str(leaves.get(hotkey) or "").lower()
+        if not leaf or str(row.get("transcript_sha256") or "").lower() != leaf:
+            return
+    spot = row.get("spot_check")
+    if isinstance(spot, Mapping):
+        found.spot_checks[hotkey] = SpotCheck.from_dict(spot)
+        found.failures.pop(hotkey, None)
+    elif row.get("failure") and hotkey not in found.spot_checks:
+        found.failures[hotkey] = str(row.get("failure"))[:FAILURE_CHARS]
+    canary = row.get("canary")
+    if isinstance(canary, Mapping):
+        found.canaries[hotkey] = {
+            "checked": _int(canary, "checked"),
+            "hits": _int(canary, "hits"),
+        }
+    flags = found.flags.setdefault(hotkey, [])
+    seen = {flag.key for flag in flags}
+    for entry in _listed(row.get("evidence")):
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("kind", "")) not in FLAG_KINDS or not stands(entry):
+            continue
+        flag = Flag(
+            epoch_index,
+            hotkey,
+            str(entry.get("kind", "")),
+            str(entry.get("item_id", "")),
+            _int(entry, "call_seq"),
+        )
+        if flag.key not in seen:
+            seen.add(flag.key)
+            flags.append(flag)
+
+
+def _take_report(
+    found: Coordinated,
+    epoch_index: int,
+    body: Mapping[str, Any],
+    leaves: Mapping[str, str] | None,
+) -> None:
+    found.coordinators.add(str(body.get("coordinator_hotkey", "")))
+    found.complete = found.complete or bool(body.get("complete"))
+    reference = body.get("reference")
+    if isinstance(reference, Mapping):
+        try:
+            _take_reference(found, reference)
+        except Exception as exc:
+            log.warning("a coordinator reference block was skipped: %s", exc)
+    miners = body.get("miners")
+    for hotkey, row in miners.items() if isinstance(miners, Mapping) else ():
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            _take_miner(found, epoch_index, str(hotkey), row, leaves)
+        except Exception as exc:
+            log.warning("the coordinator row for %s was skipped: %s", hotkey, exc)
+    for outcome in _listed(body.get("appeals")):
+        if isinstance(outcome, Mapping) and bool(outcome.get("upheld")):
+            found.upheld.add(
+                (
+                    str(outcome.get("miner_hotkey", "")),
+                    str(outcome.get("kind", "")),
+                    str(outcome.get("item_id", "")),
+                    _int(outcome, "call_seq"),
+                )
+            )
+
+
+def merge(
+    epoch_index: int,
+    reports: Iterable[Mapping[str, Any]],
+    leaves: Mapping[str, str] | None = None,
+) -> Coordinated:
+    found = Coordinated(epoch_index=epoch_index)
+    for body in reports:
+        try:
+            if not isinstance(body, Mapping) or not verify_report(body):
+                log.warning(
+                    "a coordinator report for epoch %d does not verify; skipped", epoch_index
+                )
+                continue
+            if body.get("epoch_index") == epoch_index:
+                _take_report(found, epoch_index, body, leaves)
+        except Exception as exc:
+            log.warning("a coordinator report for epoch %d was skipped: %s", epoch_index, exc)
+    return found
+
+
+def receipt_leaves(client: Any, arena_id: str, epoch_index: int, key: str) -> dict[str, str]:
+    try:
+        document = client.receipts(arena_id, epoch_index)
+        if not document:
+            return {}
+        items.verify_document(document, key)
+        leaves = dict(document.get("body") or {}).get("leaves") or {}
+        return {str(h): str(s).lower() for h, s in dict(leaves).items() if h and s}
+    except Exception as exc:
+        log.warning("the receipts of epoch %d were not read: %s", epoch_index, exc)
+        return {}
+
+
+def fetch(
+    client: Any,
+    arena_id: str,
+    epoch_index: int,
+    key: str,
+    leaves: Mapping[str, str] | None = None,
+) -> Coordinated | None:
+    try:
+        document = client.document(arena_id, epoch_index, SPOTCHECK_KIND)
+    except Exception as exc:
+        log.debug("coordinator document for epoch %d not read: %s", epoch_index, exc)
         return None
-    claimed = tuple(int(t) for t in row.get("claimed_tokens") or [])
-    if claimed != call.claimed:
-        return False, list(call.claimed)
-    generated = engine.generate(
-        call.prompt, max_tokens=call.max_tokens, stop=call.stop, seed=int(row.get("seed") or 0)
-    )
-    return generated.ids != call.claimed, list(generated.ids)
+    if not document:
+        return None
+    try:
+        items.verify_document(document, key)
+    except Exception as exc:
+        log.warning("the coordinator document for epoch %d does not verify: %s", epoch_index, exc)
+        return None
+    try:
+        body = dict(document.get("body") or {})
+        held = receipt_leaves(client, arena_id, epoch_index, key) if leaves is None else leaves
+        return merge(epoch_index, _listed(body.get("reports")), held)
+    except Exception as exc:
+        log.warning("the coordinator document for epoch %d was not read: %s", epoch_index, exc)
+        return None
 
 
-def engine_for(
-    docker: Docker,
-    *,
-    definition: Mapping[str, Any],
-    model_dir: Path,
-    gpu: str,
-    profile: str,
-    profile_bytes: int,
-    max_model_len: int | None,
-    memory_share: float,
-    ready_seconds: int,
-    cuda_image: str,
-) -> Engine:
+def ban_epochs(definition: Mapping[str, Any]) -> int:
     block = definition.get("evaluation") or {}
-    images = block.get("images") if isinstance(block, Mapping) else None
-    engine = images.get("engine") if isinstance(images, Mapping) else None
-    if not isinstance(engine, Mapping) or not engine.get("image") or not engine.get("digest"):
-        raise SpotCheckError("the arena definition pins no engine image for the spot check")
-    reference = pinned(str(engine["image"]), str(engine["digest"]))
-    docker.ensure_image(reference)
-    return Engine(
-        docker=docker,
-        image=reference,
-        model_dir=model_dir,
-        gpu=gpu,
-        profile=profile,
-        max_model_len=max_model_len or DEFAULT_MAX_MODEL_LEN,
-        memory_share=_memory_share(definition, profile_bytes, memory_share),
-        ready_seconds=ready_seconds,
-        cuda_image=cuda_image,
-    )
+    ban = block.get("ban") if isinstance(block, Mapping) else None
+    found = ban.get("epochs") if isinstance(ban, Mapping) else None
+    return max(1, int(found or DEFAULT_BAN_EPOCHS))

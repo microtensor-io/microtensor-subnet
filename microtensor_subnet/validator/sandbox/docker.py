@@ -29,6 +29,9 @@ ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RAISED = re.compile(r"(?:^|\s)((?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?:Error|Exception)(?::\s.*)?)$")
 
 
+OWNER_LABEL = f"microtensor={os.environ.get('MT_SANDBOX_LABEL', 'sandbox')}"
+
+
 class DockerError(RuntimeError):
     pass
 
@@ -144,7 +147,7 @@ def _flags(spec: ContainerSpec) -> list[str]:
         argv += ["--user", spec.user]
     if spec.shm_size:
         argv += ["--shm-size", spec.shm_size]
-    argv += ["--label", "microtensor=sandbox"]
+    argv += ["--label", OWNER_LABEL]
     argv.append(spec.image)
     argv += list(spec.command)
     return argv
@@ -185,7 +188,7 @@ class Docker:
     self_container: str = field(default_factory=own_container)
 
     def create_network(self, name: str, *, internal: bool = True) -> None:
-        argv = ["network", "create", "--label", "microtensor=sandbox"]
+        argv = ["network", "create", "--label", OWNER_LABEL]
         if internal:
             argv += ["--internal", "--opt", "com.docker.network.bridge.gateway_mode_ipv4=isolated"]
         argv.append(name)
@@ -193,9 +196,7 @@ class Docker:
             self.runner.run(argv)
         except DockerError as exc:
             if "gateway_mode" in str(exc):
-                self.runner.run(
-                    ["network", "create", "--label", "microtensor=sandbox", "--internal", name]
-                )
+                self.runner.run(["network", "create", "--label", OWNER_LABEL, "--internal", name])
             elif "already exists" not in str(exc):
                 raise
         if self.self_container:
@@ -388,14 +389,14 @@ class Docker:
 
     def sweep(self) -> None:
         try:
-            names = self.runner.run(["ps", "-aq", "--filter", "label=microtensor=sandbox"]).split()
+            names = self.runner.run(["ps", "-aq", "--filter", f"label={OWNER_LABEL}"]).split()
         except DockerError:
             return
         for name in names:
             self.kill(name)
         try:
             networks = self.runner.run(
-                ["network", "ls", "-q", "--filter", "label=microtensor=sandbox"]
+                ["network", "ls", "-q", "--filter", f"label={OWNER_LABEL}"]
             ).split()
         except DockerError:
             return

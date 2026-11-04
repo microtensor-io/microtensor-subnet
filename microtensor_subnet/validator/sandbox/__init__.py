@@ -246,11 +246,13 @@ class SandboxHost:
         config: dict[str, Any],
         gpu: str,
         limits: Limits,
+        device: str = "",
     ) -> subprocess.Popen[bytes]:
         wanted = int((config.get("router") or {}).get("max_input_tokens") or 4096)
         max_input = min(wanted, limits.router_max_input_tokens)
+        chosen = device or ("cuda" if limits.router_on_gpu else "cpu")
         env = dict(os.environ)
-        if limits.router_on_gpu:
+        if chosen == "cuda":
             env["CUDA_VISIBLE_DEVICES"] = gpu
         return subprocess.Popen(  # noqa: S603
             [
@@ -268,7 +270,7 @@ class SandboxHost:
                 "--max-parameters",
                 str(limits.router_max_parameters),
                 "--device",
-                "cuda" if limits.router_on_gpu else "cpu",
+                chosen,
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -490,9 +492,12 @@ class SandboxHost:
         gpu: str,
         config: dict[str, Any],
         limits: Limits | None = None,
+        device: str = "",
     ) -> tuple[subprocess.Popen[bytes], str]:
         port = ROUTER_PORT_BASE + slot
-        process = self._router_process("", router_dir, port, config, gpu, limits or Limits())
+        process = self._router_process(
+            "", router_dir, port, config, gpu, limits or Limits(), device
+        )
         url = f"http://{self.host_ip}:{port}"
         try:
             self._wait_router(process, url)

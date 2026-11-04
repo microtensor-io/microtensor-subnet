@@ -137,8 +137,10 @@ def build(
     )
 
 
-def sign(report: EpochReport, wallet: Any) -> EpochReport:
-    return report.signed_with(sign_payload(wallet, report.body()))
+def sign_body(body: Mapping[str, Any], wallet: Any) -> dict[str, Any]:
+    wire = json.loads(json.dumps(body))
+    wire["signature"] = sign_payload(wallet, wire)
+    return dict(wire)
 
 
 def _number(value: Any) -> float:

@@ -16,13 +16,19 @@ import httpx
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.core import transcript
 from microtensor_subnet.validator import receipts
-from microtensor_subnet.validator.relay import RelayError, TicketDesk
+from microtensor_subnet.validator.relay import RelayAnswer, RelayError, TicketDesk
 from microtensor_subnet.validator.sandbox import tools
+from microtensor_subnet.validator.sandbox.slm import engine_seed
 
 log = logging.getLogger("microtensor_subnet.validator.sandbox.services")
 
 MAX_BODY: Final[int] = 4 * 1024 * 1024
-UPSTREAM_SECONDS: Final[float] = 300.0
+UPSTREAM_SECONDS: Final[float] = 600.0
+FAULT_WAIT_SECONDS: Final[float] = 30.0
+ENGINE_SOURCE: Final[str] = "engine"
+RELAY_SOURCE: Final[str] = "relay"
+SERVICE_SOURCE: Final[str] = "service"
+OPEN_CALL: Final[str] = "a model or relay call was still running when main.py answered"
 SLM_PREFIX: Final[str] = "/slm"
 ROUTER_PREFIX: Final[str] = "/router"
 RELAY_PREFIX: Final[str] = "/relay"
@@ -31,6 +37,14 @@ RECORD: Final[str] = "record"
 REPLAY: Final[str] = "replay"
 MISMATCH_STATUS: Final[int] = 409
 ID_PREFIX: Final[str] = "token_id:"
+FORWARDED_FIELDS: Final[tuple[str, ...]] = (
+    "model",
+    "prompt",
+    "max_tokens",
+    "stop",
+    "temperature",
+    "stream",
+)
 FAULT_STATUS: Final[dict[str, int]] = {"timeout": 504, "error": 500}
 FAULT_BODY: Final[dict[str, bytes]] = {
     "timeout": b'{"error": "model timed out"}',
@@ -89,12 +103,6 @@ def _token_ids(choice: Mapping[str, Any]) -> list[int]:
     return found
 
 
-def _logprobs(choice: Mapping[str, Any]) -> list[float]:
-    logprobs = choice.get("logprobs") or {}
-    values = logprobs.get("token_logprobs") if isinstance(logprobs, Mapping) else None
-    return [float(v) for v in values or [] if v is not None]
-
-
 def slm_record(
     seq: int,
     request: Mapping[str, Any],
@@ -115,12 +123,34 @@ def slm_record(
         seed=int(request.get("seed") or 0),
         output_tokens=_token_ids(choice),
         output_text=str(choice.get("text") or ""),
-        logprobs=_logprobs(choice),
         finish_reason=str(choice.get("finish_reason") or ""),
         ttft_ms=0.0,
         total_ms=spent_ms,
         fault=fault,
     )
+
+
+def engine_problem(parsed: Any) -> str:
+    choices = parsed.get("choices") if isinstance(parsed, Mapping) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+        return "the engine answered with no choices"
+    if choices[0].get("text") and not _token_ids(choices[0]):
+        return "the engine answered with text but no token ids"
+    return ""
+
+
+def pinned_body(body: Mapping[str, Any], seed: int) -> dict[str, Any]:
+    found = {key: body[key] for key in FORWARDED_FIELDS if key in body}
+    stop = found.get("stop")
+    if isinstance(stop, str):
+        found["stop"] = [stop]
+    found["seed"] = seed
+    return found
+
+
+def engine_body(body: Mapping[str, Any]) -> dict[str, Any]:
+    seed = body.get("seed")
+    return {**body, "seed": engine_seed(seed)} if isinstance(seed, int) else dict(body)
 
 
 def slm_request_matches(call: Mapping[str, Any], request: Mapping[str, Any]) -> str:
@@ -138,6 +168,9 @@ def slm_request_matches(call: Mapping[str, Any], request: Mapping[str, Any]) -> 
 @dataclass(slots=True)
 class Recorder:
     calls: list[dict[str, Any]] = field(default_factory=list)
+    failure: str = ""
+    source: str = ""
+    open_calls: int = 0
 
     @property
     def seq(self) -> int:
@@ -145,6 +178,11 @@ class Recorder:
 
     def add(self, call: dict[str, Any]) -> None:
         self.calls.append(call)
+
+    def fail(self, source: str, what: str) -> None:
+        if not self.failure:
+            self.failure = what
+            self.source = source
 
 
 @dataclass(slots=True)
@@ -252,7 +290,7 @@ class ArtifactSession:
     item_tokens_in: int = 0
     item_tokens_out: int = 0
     item_receipts: list[dict[str, Any]] = field(default_factory=list)
-    prompts: dict[tuple[str, int], str] = field(default_factory=dict)
+    prompts: dict[tuple[str, str, int], str] = field(default_factory=dict)
     engine_failures: int = 0
     relay_purpose: str = ""
     relay_cap_micros: int = 0
@@ -349,6 +387,17 @@ class ArtifactSession:
             self.current_item = ""
             self.item_request = None
         return verdict
+
+    def row_problem(self) -> tuple[str, str]:
+        with self.lock:
+            recorder = self.recorder
+            if recorder is None:
+                return "", ""
+            if recorder.failure:
+                return recorder.failure, recorder.source
+            if recorder.open_calls:
+                return OPEN_CALL, SERVICE_SOURCE
+        return "", ""
 
     def recorded(self, output: Any) -> dict[str, Any]:
         with self.lock:
@@ -524,21 +573,26 @@ class Services:
                 if session is None:
                     self._json(403, {"error": "unknown sandbox"})
                     return
+                with session.lock:
+                    recorder = session.recorder
                 try:
                     if path == contract.TOOL_SCHEMA or path == contract.TOOL_QUERY:
-                        self._tool(session, path, body)
+                        self._tool(session, recorder, path, body)
                     elif path.startswith(SLM_PREFIX):
-                        self._slm(session, path[len(SLM_PREFIX) :], body)
+                        self._slm(session, recorder, path[len(SLM_PREFIX) :], body)
                     elif path.startswith(ROUTER_PREFIX):
-                        self._router(session, path[len(ROUTER_PREFIX) :], body)
+                        self._router(session, recorder, path[len(ROUTER_PREFIX) :], body)
                     elif path == RELAY_PREFIX + contract.RELAY_COMPLETIONS:
-                        self._relay(session, body)
+                        self._relay(session, recorder, body)
                     else:
                         self._json(404, {"error": "no such service"})
                 except ReplayMismatch as exc:
                     self._json(MISMATCH_STATUS, {"error": "replay mismatch", "what": str(exc)})
                 except Exception as exc:
                     log.warning("service %s failed: %s", path, exc)
+                    if recorder is not None:
+                        with session.lock:
+                            recorder.fail(SERVICE_SOURCE, f"service {path} failed: {exc}")
                     self._json(500, {"error": "service failure"})
 
             def do_GET(self) -> None:
@@ -560,12 +614,18 @@ class Services:
                     status, raw = tools.apply_fault(kind, payload)
                 except tools.ToolFault:
                     if wait:
-                        threading.Event().wait(UPSTREAM_SECONDS / 10)
+                        threading.Event().wait(FAULT_WAIT_SECONDS)
                     self._json(504, {"error": "tool timed out"})
                     return
                 self._send(status, raw)
 
-            def _tool(self, session: ArtifactSession, path: str, body: dict[str, Any]) -> None:
+            def _tool(
+                self,
+                session: ArtifactSession,
+                recorder: Recorder | None,
+                path: str,
+                body: dict[str, Any],
+            ) -> None:
                 with session.lock:
                     session.tool_calls += 1
                     item_id = session.current_item
@@ -589,7 +649,6 @@ class Services:
                 if kind:
                     with session.lock:
                         session.faults_served += 1
-                recorder = session.recorder
                 if recorder is not None:
                     with session.lock:
                         recorder.add(
@@ -608,7 +667,13 @@ class Services:
                     return session.fault_plan.fault_for(item_id)
                 return ""
 
-            def _slm(self, session: ArtifactSession, path: str, body: dict[str, Any]) -> None:
+            def _slm(
+                self,
+                session: ArtifactSession,
+                recorder: Recorder | None,
+                path: str,
+                body: dict[str, Any],
+            ) -> None:
                 with session.lock:
                     item_id = session.current_item
                     seed = session.item_seed
@@ -616,7 +681,7 @@ class Services:
                 body["stream"] = False
                 body.setdefault("model", "slm")
                 if session.mode != LIVE:
-                    body["seed"] = seed
+                    body = pinned_body(body, seed)
                 admitted, made = session.admit_model_call(item_id)
                 if not admitted:
                     self._json(429, {"error": "model call limit for this item reached"})
@@ -629,13 +694,12 @@ class Services:
                 if fault in FAULT_STATUS:
                     with session.lock:
                         session.faults_served += 1
-                        recorder = session.recorder
                         if recorder is not None:
                             recorder.add(
                                 slm_record(recorder.seq, body, {}, spent_ms=0.0, fault=fault)
                             )
                     if fault == "timeout":
-                        threading.Event().wait(UPSTREAM_SECONDS / 10)
+                        threading.Event().wait(FAULT_WAIT_SECONDS)
                     self._send(FAULT_STATUS[fault], FAULT_BODY[fault])
                     return
                 if session.recording:
@@ -643,14 +707,36 @@ class Services:
                     body["return_token_ids"] = True
                     body["return_tokens_as_token_ids"] = True
                 started = time.perf_counter()
-                with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
-                    response = http.post(session.slm_url.rstrip("/") + path, json=body)
+                if recorder is not None:
+                    with session.lock:
+                        recorder.open_calls += 1
+                try:
+                    with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
+                        response = http.post(
+                            session.slm_url.rstrip("/") + path, json=engine_body(body)
+                        )
+                except httpx.HTTPError as exc:
+                    with session.lock:
+                        session.engine_failures += 1
+                        if recorder is not None:
+                            recorder.fail(ENGINE_SOURCE, f"the engine was not reached: {exc}")
+                    raise
+                finally:
+                    if recorder is not None:
+                        with session.lock:
+                            recorder.open_calls -= 1
                 spent = (time.perf_counter() - started) * 1000
                 with session.lock:
                     session.item_model_ms[item_id] = session.item_model_ms.get(item_id, 0.0) + spent
                 if response.status_code != 200:
                     with session.lock:
                         session.engine_failures += 1
+                        if recorder is not None:
+                            recorder.fail(
+                                ENGINE_SOURCE,
+                                f"the engine answered {response.status_code}: "
+                                f"{response.text[:200]}",
+                            )
                     self._send(
                         response.status_code,
                         response.content,
@@ -666,9 +752,13 @@ class Services:
                     int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
                 )
                 raw = response.content
+                problem = engine_problem(parsed) if session.recording else ""
+                if problem and recorder is not None:
+                    with session.lock:
+                        session.engine_failures += 1
+                        recorder.fail(ENGINE_SOURCE, problem)
                 if session.recording and isinstance(parsed, Mapping):
                     with session.lock:
-                        recorder = session.recorder
                         if recorder is not None:
                             call = slm_record(
                                 recorder.seq, body, parsed, spent_ms=spent, fault=fault
@@ -691,7 +781,8 @@ class Services:
                 if str(expected.get("fault") or "") != fault:
                     raise replay.fail("model fault differs")
                 with session.lock:
-                    session.prompts[(replay.item_id, int(expected.get("seq") or 0))] = str(
+                    seq = int(expected.get("seq") or 0)
+                    session.prompts[(replay.item_id, session.item_condition, seq)] = str(
                         body.get("prompt") or ""
                     )
                 if fault in FAULT_STATUS:
@@ -706,43 +797,55 @@ class Services:
                     raw = tools.model_fault(fault, raw)
                 self._send(200, raw)
 
-            def _router(self, session: ArtifactSession, path: str, body: dict[str, Any]) -> None:
+            def _router(
+                self,
+                session: ArtifactSession,
+                recorder: Recorder | None,
+                path: str,
+                body: dict[str, Any],
+            ) -> None:
                 replay = session.replay
                 if replay is not None:
                     expected = replay.take(transcript.ROUTER)
                     if expected.get("route") != path:
                         raise replay.fail(f"expected router {expected.get('route')}, got {path}")
-                    if not transcript.canonical_equal(expected.get("request") or {}, body):
+                    if expected.get("request_sha256") != transcript.canonical_sha256(body):
                         raise replay.fail("router request differs")
-                    self._send(200, json.dumps(expected.get("response") or {}).encode("utf-8"))
+                    self._json(int(expected.get("status") or 200), expected.get("response") or {})
                     return
-                if not session.router_url:
-                    self._json(404, {"error": "no router"})
-                    return
-                with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
-                    response = http.post(session.router_url.rstrip("/") + path, json=body)
-                recorder = session.recorder
-                if recorder is not None and response.status_code == 200:
-                    try:
-                        parsed = response.json()
-                    except ValueError:
-                        parsed = {}
-                    if isinstance(parsed, Mapping):
-                        with session.lock:
-                            recorder.add(
-                                transcript.router_call(
-                                    recorder.seq, route=path, request=body, response=parsed
-                                )
+                status, answer = self._router_answer(session, path, body)
+                if recorder is not None:
+                    with session.lock:
+                        recorder.add(
+                            transcript.router_call(
+                                recorder.seq,
+                                route=path,
+                                request=body,
+                                response=answer,
+                                status=status,
                             )
-                        self._send(200, json.dumps(parsed).encode("utf-8"))
-                        return
-                self._send(
-                    response.status_code,
-                    response.content,
-                    response.headers.get("content-type", "application/json"),
-                )
+                        )
+                self._json(status, answer)
 
-            def _relay(self, session: ArtifactSession, body: dict[str, Any]) -> None:
+            def _router_answer(
+                self, session: ArtifactSession, path: str, body: dict[str, Any]
+            ) -> tuple[int, Mapping[str, Any]]:
+                if not session.router_url:
+                    return 404, {"error": "no router"}
+                try:
+                    with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
+                        response = http.post(session.router_url.rstrip("/") + path, json=body)
+                except httpx.HTTPError:
+                    return 502, {"error": "router unavailable"}
+                try:
+                    parsed = response.json()
+                except ValueError:
+                    parsed = {}
+                return response.status_code, parsed if isinstance(parsed, Mapping) else {}
+
+            def _relay(
+                self, session: ArtifactSession, recorder: Recorder | None, body: dict[str, Any]
+            ) -> None:
                 replay = session.replay
                 if replay is not None:
                     expected = replay.take(transcript.RELAY)
@@ -760,6 +863,7 @@ class Services:
                 if desk is None or not opaque:
                     self._relay_answer(
                         session,
+                        recorder,
                         body,
                         403,
                         {"error": {"code": "refused", "message": "no ticket"}},
@@ -770,6 +874,7 @@ class Services:
                 if not isinstance(messages, list):
                     self._relay_answer(
                         session,
+                        recorder,
                         body,
                         422,
                         {"error": {"code": "refused", "message": "messages required"}},
@@ -777,15 +882,16 @@ class Services:
                     )
                     return
                 try:
-                    answer = desk.complete(
-                        opaque,
-                        model=str(body.get("model", "")),
-                        messages=[m for m in messages if isinstance(m, dict)],
-                        max_tokens=int(body["max_tokens"]) if body.get("max_tokens") else None,
-                    )
+                    answer = self._complete(session, recorder, desk, opaque, body, messages)
                 except RelayError as exc:
+                    if exc.transient and recorder is not None:
+                        with session.lock:
+                            recorder.fail(RELAY_SOURCE, f"the relay is not answering: {exc}")
+                        self._json(503, {"error": {"code": exc.code, "message": "try again"}})
+                        return
                     self._relay_answer(
                         session,
+                        recorder,
                         body,
                         402 if exc.code in ("cap", "limit") else 403,
                         {"error": {"code": exc.code, "message": "the frontier call was refused"}},
@@ -794,6 +900,7 @@ class Services:
                     return
                 self._relay_answer(
                     session,
+                    recorder,
                     body,
                     200,
                     {
@@ -816,15 +923,39 @@ class Services:
                     answer.receipt.body,
                 )
 
+            def _complete(
+                self,
+                session: ArtifactSession,
+                recorder: Recorder | None,
+                desk: TicketDesk,
+                opaque: str,
+                body: Mapping[str, Any],
+                messages: Sequence[Any],
+            ) -> RelayAnswer:
+                if recorder is not None:
+                    with session.lock:
+                        recorder.open_calls += 1
+                try:
+                    return desk.complete(
+                        opaque,
+                        model=str(body.get("model", "")),
+                        messages=[m for m in messages if isinstance(m, dict)],
+                        max_tokens=int(body["max_tokens"]) if body.get("max_tokens") else None,
+                    )
+                finally:
+                    if recorder is not None:
+                        with session.lock:
+                            recorder.open_calls -= 1
+
             def _relay_answer(
                 self,
                 session: ArtifactSession,
+                recorder: Recorder | None,
                 request: Mapping[str, Any],
                 status: int,
                 response: Mapping[str, Any],
                 receipt: Mapping[str, Any],
             ) -> None:
-                recorder = session.recorder
                 if receipt:
                     with session.lock:
                         session.item_receipts.append(dict(receipt))

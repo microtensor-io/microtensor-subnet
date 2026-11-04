@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import httpx
 
 MAX_BODY = 4 * 1024 * 1024
-UPSTREAM_SECONDS = 330.0
+UPSTREAM_SECONDS = 630.0
 SANDBOX_HEADER = "x-mt-sandbox"
 HOP_HEADERS = frozenset(
     {"connection", "keep-alive", "transfer-encoding", "host", "content-length", SANDBOX_HEADER}

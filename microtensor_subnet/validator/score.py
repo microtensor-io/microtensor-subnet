@@ -461,8 +461,9 @@ def escalation_score(
     run: EscalationRun, reference: EscalationRun | None, *, seed: str, min_items: int = MIN_ITEMS
 ) -> PoolScore:
     value, lower = escalation_value(run)
-    margin = None
-    if reference is not None:
+    if reference is None or not reference.repairs:
+        margin = _margin_over_redo(run, seed)
+    else:
         by_family: dict[str, list[tuple[Any, Any]]] = {}
         theirs = {r.item_id: r for r in reference.repairs}
         for mine in run.repairs:
@@ -489,9 +490,7 @@ def escalation_score(
         if run.repairs
         else 0.0,
         n=len(run.repairs),
-        eligible=value > 0
-        and len(run.repairs) >= min_items
-        and (margin is not None and margin > 0),
+        eligible=value > 0 and len(run.repairs) >= min_items and margin > 0,
         detail={
             "redo_pass_rate": round(run.redo_pass_rate, DIGITS),
             "repair_cost_micros": run.repair_cost_micros,
@@ -499,6 +498,19 @@ def escalation_score(
             "margin_over_reference_lb": margin,
         },
     )
+
+
+def _margin_over_redo(run: EscalationRun, seed: str) -> float:
+    by_family: dict[str, list[Any]] = {}
+    for mine in run.repairs:
+        by_family.setdefault(mine.family, []).append(mine)
+
+    def metric(rows: Sequence[Any]) -> float:
+        return escalation_value(
+            EscalationRun(list(rows), run.redo_pass_rate, run.redo_cost_micros)
+        )[0]
+
+    return _bootstrap_pairs(by_family, metric, bootstrap_seed(seed, "escalation"))
 
 
 def _bootstrap_pairs(

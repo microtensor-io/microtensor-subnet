@@ -208,7 +208,7 @@ def compute_scores(
     min_driver_version: str = "",
     driver_cutoff_passed: bool = False,
 ) -> tuple[dict[str, float], str]:
-    if server_scores and server_scores.get("epoch"):
+    if server_scores and server_scores.get("epoch") is not None:
         weights = {
             str(k): float(v)
             for k, v in (server_scores.get("weights") or {}).items()

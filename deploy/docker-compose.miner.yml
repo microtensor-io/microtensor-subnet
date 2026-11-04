@@ -3,7 +3,8 @@ services:
     image: ghcr.io/microtensor-io/runner:1
     container_name: microtensor-miner
     restart: "no"
-    stop_grace_period: 30m
+    init: true
+    stop_grace_period: 2m
     group_add:
       - "${DOCKER_GID:-999}"
     environment:
@@ -16,9 +17,11 @@ services:
       MT_SERVER_URL: "${MT_SERVER_URL:-https://api.microtensor.cloud}"
       MT_RELAY_URL: "${MT_RELAY_URL:-https://api.microtensor.cloud}"
       MT_GPUS: "${MT_GPUS:-0}"
-      MT_PROFILE: "${MT_PROFILE:-}"
+      MT_SANDBOX_LABEL: "${MT_SANDBOX_LABEL:-miner}"
       MT_RUNNER_DIGEST: "${MT_RUNNER_DIGEST:-}"
       MT_SLM_MEMORY_SHARE: "${MT_SLM_MEMORY_SHARE:-0}"
+      MT_ENGINE_URL: "${MT_ENGINE_URL:-}"
+      MT_ENGINE_KEY: "${MT_ENGINE_KEY:-}"
       HF_HOME: /var/lib/microtensor/cache/hf
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
