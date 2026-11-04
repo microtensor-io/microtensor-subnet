@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +14,8 @@ from typing import Any, Final
 import httpx
 
 from microtensor_subnet.chain.wallet import sign_bytes
+
+log = logging.getLogger("microtensor_subnet.validator.client")
 
 HOTKEY_HEADER: Final[str] = "x-mt-hotkey"
 TIMESTAMP_HEADER: Final[str] = "x-mt-timestamp"
@@ -23,12 +27,20 @@ UPLOAD_TIMEOUT_SECONDS: Final[float] = 300.0
 PROGRESS_TIMEOUT_SECONDS: Final[float] = 5.0
 GZIP: Final[str] = "application/gzip"
 CHUNK_BYTES: Final[int] = 8 * 1024 * 1024
+MIRROR_ATTEMPTS: Final[int] = 6
+MIRROR_PAUSE_SECONDS: Final[float] = 2.0
+MIRROR_READ_SECONDS: Final[float] = 120.0
+RANGE_START: Final[re.Pattern[str]] = re.compile(r"bytes (\d+)-")
 
 
 ARENA_NETWORKS: dict[str, str] = {"test": "testnet", "finney": "mainnet"}
 
 
 class ServerError(RuntimeError):
+    pass
+
+
+class MirrorDropped(ServerError):
     pass
 
 
@@ -65,6 +77,7 @@ class ServerClient:
         content_type: str,
         signed: bool,
         timeout: float | None,
+        missing_ok: bool = True,
     ) -> Any:
         headers = (
             self._headers(method, path, raw, content_type)
@@ -78,7 +91,7 @@ class ServerClient:
                 response = http.request(method, path, content=raw or None, headers=headers)
         except httpx.HTTPError as exc:
             raise ServerError(f"{method} {path}: {exc}") from exc
-        if response.status_code == 404:
+        if response.status_code == 404 and missing_ok:
             return None
         if response.status_code >= 400:
             raise ServerError(
@@ -94,10 +107,17 @@ class ServerClient:
         *,
         signed: bool = False,
         timeout: float | None = None,
+        missing_ok: bool = True,
     ) -> Any:
         raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode() if body else b""
         return self._send(
-            method, path, raw, content_type="application/json", signed=signed, timeout=timeout
+            method,
+            path,
+            raw,
+            content_type="application/json",
+            signed=signed,
+            timeout=timeout,
+            missing_ok=missing_ok,
         )
 
     def _download(self, path: str, *, timeout: float) -> httpx.Response:
@@ -246,6 +266,39 @@ class ServerClient:
         self._stream_mirror(wanted, chunks.append)
         return b"".join(chunks)
 
+    def _fetch_part(self, sha256: str, partial: Path) -> None:
+        offset = _size_of(partial)
+        headers = {"accept-encoding": "identity"}
+        if offset:
+            headers["range"] = f"bytes={offset}-"
+        try:
+            with (
+                httpx.Client(
+                    base_url=self.base_url.rstrip("/"),
+                    timeout=httpx.Timeout(BLOB_TIMEOUT_SECONDS, read=MIRROR_READ_SECONDS),
+                    follow_redirects=True,
+                ) as http,
+                http.stream("GET", f"/v2/mirror/{sha256}", headers=headers) as response,
+            ):
+                status = response.status_code
+                if status == 404:
+                    partial.unlink(missing_ok=True)
+                    raise ServerError(f"the mirror holds no blob {sha256}")
+                if status == 416:
+                    return
+                if status == 429 or status >= 500:
+                    raise MirrorDropped(f"mirror blob {sha256} answered {status}")
+                if status not in (200, 206):
+                    raise ServerError(f"mirror blob {sha256} answered {status}")
+                if status == 206 and not _resumes_at(response, offset):
+                    partial.unlink(missing_ok=True)
+                    raise MirrorDropped(f"mirror blob {sha256} resumed at the wrong offset")
+                with partial.open("ab" if status == 206 else "wb") as handle:
+                    for chunk in response.iter_bytes(CHUNK_BYTES):
+                        handle.write(chunk)
+        except httpx.HTTPError as exc:
+            raise MirrorDropped(f"mirror blob {sha256} failed: {exc}") from exc
+
     def mirror_file(self, sha256: str, into: Path) -> Path:
         wanted = sha256.strip().lower()
         into = Path(into)
@@ -255,14 +308,25 @@ class ServerClient:
             into.unlink()
         into.parent.mkdir(parents=True, exist_ok=True)
         partial = into.with_name(into.name + ".part")
-        try:
-            with partial.open("wb") as handle:
-                self._stream_mirror(wanted, handle.write)
-        except BaseException:
+        failures = 0
+        while True:
+            before = _size_of(partial)
+            try:
+                self._fetch_part(wanted, partial)
+            except MirrorDropped as exc:
+                failures = 0 if _size_of(partial) > before else failures + 1
+                if failures >= MIRROR_ATTEMPTS:
+                    raise
+                log.warning("%s; resuming from byte %d", exc, _size_of(partial))
+                time.sleep(MIRROR_PAUSE_SECONDS * min(failures + 1, MIRROR_ATTEMPTS))
+                continue
+            if partial.is_file() and _file_sha256(partial) == wanted:
+                os.replace(partial, into)
+                return into
             partial.unlink(missing_ok=True)
-            raise
-        os.replace(partial, into)
-        return into
+            failures += 1
+            if failures >= MIRROR_ATTEMPTS:
+                raise ServerError(f"mirror blob {wanted} does not match its sha256")
 
     def upload_transcript(self, arena_id: str, index: int, compressed: bytes) -> dict[str, Any]:
         found = self._send(
@@ -277,17 +341,28 @@ class ServerClient:
             raise ServerError(f"the transcript upload was not accepted: {found!r}"[:300])
         return dict(found)
 
-    def miner_relay_token(self) -> dict[str, Any]:
-        found = self._request("POST", "/v2/miners/relay-token", {}, signed=True)
+    def miner_relay_token(self, arena_id: str) -> dict[str, Any]:
+        found = self._request("POST", "/v2/miners/relay-token", {"arena_id": arena_id}, signed=True)
         return dict(found or {})
 
     def coordinator_report(self, body: dict[str, Any]) -> dict[str, Any]:
-        found = self._request("POST", "/v2/coordinator/reports", body, signed=True)
+        found = self._request(
+            "POST", "/v2/coordinator/reports", body, signed=True, missing_ok=False
+        )
         return dict(found or {})
 
     def appeal(self, body: dict[str, Any]) -> dict[str, Any]:
-        found = self._request("POST", "/v2/appeals", body, signed=True)
+        found = self._request("POST", "/v2/appeals", body, signed=True, missing_ok=False)
         return dict(found or {})
+
+
+def _size_of(path: Path) -> int:
+    return path.stat().st_size if path.is_file() else 0
+
+
+def _resumes_at(response: httpx.Response, offset: int) -> bool:
+    found = RANGE_START.match(response.headers.get("content-range", ""))
+    return found is not None and int(found.group(1)) == offset
 
 
 def _file_sha256(path: Path) -> str:

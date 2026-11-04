@@ -18,6 +18,7 @@ from microtensor_subnet.core import transcript
 from microtensor_subnet.validator import receipts
 from microtensor_subnet.validator.relay import RelayError, TicketDesk
 from microtensor_subnet.validator.sandbox import tools
+from microtensor_subnet.validator.sandbox.slm import engine_seed
 
 log = logging.getLogger("microtensor_subnet.validator.sandbox.services")
 
@@ -31,6 +32,14 @@ RECORD: Final[str] = "record"
 REPLAY: Final[str] = "replay"
 MISMATCH_STATUS: Final[int] = 409
 ID_PREFIX: Final[str] = "token_id:"
+FORWARDED_FIELDS: Final[tuple[str, ...]] = (
+    "model",
+    "prompt",
+    "max_tokens",
+    "stop",
+    "temperature",
+    "stream",
+)
 FAULT_STATUS: Final[dict[str, int]] = {"timeout": 504, "error": 500}
 FAULT_BODY: Final[dict[str, bytes]] = {
     "timeout": b'{"error": "model timed out"}',
@@ -89,12 +98,6 @@ def _token_ids(choice: Mapping[str, Any]) -> list[int]:
     return found
 
 
-def _logprobs(choice: Mapping[str, Any]) -> list[float]:
-    logprobs = choice.get("logprobs") or {}
-    values = logprobs.get("token_logprobs") if isinstance(logprobs, Mapping) else None
-    return [float(v) for v in values or [] if v is not None]
-
-
 def slm_record(
     seq: int,
     request: Mapping[str, Any],
@@ -115,12 +118,25 @@ def slm_record(
         seed=int(request.get("seed") or 0),
         output_tokens=_token_ids(choice),
         output_text=str(choice.get("text") or ""),
-        logprobs=_logprobs(choice),
         finish_reason=str(choice.get("finish_reason") or ""),
         ttft_ms=0.0,
         total_ms=spent_ms,
         fault=fault,
     )
+
+
+def pinned_body(body: Mapping[str, Any], seed: int) -> dict[str, Any]:
+    found = {key: body[key] for key in FORWARDED_FIELDS if key in body}
+    stop = found.get("stop")
+    if isinstance(stop, str):
+        found["stop"] = [stop]
+    found["seed"] = seed
+    return found
+
+
+def engine_body(body: Mapping[str, Any]) -> dict[str, Any]:
+    seed = body.get("seed")
+    return {**body, "seed": engine_seed(seed)} if isinstance(seed, int) else dict(body)
 
 
 def slm_request_matches(call: Mapping[str, Any], request: Mapping[str, Any]) -> str:
@@ -616,7 +632,7 @@ class Services:
                 body["stream"] = False
                 body.setdefault("model", "slm")
                 if session.mode != LIVE:
-                    body["seed"] = seed
+                    body = pinned_body(body, seed)
                 admitted, made = session.admit_model_call(item_id)
                 if not admitted:
                     self._json(429, {"error": "model call limit for this item reached"})
@@ -644,7 +660,7 @@ class Services:
                     body["return_tokens_as_token_ids"] = True
                 started = time.perf_counter()
                 with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
-                    response = http.post(session.slm_url.rstrip("/") + path, json=body)
+                    response = http.post(session.slm_url.rstrip("/") + path, json=engine_body(body))
                 spent = (time.perf_counter() - started) * 1000
                 with session.lock:
                     session.item_model_ms[item_id] = session.item_model_ms.get(item_id, 0.0) + spent
@@ -714,33 +730,38 @@ class Services:
                         raise replay.fail(f"expected router {expected.get('route')}, got {path}")
                     if not transcript.canonical_equal(expected.get("request") or {}, body):
                         raise replay.fail("router request differs")
-                    self._send(200, json.dumps(expected.get("response") or {}).encode("utf-8"))
+                    self._json(int(expected.get("status") or 200), expected.get("response") or {})
                     return
-                if not session.router_url:
-                    self._json(404, {"error": "no router"})
-                    return
-                with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
-                    response = http.post(session.router_url.rstrip("/") + path, json=body)
+                status, answer = self._router_answer(session, path, body)
                 recorder = session.recorder
-                if recorder is not None and response.status_code == 200:
-                    try:
-                        parsed = response.json()
-                    except ValueError:
-                        parsed = {}
-                    if isinstance(parsed, Mapping):
-                        with session.lock:
-                            recorder.add(
-                                transcript.router_call(
-                                    recorder.seq, route=path, request=body, response=parsed
-                                )
+                if recorder is not None:
+                    with session.lock:
+                        recorder.add(
+                            transcript.router_call(
+                                recorder.seq,
+                                route=path,
+                                request=body,
+                                response=answer,
+                                status=status,
                             )
-                        self._send(200, json.dumps(parsed).encode("utf-8"))
-                        return
-                self._send(
-                    response.status_code,
-                    response.content,
-                    response.headers.get("content-type", "application/json"),
-                )
+                        )
+                self._json(status, answer)
+
+            def _router_answer(
+                self, session: ArtifactSession, path: str, body: dict[str, Any]
+            ) -> tuple[int, Mapping[str, Any]]:
+                if not session.router_url:
+                    return 404, {"error": "no router"}
+                try:
+                    with httpx.Client(timeout=UPSTREAM_SECONDS) as http:
+                        response = http.post(session.router_url.rstrip("/") + path, json=body)
+                except httpx.HTTPError:
+                    return 502, {"error": "router unavailable"}
+                try:
+                    parsed = response.json()
+                except ValueError:
+                    parsed = {}
+                return response.status_code, parsed if isinstance(parsed, Mapping) else {}
 
             def _relay(self, session: ArtifactSession, body: dict[str, Any]) -> None:
                 replay = session.replay

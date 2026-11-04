@@ -22,6 +22,7 @@ from microtensor_subnet.artifact.params import (
     model_parameters,
 )
 from microtensor_subnet.artifact.validate import Manifest, ManifestError, SlmPin, load_manifest
+from microtensor_subnet.chain.client import ChainError
 from microtensor_subnet.chain.commitment import CommitmentError, SubmissionCommitment
 from microtensor_subnet.chain.epochs import Epoch, epoch_seed
 from microtensor_subnet.chain.wallet import hotkey_address
@@ -1369,6 +1370,11 @@ def miner_memory(runner: MinerModeRunner, artifact: Artifact) -> int:
     )
 
 
+def single_base(definition: Mapping[str, Any]) -> str:
+    allowed = [str(base) for base in definition.get("allowed_bases") or []]
+    return allowed[0] if len(allowed) == 1 else ""
+
+
 def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Replayer) -> None:
     entry = runner.mirror[hotkey]
     record = MinerRecord(
@@ -1456,7 +1462,10 @@ def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Repl
     record.weights_digest = str(entry.get("weights_sha256") or "")
     outcome = runner.outcomes.setdefault(hotkey, ArtifactOutcome(hotkey=hotkey))
     outcome.provenance = provenance.check(
-        slm_dir, base_dirs=runner.base_dirs, known_public=runner.known_public
+        slm_dir,
+        base_dirs=runner.base_dirs,
+        known_public=runner.known_public,
+        fallback=single_base(runner.context.definition),
     )
     record.provenance = dict(outcome.provenance)
 
@@ -1703,6 +1712,23 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
     return ordered
 
 
+def pull_router_weights(runner: MinerModeRunner) -> None:
+    for hotkey, record in runner.records.items():
+        artifact = record.artifact
+        if record.failure or artifact is None or "router" not in artifact.has:
+            continue
+        entry = runner.mirror.get(hotkey) or {}
+        try:
+            materialise_tree(
+                runner.client,
+                _files_of(entry, ARTIFACT_DIR),
+                runner.miner_dir(hotkey) / ARTIFACT_DIR,
+                weights=True,
+            )
+        except (ServerError, EpochError, OSError) as exc:
+            log.warning("%s router weights not pulled: %s", hotkey, exc)
+
+
 def router_phase(runner: MinerModeRunner) -> None:
     context = runner.context
     reference_drafts = runner.reference_slm.drafts() if runner.reference_slm else {}
@@ -1753,7 +1779,7 @@ def run_router(
     process = None
     try:
         process, url = runner.host.open_router(
-            router_dir, slot=0, gpu=gpu, config=config, limits=runner.limits
+            router_dir, slot=0, gpu=gpu, config=config, limits=runner.limits, device="cpu"
         )
         return router.run(runner.context, url, sources)
     except Exception as exc:
@@ -1938,11 +1964,14 @@ def miner_mode_weights(
         if total > 0
         else {}
     )
-    vector = vector_for(weights, chain.snapshot(refresh=True))
-    if vector is not None and not config.dry_run:
-        ok, reason = chain.set_weights(vector)
-        if not ok:
-            log.error("weights rejected: %s", reason)
+    try:
+        vector = vector_for(weights, chain.snapshot(refresh=True))
+        if vector is not None and not config.dry_run:
+            ok, reason = chain.set_weights(vector)
+            if not ok:
+                log.error("weights rejected: %s", reason)
+    except ChainError as exc:
+        log.error("weights not set; the report still goes out: %s", exc)
     return weights, burned
 
 
@@ -1952,23 +1981,20 @@ def miner_mode_report(
     context = runner.context
     artifacts = {h: r.artifact for h, r in runner.records.items() if r.artifact is not None}
     receipts = {h: list(o.receipts) for h, o in runner.outcomes.items()}
-    signed = report.sign(
-        report.build(
-            context,
-            validator_hotkey=runner.hotkey,
-            artifacts=artifacts,
-            scores=scores,
-            failures=failures,
-            receipts=receipts,
-        ),
-        runner.wallet,
-    ).to_dict()
-    signed["receipt_root"] = runner.receipt_root
-    signed["validator_profile"] = runner.profile
-    signed["serving"] = runner.serving
+    body = report.build(
+        context,
+        validator_hotkey=runner.hotkey,
+        artifacts=artifacts,
+        scores=scores,
+        failures=failures,
+        receipts=receipts,
+    ).body()
+    body["receipt_root"] = runner.receipt_root
+    body["validator_profile"] = runner.profile
+    body["serving"] = runner.serving
     if runner.reference_timing is not None:
-        signed["reference_spot_check"] = runner.reference_timing.to_dict()
-    for row in signed.get("miners") or []:
+        body["reference_spot_check"] = runner.reference_timing.to_dict()
+    for row in body.get("miners") or []:
         hotkey = str(row.get("hotkey", ""))
         replay = runner.replays.get(hotkey)
         spot = runner.spot_checks.get(hotkey)
@@ -1976,6 +2002,7 @@ def miner_mode_report(
         row["replay"] = replay.to_dict() if replay is not None else None
         row["spot_check"] = spot.to_dict() if spot is not None else None
         row["canary"] = dict(runner.canaries.get(hotkey) or {"checked": 0, "hits": 0})
+    signed = report.sign_body(body, runner.wallet)
     if runner.config.dry_run:
         log.info("dry run, the epoch report is not posted")
     else:
@@ -2057,6 +2084,7 @@ def run_miner_mode_epoch(
                 log.warning("%s grading failed: %s", miner, exc)
         coordinator_phase(runner)
         collect_fraud(runner)
+        pull_router_weights(runner)
         router_phase(runner)
         for miner, record in runner.records.items():
             if not record.failure:

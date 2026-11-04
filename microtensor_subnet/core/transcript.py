@@ -11,6 +11,8 @@ from microtensor_subnet.chain.wallet import sign_bytes, verify_bytes
 VERSION: Final[str] = "t1"
 FLOAT_DECIMALS: Final[int] = 6
 SIGNATURE_KEY: Final[str] = "miner_sig"
+TASK: Final[str] = "task"
+TASK_SHA256: Final[str] = "task_sha256"
 SLM: Final[str] = "slm"
 TOOL: Final[str] = "tool"
 RELAY: Final[str] = "relay"
@@ -83,6 +85,22 @@ def canonical_equal(left: Any, right: Any) -> bool:
 
 def prompt_sha256(prompt: str) -> str:
     return sha256_hex(prompt.encode("utf-8"))
+
+
+def task_sha256(task: Mapping[str, Any]) -> str:
+    return canonical_sha256(task)
+
+
+def compact_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    found = {key: value for key, value in request.items() if key != TASK}
+    found[TASK_SHA256] = task_sha256(request.get(TASK) or {})
+    return found
+
+
+def posted_request(recorded: Mapping[str, Any], task: Mapping[str, Any]) -> dict[str, Any]:
+    found = {key: value for key, value in recorded.items() if key != TASK_SHA256}
+    found[TASK] = dict(task)
+    return found
 
 
 def commitment_sha256(raw: str) -> str:
@@ -159,7 +177,12 @@ def tool_call(
 
 
 def router_call(
-    seq: int, *, route: str, request: Mapping[str, Any], response: Mapping[str, Any]
+    seq: int,
+    *,
+    route: str,
+    request: Mapping[str, Any],
+    response: Mapping[str, Any],
+    status: int = 200,
 ) -> dict[str, Any]:
     return {
         "seq": seq,
@@ -167,6 +190,7 @@ def router_call(
         "route": route,
         "request": dict(request),
         "response": dict(response),
+        "status": int(status),
     }
 
 
@@ -305,7 +329,7 @@ def unsigned(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def signing_digest(raw: Mapping[str, Any]) -> bytes:
-    return hashlib.sha256(canonical_json(unsigned(raw))).digest()
+    return hashlib.sha256(canonical_json(unsigned(raw))).hexdigest().encode("ascii")
 
 
 def sign(raw: Mapping[str, Any], wallet: Any) -> dict[str, Any]:
@@ -319,7 +343,10 @@ def verify_signature(raw: Mapping[str, Any]) -> bool:
     hotkey = str(raw.get("miner_hotkey", "") or "")
     if not signature or not hotkey:
         return False
-    return verify_bytes(hotkey, signing_digest(raw), signature)
+    message = signing_digest(raw)
+    return verify_bytes(hotkey, message, signature) or verify_bytes(
+        hotkey, b"<Bytes>" + message + b"</Bytes>", signature
+    )
 
 
 def transcript_sha256(raw: Mapping[str, Any]) -> str:

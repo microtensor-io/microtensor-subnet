@@ -75,6 +75,10 @@ under_root: Callable[[str, str, Mapping[str, str], str], bool] = resolve(
 )
 merkle_root: Callable[[Mapping[str, str]], str] = resolve(TRANSCRIPT_MODULE, "merkle_root")
 prompt_sha256: Callable[[str], str] = resolve(TRANSCRIPT_MODULE, "prompt_sha256")
+task_sha256: Callable[[Mapping[str, Any]], str] = resolve(TRANSCRIPT_MODULE, "task_sha256")
+posted_request: Callable[[Mapping[str, Any], Mapping[str, Any]], dict[str, Any]] = resolve(
+    TRANSCRIPT_MODULE, "posted_request"
+)
 item_seed: Callable[[str, str], int] = resolve(TRANSCRIPT_MODULE, "item_seed")
 verify_receipt: Callable[[Mapping[str, Any], str], bool] = resolve(
     RECEIPTS_MODULE, "verify", "verify_receipt"
@@ -139,7 +143,7 @@ def verify(
         return "transcript names another miner"
     if str(transcript.get("arena_id", "")) != arena_id:
         return "transcript names another arena"
-    if int(transcript.get("epoch") or -1) != epoch_index:
+    if transcript.get("epoch") != epoch_index:
         return "transcript names another epoch"
     if not isinstance(transcript.get("items"), list):
         return "transcript carries no items"

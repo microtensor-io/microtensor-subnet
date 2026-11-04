@@ -17,10 +17,15 @@ MEMORY_SHARE: Final[float] = 0.9
 SHARED_MEMORY_SHARE: Final[float] = 0.75
 BATCH_INVARIANT_ENV: Final[str] = "VLLM_BATCH_INVARIANT"
 ID_PREFIX: Final[str] = "token_id:"
+ENGINE_SEED_MASK: Final[int] = 2**63 - 1
 
 
 class SlmError(RuntimeError):
     pass
+
+
+def engine_seed(seed: int) -> int:
+    return int(seed) & ENGINE_SEED_MASK
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +97,7 @@ class SlmClient:
         if stop:
             body["stop"] = list(stop)
         if seed is not None:
-            body["seed"] = int(seed)
+            body["seed"] = engine_seed(seed)
         if logprobs:
             body["logprobs"] = int(logprobs)
             body["return_token_ids"] = True
@@ -198,7 +203,6 @@ def vllm_command(
         str(max_model_len),
         "--seed",
         "0",
-        "--disable-log-requests",
         "--gpu-memory-utilization",
         str(memory_share),
     ]

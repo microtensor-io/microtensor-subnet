@@ -154,7 +154,7 @@ def _run(args: argparse.Namespace) -> int:
         commitment = _commitment(args, config, wallet, hotkey)
         settings = _settings(args, epoch_index, commitment)
         upload = runner.run(settings, client=server, wallet=wallet)
-    except (runner.RunnerError, ServerError, DockerError) as exc:
+    except (runner.RunnerError, ServerError, DockerError, OSError) as exc:
         return fail(str(exc))
     print(f"epoch       {epoch_index}")
     print(f"items       {upload.items}")
@@ -215,8 +215,11 @@ def _appeal(args: argparse.Namespace) -> int:
         for flag in flags:
             print(f"{flag.kind:<11} item {flag.item_id}  seq {flag.call_seq}")
         return 0
-    if not any(f.item_id == args.item and f.call_seq == int(args.seq) for f in flags):
-        return fail(f"{args.item}#{args.seq} is not a standing flag for {hotkey}")
+    if not any(
+        f.kind == args.kind and f.item_id == args.item and f.call_seq == int(args.seq)
+        for f in flags
+    ):
+        return fail(f"{args.kind} {args.item}#{args.seq} is not a standing flag for {hotkey}")
     body: dict[str, Any] = {
         "arena_id": args.arena,
         "epoch_index": int(args.epoch),

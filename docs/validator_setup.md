@@ -71,11 +71,11 @@ The loop takes every live arena from the server itself. At each epoch's Freeze 2
 
 1. **Load the epoch.** The arena definition, the signed `mirror`, `inputs` and `receipts` documents, the seed check against the chain's open block hash, the roster.
 2. **Check receipts.** Fetch every miner's transcript from the mirror by its sha256; its leaf must sit under the `receipts` Merkle root. A miner with no upload is unscored.
-3. **Replay.** For every miner and every item, run the frozen `main.py` from the mirror in the replayer image with no network and a frozen clock, answer each model call from the transcript, recompute every tool response from the bundle, verify every relay receipt, and require every request to match the recording exactly and in order. Count calls and tokens per condition; time the harness on your own clock. Any mismatch fails the miner for the epoch. Minutes, no model inference.
-4. **Apply evidence.** Fetch the fraud evidence published for the epoch. A miner whose evidence has reached the arena's confirmation count scores zero and is banned for the arena's number of epochs.
-5. **Grade.** After the labels bundle releases, open it with your key and grade every answer with the arena grader; the probe grader runs the arena's pinned small GGUF model with llama.cpp.
-6. **Router pass.** Load each router from the mirror and score it on the kept drafts.
-7. **Score, set weights, report.** The scoring formulas, gates and commit reveal. The report carries the receipt root and each miner's replay result; the server folds reports into the stake weighted median.
+3. **Replay.** For every miner and every item, run the frozen `main.py` from the mirror in the replayer image with no network and a frozen clock, answer each model call from the transcript, recompute every tool response from the bundle, verify every relay receipt, and require every request to match the recording exactly and in order. The task is rebuilt from the bundle after its `task_sha256` matches. Count calls and tokens per condition; time the harness on your own clock. Any mismatch fails the miner for the epoch. Minutes, no model inference. A miner that passes has its weights pulled from the mirror and its provenance checked against the base its `training/recipe.json` names. A model with no recipe in the mirror is checked against the arena's one allowed base.
+4. **Grade.** Grade every answer with the arena grader, using the labels bundle your key opened when the epoch loaded; the probe grader runs the arena's pinned small GGUF model with llama.cpp.
+5. **Apply spot checks.** Wait for the coordinator's signed `spotcheck` document, then apply its measured figures. A miner with a standing flag in this epoch, or in the earlier epochs of the arena's ban window, scores zero. An appeal the coordinator upheld lifts the flag.
+6. **Router pass.** Fetch each router's weights from the mirror, load the router on the CPU and score it on the kept drafts.
+7. **Score, set weights, report.** The scoring formulas, gates and commit reveal. A chain error while setting weights is logged and the report still goes out. The report carries the receipt root and, for each miner, the transcript sha256, the replay result, the spot check and the canary counts; the server folds reports into the stake weighted median.
 
 ## Dry run
 
@@ -97,6 +97,8 @@ The validator image is built from `main` and tagged `ghcr.io/microtensor-io/vali
 
 Validators need no GPU and run no spot checks. The subnet owner runs a coordinator, which re-runs a sample of each miner's model calls on the mirrored weights and requires an exact token match. It restarts its engine and reruns anything that differs, and a call only becomes evidence when both runs agree with each other and differ from the miner. Speed and memory are only measured on the profile card, such as an RTX 4090 for `P1`.
 
-The coordinator signs a report for each miner, and the server publishes them as the epoch's `spotcheck` document. After grading, your validator waits for that document and checks both signatures. It then applies the measured figures and zeroes any miner with standing evidence, for the number of epochs the arena sets. The server never bans anyone.
+The coordinator signs a report for each miner, and the server publishes them as the epoch's `spotcheck` document. After grading, your validator waits for that document and checks both signatures. It then applies the measured figures and zeroes any miner with standing evidence, for the number of epochs the arena sets. A later report with no evidence for a miner does not erase a standing flag; only an upheld appeal lifts it. The server never bans anyone.
 
-Your validator stops waiting when the coordinator marks its report complete or has covered every miner, 150 blocks before the epoch ends, or after 5 hours. If no report arrived, it scores without spot checks.
+Your validator stops waiting when the coordinator marks its report complete or has covered every miner, 150 blocks before the epoch ends, or after 5 hours. If no report arrived, it scores without spot checks. A miner's own timings are never used: without a measurement from the profile card, speed limits pass, speed earns no efficiency gain, and memory is computed from the model.
+
+On testnet, when the inputs bundle carries no reference harness, your validator and every miner build it from the miner template at the commit pinned in `microtensor_subnet/validator/items.py`, so both sides produce identical prompts.

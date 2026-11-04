@@ -17,6 +17,7 @@ from microtensor_subnet.artifact import contract
 from microtensor_subnet.artifact.validate import (
     Manifest,
     ManifestError,
+    bare_hex,
     load_manifest,
     manifest_sha256,
     sha256_of,
@@ -24,7 +25,7 @@ from microtensor_subnet.artifact.validate import (
 from microtensor_subnet.core import profiles, transcript
 from microtensor_subnet.core.items import ItemError, unpack_bundle
 from microtensor_subnet.validator import collect, preflight
-from microtensor_subnet.validator.client import ServerClient, ServerError
+from microtensor_subnet.validator.client import ARENA_NETWORKS, ServerClient, ServerError
 from microtensor_subnet.validator.config import (
     REQUEST_SECONDS,
     SANDBOX_CPUS,
@@ -41,7 +42,13 @@ from microtensor_subnet.validator.context import (
     SYSTEM,
     render_prompt,
 )
-from microtensor_subnet.validator.items import ReleaseError, server_key, verify_document
+from microtensor_subnet.validator.items import (
+    TESTNET,
+    ReleaseError,
+    server_key,
+    template_harness,
+    verify_document,
+)
 from microtensor_subnet.validator.relay import REPAIR, RelayClient, RelayError, TicketDesk
 from microtensor_subnet.validator.relay import SYSTEM as SYSTEM_PURPOSE
 from microtensor_subnet.validator.sandbox import (
@@ -484,7 +491,7 @@ class Session:
     current_tree: Path | None = None
     session: services.ArtifactSession | None = None
     entries: list[dict[str, Any]] = field(default_factory=list)
-    spent_micros: int = 0
+    tickets: dict[tuple[str, str], str] = field(default_factory=dict)
 
     @property
     def limits(self) -> Limits:
@@ -729,7 +736,6 @@ class Session:
                 seed=item.seed,
                 output_tokens=found.output_tokens,
                 output_text=found.text,
-                logprobs=found.logprobs,
                 finish_reason=found.finish_reason,
                 ttft_ms=found.ttft_ms,
                 total_ms=found.total_ms,
@@ -745,15 +751,30 @@ class Session:
         raise RunnerError(f"the engine failed {ENGINE_ATTEMPTS} times on {item.item_id}: {last}")
 
     @property
+    def planned_repairs(self) -> int:
+        if "escalation" not in self.miner.has:
+            return 0
+        chosen = self.inputs.pool(ESCALATION, self.config.item_limit)
+        return sum(1 for item in chosen if item.item_id in self.inputs.drafts)
+
+    @property
     def cap_micros(self) -> int:
-        return max(1, self.allowance_micros - self.spent_micros)
+        planned = self.planned_repairs + len(self.inputs.pool(SYSTEM, self.config.item_limit))
+        return max(1, self.allowance_micros // max(1, planned))
 
     def ticket(self, item_id: str, purpose: str) -> str:
         if self.desk is None:
             raise RelayError("refused", "no relay token")
-        return self.desk.issue(
-            miner=self.miner.hotkey, item_id=item_id, purpose=purpose, cap_micros=self.cap_micros
-        )
+        found = self.tickets.get((item_id, purpose))
+        if found is None:
+            found = self.desk.issue(
+                miner=self.miner.hotkey,
+                item_id=item_id,
+                purpose=purpose,
+                cap_micros=self.cap_micros,
+            )
+            self.tickets[(item_id, purpose)] = found
+        return found
 
     def run_main(
         self,
@@ -765,7 +786,6 @@ class Session:
         body: dict[str, Any],
         *,
         purpose: str = "",
-        opaque: str = "",
     ) -> dict[str, Any]:
         if self.session is None:
             raise RunnerError("the recording session is not open")
@@ -776,7 +796,7 @@ class Session:
             item.seed,
             pool=pool,
             condition=condition,
-            request=request,
+            request=transcript.compact_request(request),
             purpose=purpose,
             cap_micros=self.cap_micros if purpose else 0,
         )
@@ -784,9 +804,6 @@ class Session:
         output: Any = call.body if call.ok else {"error": call.error}
         entry = self.session.recorded(output)
         self.session.finish_item()
-        if opaque and self.desk is not None:
-            self.spent_micros += self.desk.cost_for(opaque)
-            self.desk.forget(opaque)
         return entry
 
     def record(self, entry: dict[str, Any]) -> None:
@@ -812,13 +829,8 @@ class Session:
         slm = len(self.inputs.pool(SLM, limit))
         harness = len(self.inputs.pool(HARNESS, limit))
         conditions = 1 + len(self.reference_trees()) + (1 if "harness" in self.miner.has else 0)
-        escalation = (
-            sum(1 for i in self.inputs.pool(ESCALATION, limit) if i.item_id in self.inputs.drafts)
-            if "escalation" in self.miner.has
-            else 0
-        )
         system = len(self.inputs.pool(SYSTEM, limit)) * len(floors_of(self.definition))
-        return slm + harness * conditions + escalation + system
+        return slm + harness * conditions + self.planned_repairs + system
 
     def run_pools(self) -> None:
         limit = self.config.item_limit
@@ -877,14 +889,13 @@ class Session:
                             "ticket": opaque,
                         },
                         purpose=REPAIR,
-                        opaque=opaque,
                     )
                 )
         system_items = self.inputs.pool(SYSTEM, limit)
         for floor in floors_of(self.definition):
             for item in system_items:
                 try:
-                    opaque = self.ticket(f"{item.item_id}@{floor}", SYSTEM_PURPOSE)
+                    opaque = self.ticket(item.item_id, SYSTEM_PURPOSE)
                 except RelayError as exc:
                     log.warning("%s: no system ticket (%s); skipped", item.item_id, exc.code)
                     continue
@@ -902,7 +913,6 @@ class Session:
                             "ticket": opaque,
                         },
                         purpose=SYSTEM_PURPOSE,
-                        opaque=opaque,
                     )
                 )
 
@@ -954,7 +964,28 @@ def mirror_entry(client: ServerClient, config: RunnerConfig, hotkey: str, key: s
     return entry
 
 
-def fetch_inputs(client: ServerClient, config: RunnerConfig, key: str) -> Inputs:
+def add_template_harness(
+    client: ServerClient,
+    config: RunnerConfig,
+    definition: Mapping[str, Any],
+    inputs: Inputs,
+) -> None:
+    if REFERENCE_HARNESS in inputs.trees:
+        return
+    try:
+        arena = client.arena(config.arena_id) or {}
+        if arena.get("network") != ARENA_NETWORKS[TESTNET]:
+            return
+        inputs.trees[REFERENCE_HARNESS] = template_harness(
+            str(definition.get("task") or ""), config.cache_dir
+        )
+    except (ReleaseError, ServerError, OSError) as exc:
+        raise RunnerError(str(exc)) from exc
+
+
+def fetch_inputs(
+    client: ServerClient, config: RunnerConfig, key: str, definition: Mapping[str, Any]
+) -> Inputs:
     try:
         document = client.inputs(config.arena_id, config.epoch_index)
     except ServerError as exc:
@@ -962,7 +993,7 @@ def fetch_inputs(client: ServerClient, config: RunnerConfig, key: str) -> Inputs
     body = document_body(document, key, "inputs")
     sha = str(body.get("bundle_sha256") or "").lower()
     cached = config.work_dir / "inputs.tar"
-    if cached.is_file() and sha and sha256_of(cached) == sha:
+    if cached.is_file() and sha and bare_hex(sha256_of(cached)) == sha:
         blob = cached.read_bytes()
     else:
         try:
@@ -977,6 +1008,7 @@ def fetch_inputs(client: ServerClient, config: RunnerConfig, key: str) -> Inputs
         raise RunnerError(f"the inputs bundle cannot be read: {exc}") from exc
     inputs = parse_inputs(files, body)
     inputs.trees = write_trees(files, config.work_dir / "reference")
+    add_template_harness(client, config, definition, inputs)
     return inputs
 
 
@@ -1002,7 +1034,7 @@ def fetch_miner(
         manifest = load_manifest(artifact_dir)
     except ManifestError as exc:
         raise RunnerError(f"the mirrored manifest is invalid: {exc}") from exc
-    found = manifest_sha256(artifact_dir)
+    found = bare_hex(manifest_sha256(artifact_dir))
     if found != entry.manifest_sha256:
         raise RunnerError(f"manifest {found[:12]} is not the mirrored {entry.manifest_sha256[:12]}")
     if not manifest.declares_profile or manifest.profile != entry.profile:
@@ -1054,7 +1086,7 @@ def runner_digest(config: RunnerConfig, images: Images) -> str:
 
 def open_relay(client: ServerClient, config: RunnerConfig) -> tuple[TicketDesk | None, int]:
     try:
-        token = client.miner_relay_token()
+        token = client.miner_relay_token(config.arena_id)
     except ServerError as exc:
         log.warning("no miner relay token (%s); escalation and system calls are refused", exc)
         return None, 0
@@ -1111,7 +1143,7 @@ def run(
     entry = mirror_entry(client, config, hotkey, key)
     check_profile(entry)
     config.work_dir.mkdir(parents=True, exist_ok=True)
-    inputs = fetch_inputs(client, config, key)
+    inputs = fetch_inputs(client, config, key, definition)
     miner = fetch_miner(client, config, definition, entry)
     desk, allowance = open_relay(client, config)
     allowance = allowance or relay_allowance_of(definition)
@@ -1243,7 +1275,7 @@ def replay(
     except (ReleaseError, ServerError) as exc:
         raise RunnerError(str(exc)) from exc
     config.work_dir.mkdir(parents=True, exist_ok=True)
-    inputs = fetch_inputs(client, config, key)
+    inputs = fetch_inputs(client, config, key, definition)
     root = artifact_dir or config.work_dir / "artifact"
     try:
         manifest = load_manifest(root)
@@ -1337,19 +1369,23 @@ def replay(
             )
             calls = [dict(c) for c in row.get("calls") or [] if isinstance(c, Mapping)]
             request = row.get("request")
+            if not isinstance(request, Mapping) or request.get(
+                transcript.TASK_SHA256
+            ) != transcript.task_sha256(item.task):
+                return outcome.fail(item_id, 0, "request task")
             session.begin_item(
                 item_id,
                 item.seed,
                 calls,
                 pool=pool,
                 condition=condition,
-                request=dict(request) if isinstance(request, Mapping) else None,
+                request=dict(request),
                 purpose=purpose,
             )
             call = call_main(
                 url,
                 route,
-                dict(request) if isinstance(request, Mapping) else {},
+                transcript.posted_request(request, item.task),
                 timeout=config.request_seconds,
             )
             mismatch = session.finish_item()

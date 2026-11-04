@@ -139,24 +139,45 @@ def unpack(
 
 TESTNET = "test"
 TEMPLATE_REPO = "https://github.com/microtensor-io/microtensor-miner-template"
+TEMPLATE_COMMIT = "8e4f02e2f8e910161247dd0f7f4b66f62afdc617"
 TEMPLATE_FILES = ("main.py", "config.json", "requirements.txt")
 TEMPLATE_DIRS = ("harness", "escalation")
 
 
+def _git(clone: Path, *args: str) -> str:
+    found = subprocess.run(  # noqa: S603
+        ["git", "-C", str(clone), *args],  # noqa: S607
+        check=True,
+        capture_output=True,
+        timeout=300,
+    )
+    return found.stdout.decode("utf-8").strip()
+
+
+def _fetch_template(clone: Path) -> None:
+    working = clone.with_name(clone.name + ".partial")
+    shutil.rmtree(working, ignore_errors=True)
+    shutil.rmtree(clone, ignore_errors=True)
+    working.mkdir(parents=True)
+    try:
+        _git(working, "init", "--quiet")
+        _git(working, "fetch", "--quiet", "--depth", "1", TEMPLATE_REPO, TEMPLATE_COMMIT)
+        _git(working, "checkout", "--quiet", "--detach", "FETCH_HEAD")
+        head = _git(working, "rev-parse", "HEAD")
+    except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(working, ignore_errors=True)
+        reason = f"the reference harness could not be built from the template: {exc}"
+        raise ReleaseError(reason) from exc
+    if head != TEMPLATE_COMMIT:
+        shutil.rmtree(working, ignore_errors=True)
+        raise ReleaseError(f"the template fetched {head}, not the pinned {TEMPLATE_COMMIT}")
+    working.rename(clone)
+
+
 def template_harness(task: str, cache_dir: Path) -> Path:
-    clone = cache_dir / "reference-template"
+    clone = cache_dir / f"reference-template-{TEMPLATE_COMMIT}"
     if not (clone / "main.py").is_file():
-        shutil.rmtree(clone, ignore_errors=True)
-        try:
-            subprocess.run(  # noqa: S603
-                ["git", "clone", "--quiet", "--depth", "1", TEMPLATE_REPO, str(clone)],  # noqa: S607
-                check=True,
-                capture_output=True,
-                timeout=300,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            reason = f"the reference harness could not be built from the template: {exc}"
-            raise ReleaseError(reason) from exc
+        _fetch_template(clone)
     into = cache_dir / f"reference-harness-{task or 'generic'}"
     shutil.rmtree(into, ignore_errors=True)
     into.mkdir(parents=True)

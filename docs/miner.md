@@ -40,7 +40,13 @@ mt submit commit --arena ctx_compress --hf-user <user> --artifact-sha <sha> --pr
 
 ## The evaluation window
 
-A sealed commitment is revealed with `mt submit reveal --arena <arena>` at any time from the commit until Freeze 2. A reveal sent before Freeze 1 shows as unsealed at once and is carried onto the roster when it is built; keep both repositories private until Freeze 1, then make them public. `reveal_blocks` after Freeze 1 the server mirrors every revealed submission by content hash and retries a `missing` repository every ten minutes until Freeze 2. Check your entry at `GET /v2/arenas/<arena>/epochs/<n>/mirror` under `body.miners.<hotkey>`; only `mirrored` miners can run. Three blocks after the mirror pass the inputs bundle (items, seeds, databases, reference harnesses, escalation drafts) is published, with no labels. A commitment never revealed is `missed` at Freeze 2.
+A sealed commitment is revealed with `mt submit reveal --arena <arena>` at any time from the commit until Freeze 2. A reveal sent before Freeze 1 shows as unsealed at once and is carried onto the roster when it is built; keep both repositories private until Freeze 1, then make them public. `reveal_blocks` after Freeze 1 the server mirrors every revealed submission by content hash and retries a `missing` repository every ten minutes until Freeze 2. Check your entry at `GET /v2/arenas/<arena>/epochs/<n>/mirror` under `body.miners.<hotkey>`; only `mirrored` miners can run. Three blocks after the mirror pass the inputs bundle (items, seeds, databases, reference harnesses, escalation drafts) is published, with no labels. On testnet a bundle may carry no reference harness; the runner then builds it from the miner template at the commit pinned in `microtensor_subnet/validator/items.py`, and validators build the same one, so both sides produce identical prompts. A commitment never revealed is `missed` at Freeze 2.
+
+The job runs as uid 10001 and writes to `/var/lib/microtensor` on the host. Create that folder first, because Docker otherwise creates it owned by root and the job cannot write to it:
+
+```bash
+sudo mkdir -p /var/lib/microtensor && sudo chown 10001:10001 /var/lib/microtensor
+```
 
 Run the job:
 
@@ -61,8 +67,12 @@ The runner:
 2. Pulls your own artifact and model from the mirror, verifies every digest, and runs the same pre-flight check as `mt check-model`.
 3. Starts the pinned engine (`evaluation.images.engine`, by digest) with `--seed 0`, the profile's dtype, `VLLM_BATCH_INVARIANT=1` on batch-invariant profiles, prefix caching off and logprobs on.
 4. Starts the recording gateway and your `main.py` in the pinned sandbox image with a frozen clock, no network except the gateway, and the item seed passed as `seed` in every request.
-5. Runs every pool in a fixed order: SLM originals then twins, harness under your harness then `B0`, `B1`, `B2`..., escalation repairs from the published drafts, system items at each quality floor. Tool calls are served locally and deterministically; relay calls go through the owner relay with your miner relay token.
-6. Writes the transcript, signs it, uploads it and prints the receipt. `--dry-run` skips the upload.
+5. Runs every pool in a fixed order: SLM originals then twins, harness under your harness then `B0`, `B1`, `B2`..., escalation repairs from the published drafts, system items at each quality floor. Tool calls are served locally and deterministically; relay calls go through the owner relay with your miner relay token. Each item gets one relay ticket, shared by all its quality floors, with an equal share of your epoch allowance as its cap.
+6. Writes the transcript, signs it, uploads it and prints the receipt. `--dry-run` skips the upload. The transcript stores each request with a `task_sha256` in place of the task, and no logprobs, so it fits the server's limits of 32 MiB compressed and 128 MiB of JSON.
+
+The transcript keeps the item seed as published. The engine accepts signed 64 bit seeds, so the runner and the coordinator both send it the seed's low 63 bits.
+
+The gateway forwards only `model`, `prompt`, `max_tokens`, `stop`, `temperature` and `stream` to the engine, with the temperature set to 0 and the seed set to the item's. Other sampling parameters your harness sends are dropped, because the transcript does not record them and the spot check could not reproduce them.
 
 Progress is posted to the server as it runs. Upload again before Freeze 2 to replace an earlier transcript; after Freeze 2 uploads are closed and a missing transcript leaves you unscored for the epoch.
 
@@ -96,6 +106,8 @@ It starts the same gateway in replay mode and your artifact in the replayer imag
 | Relay spend | ticket cap from your epoch allowance | signed receipts summed |
 | Tool faults | injected from the epoch seed | recomputed and compared |
 
+Your own timings are never used. Without a measurement from the profile card, speed limits pass, speed earns no efficiency gain, and memory is computed from the model.
+
 If a call differs from your transcript, the coordinator restarts its engine and reruns it. When both runs agree with each other and differ from yours, the call goes in its signed report as public evidence. Validators then zero your hotkey for the number of epochs the arena sets. Calls that faulted are not checked.
 
 You can appeal within one epoch. List your flagged calls, then appeal one, and the coordinator reruns it. A match lifts the flag.
@@ -104,3 +116,5 @@ You can appeal within one epoch. List your flagged calls, then appeal one, and t
 mt miner appeal --arena <arena> --epoch <epoch>
 mt miner appeal --arena <arena> --epoch <epoch> --item <item_id> --seq <seq>
 ```
+
+Pass `--kind canary` to appeal a canary flag; the list shows each flag's kind.

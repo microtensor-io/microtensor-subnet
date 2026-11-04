@@ -132,7 +132,7 @@ The miner performs the expensive computation; validators verify it cheaply. No v
 
 **Replay (CPU, every miner, every item).** The validator runs the miner's frozen harness code in a sandbox with no network, answers each model call from the transcript and requires every request to match the recording exactly and in order. It recomputes every tool response from the bundle, checks every relay receipt signature and measures the harness's added wall time on its own clock. Any mismatch fails the miner for the epoch.
 
-**Spot check (GPU, sampled).** A coordinator run by the subnet owner loads the committed weights and re-runs a sample of model calls set by the arena (200 by default), requiring an exact token match. Validators read its signed reports from the server. The sample is drawn from the block hash and the coordinator's hotkey after Freeze 2, weighted toward twin items. Faulted calls are not checked. A call only becomes evidence when a second run after an engine restart agrees with the first and both differ from the miner. A miner that falsified 5% of its calls escapes a 200 call check with probability $0.95^{200} \approx 3.5 \times 10^{-5}$. On the profile card, the coordinator also times first token latency, time per output token and peak memory against the base model on the same card, so nothing timed on the miner's machine is used. On any other card it checks tokens only, and the transcript's figures stand.
+**Spot check (GPU, sampled).** A coordinator run by the subnet owner loads the committed weights and re-runs a sample of model calls set by the arena (200 by default), requiring an exact token match. Validators read its signed reports from the server. The sample is drawn from the block hash and the coordinator's hotkey after Freeze 2, weighted toward twin items. Faulted calls are not checked. A call only becomes evidence when a second run after an engine restart agrees with the first and both differ from the miner. A miner that falsified 5% of its calls escapes a 200 call check with probability $0.95^{200} \approx 3.5 \times 10^{-5}$. On the profile card, the coordinator also times first token latency, time per output token and peak memory against the base model on the same card, so nothing timed on the miner's machine is used. On any other card it checks tokens only. A miner's own timings are never used: without a measurement from the profile card, speed limits pass, speed earns no efficiency gain, and memory is computed from the model.
 
 **Determinism.** Exact matching is possible because a profile is one GPU architecture, one driver line and one image digest, decoding is greedy, and the inference engine runs in batch invariant mode. Different architectures disagree under bf16, so a profile never mixes them, and a new card joins a profile only after a pair test.
 
@@ -144,7 +144,7 @@ The miner performs the expensive computation; validators verify it cheaply. No v
 | K | 2 × T4 (sm75), small models only | fp16 | single sequence |
 | C | x86 CPU, GGUF | GGUF | single sequence |
 
-**Disputes.** A mismatch is published as replayable fraud evidence. Other validators re-run the cited calls themselves before acting; a confirmed miner scores zero and its hotkey is banned for a number of epochs set by the arena.
+**Disputes.** A mismatch that both coordinator runs agree on is published as evidence in its signed report. Validators check the signatures and the evidence, then zero the miner for a number of epochs set by the arena. The server never bans anyone. A miner can appeal within one epoch; the coordinator reruns the call and a match lifts the flag.
 
 ## 6. Scoring
 
@@ -203,10 +203,10 @@ Every known attack maps to a check that any validator can run on its own.
 | Run different harness code than committed | Replay runs the committed code; requests stop matching |
 | Tailor answers to the grader | Labels and probe questions release only after Freeze 2 |
 | Memorise or train on released inputs | Twin items reduce the score; canary items from earlier epochs are tested in the next |
-| Report false speed or memory | Timed by the checker on validator hardware |
+| Report false speed or memory | A miner's own timings are never used; the coordinator measures on the profile card and memory is otherwise computed from the model |
 | Copy another miner | Duplicate weight digests and spectral provenance against the base |
 | Edit a transcript after the deadline | Receipts sealed under the on chain Merkle root |
-| Validator accuses a miner falsely | Evidence is replayable; others verify before acting |
+| A false accusation | A call becomes evidence only when two runs after an engine restart agree and differ from the miner; the evidence is public and the miner can appeal |
 
 ## 9. Participating
 

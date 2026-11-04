@@ -190,7 +190,7 @@ def merge(epoch_index: int, reports: Iterable[Mapping[str, Any]]) -> Coordinated
         if not isinstance(body, Mapping) or not verify_report(body):
             log.warning("a coordinator report for epoch %d does not verify; skipped", epoch_index)
             continue
-        if _int(body, "epoch_index") != epoch_index:
+        if body.get("epoch_index") != epoch_index:
             continue
         found.coordinators.add(str(body.get("coordinator_hotkey", "")))
         found.complete = found.complete or bool(body.get("complete"))
@@ -213,20 +213,23 @@ def merge(epoch_index: int, reports: Iterable[Mapping[str, Any]]) -> Coordinated
                     "checked": _int(canary, "checked"),
                     "hits": _int(canary, "hits"),
                 }
-            flags = [
-                Flag(
+            flags = found.flags.setdefault(hotkey, [])
+            seen = {flag.key for flag in flags}
+            for entry in row.get("evidence") or []:
+                if not isinstance(entry, Mapping):
+                    continue
+                if str(entry.get("kind", "")) not in FLAG_KINDS or not stands(entry):
+                    continue
+                flag = Flag(
                     epoch_index,
                     hotkey,
                     str(entry.get("kind", "")),
                     str(entry.get("item_id", "")),
                     _int(entry, "call_seq"),
                 )
-                for entry in row.get("evidence") or []
-                if isinstance(entry, Mapping)
-                and str(entry.get("kind", "")) in FLAG_KINDS
-                and stands(entry)
-            ]
-            found.flags[hotkey] = flags
+                if flag.key not in seen:
+                    seen.add(flag.key)
+                    flags.append(flag)
         for outcome in body.get("appeals") or []:
             if isinstance(outcome, Mapping) and bool(outcome.get("upheld")):
                 found.upheld.add(

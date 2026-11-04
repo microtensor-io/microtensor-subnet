@@ -409,7 +409,7 @@ class Replayer:
             return "request missing"
         if str(request.get("item_id", "")) != item.item_id:
             return "request item"
-        if transcripts.canonical_json(request.get("task")) != transcripts.canonical_json(item.task):
+        if request.get("task_sha256") != transcripts.task_sha256(item.task):
             return "request task"
         if condition == transcripts.CONDITION_REPAIR:
             draft = self.drafts.get(item.item_id)
@@ -496,25 +496,24 @@ class Replayer:
                     max_model_calls=self.limits.max_model_calls,
                     model_faults=self.limits.model_faults,
                     sample_database=self.context.sample_database,
-                    item_databases=item_databases.get(item_id, ()),
+                    item_databases=item_databases,
                     arena_id=self.context.arena_id,
                     epoch_index=self.context.epoch_index,
-                    miner=hotkey,
+                    miner_hotkey=hotkey,
                     purpose=purpose,
                     cap_micros=self.caps.get(item_id, 0) if purpose else 0,
                 )
                 self.services.attach(key, session)
                 self.tap.begin(key, item_id)
-                request = row.get("request")
                 call = call_main(
                     main_url,
                     route,
-                    dict(request) if isinstance(request, Mapping) else {},
+                    transcripts.posted_request(row["request"], item.task),
                     timeout=self.request_seconds,
                 )
-                verdict = str(session.replay.verdict())
-                if verdict:
-                    return result.fail(item_id, int(session.replay.served), verdict)
+                mismatch = session.replay.verdict()
+                if mismatch is not None:
+                    return result.fail(item_id, mismatch.seq, mismatch.what)
                 body: Any = call.body if call.ok else {"error": call.error}
                 if transcripts.canonical_json(body) != transcripts.canonical_json(
                     row.get("output")
