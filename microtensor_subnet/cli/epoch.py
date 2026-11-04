@@ -48,7 +48,7 @@ from microtensor_subnet.serving.verifier import (
 )
 from microtensor_subnet.serving.verify import UNPROVEN, VerificationError
 from microtensor_subnet.validator.client import ServerClient, ServerError
-from microtensor_subnet.validator.config import PROFILE_ENV, EpochConfig, detect_profile
+from microtensor_subnet.validator.config import PROFILE_ENV, EpochConfig
 from microtensor_subnet.validator.epoch import (
     EpochError,
     miner_mode_definition,
@@ -89,15 +89,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_chain_arguments(token)
     add_common_arguments(token)
     token.set_defaults(handler=_relay_token)
-
-    profile = inner.add_parser(
-        "register-profile", help="register the hardware profile this validator can spot check"
-    )
-    profile.add_argument("--server", default=os.environ.get("MT_SERVER_URL", PUBLIC_SERVER_URL))
-    _add_profile(profile)
-    add_chain_arguments(profile)
-    add_common_arguments(profile)
-    profile.set_defaults(handler=_register_profile)
 
     run = inner.add_parser("run", help="evaluate every submission of one epoch and set weights")
     run.add_argument("--arena", required=True)
@@ -243,24 +234,6 @@ def _relay_token(args: argparse.Namespace) -> int:
     path.chmod(0o600)
     print(f"token       stored at {path}")
     print(f"allowance   {int(found.get('relay_limit_micros') or 0) / 1_000_000:.2f} USD per epoch")
-    return 0
-
-
-def _register_profile(args: argparse.Namespace) -> int:
-    config = chain_config(args)
-    wallet = open_wallet(config)
-    try:
-        profile = detect_profile(args.profile or "")
-    except ValueError as exc:
-        return fail(str(exc))
-    server = ServerClient(args.server, hotkey_address(wallet), wallet)
-    try:
-        found = client_method(server, "register_profile")([profile])
-    except (ServerError, RuntimeError) as exc:
-        return fail(str(exc))
-    listed = found.get("profiles") if isinstance(found, dict) else None
-    print(f"profile     {profile}")
-    print(f"registered  {', '.join(str(p) for p in listed) if listed else profile}")
     return 0
 
 
@@ -565,7 +538,7 @@ def _add_profile(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--profile",
         default=os.environ.get(PROFILE_ENV, ""),
-        help="hardware profile for spot checks (P1, P2, P3, K or C); detected when empty",
+        help="hardware profile (P1, P2, P3, K or C); detected when empty",
     )
 
 

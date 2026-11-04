@@ -93,23 +93,10 @@ docker compose pull && docker compose -f docker-compose.validator.yml up -d
 
 The validator image is built from `main` and tagged `ghcr.io/microtensor-io/validator:1`. The replayer and llama.cpp images are pulled by the validator itself, by the digests pinned in each arena's definition, never by tag alone.
 
-## Spot checks, a separate GPU duty
+## Spot checks
 
-Spot checks are not part of validating and need nothing above. They are run by checkers holding a GPU of an approved hardware profile (`P1` RTX 4090, `P2` A100, `P3` H100, `K` T4 x2) with the NVIDIA Container Toolkit installed. A checker registers its profile, which is read from `nvidia-smi` or taken from `MT_PROFILE`:
+Validators need no GPU and run no spot checks. The subnet owner runs a coordinator, which re-runs a sample of each miner's model calls on the mirrored weights and requires an exact token match. It restarts its engine and reruns anything that differs, and a call only becomes evidence when both runs agree with each other and differ from the miner. Speed and memory are only measured on the profile card, such as an RTX 4090 for `P1`.
 
-```bash
-docker run --rm -it --gpus all \
-  -v /var/lib/microtensor:/var/lib/microtensor \
-  -v ~/.bittensor/wallets:/wallets:ro \
-  -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator:1 \
-  epoch register-profile --wallet.name <coldkey> --wallet.hotkey <hotkey> --home /var/lib/microtensor
-```
+The coordinator signs a report for each miner, and the server publishes them as the epoch's `spotcheck` document. After grading, your validator waits for that document and checks both signatures. It then applies the measured figures and zeroes any miner with standing evidence, for the number of epochs the arena sets. The server never bans anyone.
 
-and starts the same loop with the GPU override, setting `MT_GPUS` in `.env`:
-
-```bash
-docker compose -f docker-compose.validator.yml -f docker-compose.gpu.yml up -d
-```
-
-Between replay and grading it then, for its share of the miners on its profile, pulls the weights from the mirror, starts the pinned engine exactly as the miner's runner did, re-runs at least 200 sampled model calls (100 uniform, 100 weighted), requires an exact token match, times them against the reference model on the same card, and publishes any mismatch as evidence. Validators apply that evidence in step 4. The owner keeps a checker on every profile its arenas allow.
+Your validator stops waiting when the coordinator marks its report complete or has covered every miner, 150 blocks before the epoch ends, or after 5 hours. If no report arrived, it scores without spot checks.

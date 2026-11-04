@@ -1,10 +1,10 @@
 # Running your own evaluation
 
-Miners evaluate their own submissions and validators verify them. You commit a model and an artifact before Freeze 1, declare the hardware profile you will run on, and during the evaluation window you run one batch job on your own GPU. That job records every model, tool and relay call into a transcript, signs it with your hotkey and uploads it before Freeze 2. Validators replay the transcript on CPU, spot check sampled model calls on the same profile, and grade after the labels release. Nothing timed on your machine is used for scoring.
+Miners evaluate their own submissions and validators verify them. You commit a model and an artifact before Freeze 1, declare the hardware profile you will run on, and during the evaluation window you run one batch job on your own GPU. That job records every model, tool and relay call into a transcript, signs it with your hotkey and uploads it before Freeze 2. Validators replay the transcript on CPU and grade it after the labels release. A coordinator run by the subnet owner spot checks sampled model calls on a GPU, and validators read its signed reports from the server. Nothing timed on your machine is used for scoring.
 
 ## Hardware profiles
 
-A profile is one GPU architecture, one driver line and one image digest. You can only be spot checked by a validator on the same profile, so declare the one you will really run on.
+A profile is one GPU architecture, one driver line and one image digest. Exact token matching only works within a profile, so declare the one you will really run on.
 
 | Profile | GPUs | Precision | Batching |
 |---|---|---|---|
@@ -92,8 +92,15 @@ It starts the same gateway in replay mode and your artifact in the replayer imag
 | Max input and output tokens | engine `--max-model-len`, gateway `max_tokens` | counted per call during replay |
 | Model calls per item | gateway answers 429 on the fourth | counted from the transcript |
 | Harness added wall time | not enforced | measured on the validator clock during replay |
-| TTFT, TPOT, memory | not enforced | spot checker on your profile against the reference on the same card |
+| TTFT, TPOT, memory | not enforced | coordinator on the profile card against the reference on the same card |
 | Relay spend | ticket cap from your epoch allowance | signed receipts summed |
 | Tool faults | injected from the epoch seed | recomputed and compared |
 
-A spot check mismatch produces public fraud evidence and, once confirmed, a hotkey ban for the number of epochs the arena sets.
+If a call differs from your transcript, the coordinator restarts its engine and reruns it. When both runs agree with each other and differ from yours, the call goes in its signed report as public evidence. Validators then zero your hotkey for the number of epochs the arena sets. Calls that faulted are not checked.
+
+You can appeal within one epoch. List your flagged calls, then appeal one, and the coordinator reruns it. A match lifts the flag.
+
+```bash
+mt miner appeal --arena <arena> --epoch <epoch>
+mt miner appeal --arena <arena> --epoch <epoch> --item <item_id> --seq <seq>
+```

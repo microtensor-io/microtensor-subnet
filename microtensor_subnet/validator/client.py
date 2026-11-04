@@ -201,11 +201,6 @@ class ServerClient:
         rows = found.get("validators") if isinstance(found, dict) else found
         return [dict(r) for r in rows or [] if isinstance(r, dict)]
 
-    def evidence(self, arena_id: str, index: int) -> list[dict[str, Any]]:
-        found = self._request("GET", f"/v2/arenas/{arena_id}/epochs/{index}/evidence")
-        rows = found.get("evidence") if isinstance(found, dict) else found
-        return [dict(r) for r in rows or [] if isinstance(r, dict)]
-
     def bans(self, arena_id: str) -> list[dict[str, Any]]:
         found = self._request("GET", f"/v2/arenas/{arena_id}/bans")
         rows = found.get("bans") if isinstance(found, dict) else found
@@ -284,12 +279,6 @@ class ServerClient:
 
     def miner_relay_token(self) -> dict[str, Any]:
         found = self._request("POST", "/v2/miners/relay-token", {}, signed=True)
-        return dict(found or {})
-
-    def register_profile(self, profiles: list[str]) -> dict[str, Any]:
-        found = self._request(
-            "POST", "/v2/validators/profile", {"profiles": list(profiles)}, signed=True
-        )
         return dict(found or {})
 
     def coordinator_report(self, body: dict[str, Any]) -> dict[str, Any]:

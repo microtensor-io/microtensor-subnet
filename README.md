@@ -119,7 +119,7 @@ An epoch is a measurement under fixed conditions, separated into phases by two f
 2. **Freeze 1.** Commitments close. The owner mirrors every committed artifact and weight file by sha256; a miner whose files are missing or do not match is excluded.
 3. **Evaluation window.** Task inputs and per item seeds are released, without labels. Each miner pulls its own frozen files from the mirror and runs every pool in the official images, which record every model, tool and relay call into a signed transcript.
 4. **Freeze 2.** Uploads close. Transcript receipts are sealed under a Merkle root posted on chain, so no transcript can change afterwards.
-5. **Grading.** Labels and probe questions are released. Validators replay, spot check and grade every miner, then sign one report each.
+5. **Grading.** Labels and probe questions are released. Validators replay and grade every miner, apply the coordinator's spot checks, then sign one report each.
 6. **Weights.** Validators set weights with commit reveal; the published figure is the stake weighted median of the reports that agree on bundle, seed, roster and snapshot.
 
 ## 5. Verification
@@ -132,7 +132,7 @@ The miner performs the expensive computation; validators verify it cheaply. No v
 
 **Replay (CPU, every miner, every item).** The validator runs the miner's frozen harness code in a sandbox with no network, answers each model call from the transcript and requires every request to match the recording exactly and in order. It recomputes every tool response from the bundle, checks every relay receipt signature and measures the harness's added wall time on its own clock. Any mismatch fails the miner for the epoch.
 
-**Spot check (GPU, sampled).** A checker on the miner's declared hardware profile loads the committed weights and re-runs at least 200 sampled model calls, requiring an exact token match. The sample is drawn from the block hash and the checker's hotkey after Freeze 2, weighted toward passed items, twin items and items that moved the score. A miner that falsified 5% of its calls escapes a 200 call check with probability $0.95^{200} \approx 3.5 \times 10^{-5}$. The same checker times first token latency, time per output token and peak memory against the base model on the same card, so nothing timed on the miner's machine is used.
+**Spot check (GPU, sampled).** A coordinator run by the subnet owner loads the committed weights and re-runs a sample of model calls set by the arena (200 by default), requiring an exact token match. Validators read its signed reports from the server. The sample is drawn from the block hash and the coordinator's hotkey after Freeze 2, weighted toward twin items. Faulted calls are not checked. A call only becomes evidence when a second run after an engine restart agrees with the first and both differ from the miner. A miner that falsified 5% of its calls escapes a 200 call check with probability $0.95^{200} \approx 3.5 \times 10^{-5}$. On the profile card, the coordinator also times first token latency, time per output token and peak memory against the base model on the same card, so nothing timed on the miner's machine is used. On any other card it checks tokens only, and the transcript's figures stand.
 
 **Determinism.** Exact matching is possible because a profile is one GPU architecture, one driver line and one image digest, decoding is greedy, and the inference engine runs in batch invariant mode. Different architectures disagree under bf16, so a profile never mixes them, and a new card joins a profile only after a pair test.
 
@@ -170,7 +170,7 @@ $$
 S_{\mathrm{SLM}} = L \cdot \tau \cdot \left(1 + r\,E + b\right)
 $$
 
-where $\tau$ penalises a gap between original and twin items (memorisation), $E \in [0, 1]$ is the efficiency gain over the base model measured by the spot checker (first token latency 0.4, memory 0.3, parameters 0.2, time per token 0.1), $r$ is the arena's efficiency range (0.25 by default) and $b$ is an edge bonus for also passing a smaller device class. An entry is eligible only if it passes the format, provenance and envelope gates, covers the minimum item count, and its paired lower bound over the base model is above zero.
+where $\tau$ penalises a gap between original and twin items (memorisation), $E \in [0, 1]$ is the efficiency gain over the base model measured by the coordinator (first token latency 0.4, memory 0.3, parameters 0.2, time per token 0.1), $r$ is the arena's efficiency range (0.25 by default) and $b$ is an edge bonus for also passing a smaller device class. An entry is eligible only if it passes the format, provenance and envelope gates, covers the minimum item count, and its paired lower bound over the base model is above zero.
 
 **System pool.** At each quality floor $f$, a system earns credit only when its lower bound reaches the floor:
 
@@ -213,7 +213,7 @@ Every known attack maps to a check that any validator can run on its own.
 | Role | Hardware | What you do | Guide |
 |---|---|---|---|
 | **System miner** | A GPU of an accepted profile (P1 today) | Fine tune the arena base, build the harness, router and escalation, commit, run your evaluation each epoch | [docs/miner.md](docs/miner.md) · [miner template](https://github.com/microtensor-io/microtensor-miner-template) |
-| **Validator** | One CPU box (8 cores, 32 GB RAM, 200 GB NVMe) | Replay, grade and set weights; spot checking is a separate GPU duty | [docs/validator_setup.md](docs/validator_setup.md) |
+| **Validator** | One CPU box (8 cores, 32 GB RAM, 200 GB NVMe) | Replay, grade and set weights; spot checks come from the coordinator | [docs/validator_setup.md](docs/validator_setup.md) |
 | **Inference miner** | GPUs that hold a certified system | Serve customer requests through the gateway; paid on metered usage | [docs/inference_miner.md](docs/inference_miner.md) |
 
 ```bash
@@ -243,7 +243,7 @@ microtensor_subnet/
 ├── chain/        commitments, epochs, metagraph, weights
 ├── core/         items, hashing, hardware profiles, transcripts, reports
 ├── artifact/     manifest contract and checks
-├── validator/    epoch pipeline: replay, spot checks, grading, reports
+├── validator/    epoch pipeline: replay, grading, coordinator spot checks, reports
 ├── scoring/      lower bounds, pools, payouts
 ├── serving/      inference miner host, probes, verification, settlement
 ├── rigs/         compute mining protocol: attestation, sessions, checks
