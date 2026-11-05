@@ -51,8 +51,11 @@ from microtensor_subnet.validator.client import ServerClient, ServerError
 from microtensor_subnet.validator.config import PROFILE_ENV, EpochConfig
 from microtensor_subnet.validator.epoch import (
     EpochError,
+    kept_weights,
     miner_mode_definition,
+    remember_weights,
     run_miner_mode_epoch,
+    vector_for,
 )
 from microtensor_subnet.validator.items import ReleaseError
 from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
@@ -60,6 +63,7 @@ from microtensor_subnet.validator.transcripts import client_method
 
 log = logging.getLogger("microtensor_subnet.cli.epoch")
 KEY_BLOCKS = 2_600_000
+WEIGHTS_REFRESH_BLOCKS = 1200
 PUBLIC_GATEWAY_URL = "https://api.microtensor.cloud"
 SETUP_ERRORS = (
     VerificationError,
@@ -612,6 +616,24 @@ def _poll_arena(
     )
 
 
+def _keep_weights(client: Any, state: Path, block: int) -> None:
+    kept = kept_weights(state)
+    if kept is None:
+        return
+    weights, since = kept
+    if block - since < WEIGHTS_REFRESH_BLOCKS:
+        return
+    vector = vector_for(weights, client.snapshot(refresh=True))
+    if vector is None:
+        return
+    ok, reason = client.set_weights(vector)
+    if ok:
+        remember_weights(state, weights, block)
+        log.info("block %d: the same weights were sent again to stay active", block)
+    else:
+        log.error("the weights were not sent again: %s", reason)
+
+
 def _loop(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO)
     config = chain_config(args)
@@ -624,6 +646,7 @@ def _loop(args: argparse.Namespace) -> int:
     while True:
         try:
             block = client.block()
+            _keep_weights(client, state, block)
             arena_ids = server.live_arenas(config.network)
             if not arena_ids:
                 log.info("block %d: the server lists no live arena on %s", block, config.network)
