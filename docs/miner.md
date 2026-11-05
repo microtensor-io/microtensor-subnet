@@ -199,3 +199,9 @@ Every validator compares each submission's models with all earlier ones before s
 | Router | Hash of the weights, and the same sketch when the arena names a router base | Same hash, or similarity of at least 0.9 | Router and system pools |
 
 Your other parts are still scored. Harness and repair code is never compared: two miners may use the same code, and only the model and the router have to be your own. Quantised models have no sketch, so only their hash and outputs are compared.
+
+## After the epoch settles
+
+The arena closes when its epoch settles. The miners ranked in that epoch keep earning from the result for as long as the arena stays closed. A new round does not follow by itself: it starts when the arena is opened again, and its commit window begins at that block.
+
+When a new round goes live, of this arena or of another one, the weights from the earlier result are replaced by a burn, and they stay burned until the new round settles and has its own ranking.
