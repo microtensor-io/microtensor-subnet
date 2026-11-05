@@ -189,15 +189,13 @@ Pass `--kind canary` to appeal a canary flag; the list shows each flag's kind.
 
 ## Duplicates
 
-Every validator compares each submission with all earlier ones, part by part, before scoring. The earliest commit block on chain wins. If two commits land in the same block, the earlier transaction in that block wins. A sealed commitment counts from the block of the sealed commit, not the reveal. Different hotkeys and coldkeys make no difference, because the check compares the files themselves.
+Every validator compares each submission's models with all earlier ones before scoring. The earliest commit block on chain wins. If two commits land in the same block, the earlier transaction in that block wins. A sealed commitment counts from the block of the sealed commit, not the reveal. Different hotkeys and coldkeys make no difference, because the check compares the files themselves.
 
 | Part | Checked by | A duplicate when | Scores zero in |
 |---|---|---|---|
 | Model | Hash of the weights | Same hash as an earlier submission | SLM and system pools |
 | Model | A fixed sketch of your weights minus the arena's base model | Similarity of at least 0.9 with an earlier sketch | SLM and system pools |
 | Model | Your SLM outputs on the same items, token for token, against an earlier miner whose spot check sampled SLM calls and found no mismatch | At least 95% identical over at least 20 common items | SLM and system pools |
-| Harness code | Code with comments, whitespace and names removed | Same hash, or at least 90% of your fragments found in an earlier submission | Harness and system pools |
-| Repair code | The same | The same | Escalation and system pools |
 | Router | Hash of the weights, and the same sketch when the arena names a router base | Same hash, or similarity of at least 0.9 | Router and system pools |
 
-Your other parts are still scored. Fragments from any commit on the miner template's main branch do not count, because validators pin that whole list. Keeping the template unchanged, at any of those commits, never makes you a copy of another miner who kept it too. Quantised models have no sketch, so only their hash and outputs are compared.
+Your other parts are still scored. Harness and repair code is never compared: two miners may use the same code, and only the model and the router have to be your own. Quantised models have no sketch, so only their hash and outputs are compared.
