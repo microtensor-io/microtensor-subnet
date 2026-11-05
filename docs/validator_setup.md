@@ -111,10 +111,8 @@ Every validator runs this on its own, on CPU, and gets the same answer from the 
 | Part | Duplicate of an earlier submission when | Pools zeroed |
 |---|---|---|
 | Model | Same weights hash, a change sketch similarity of at least 0.9, or at least 95% identical outputs over at least 20 common items | SLM and system |
-| Harness code | Same normalised hash, or at least 90% of its fragments found in the earlier code | Harness and system |
-| Repair code | Same normalised hash, or at least 90% of its fragments found in the earlier code | Escalation and system |
 | Router | Same weights hash, or a change sketch similarity of at least 0.9 | Router and system |
 
-The change sketch is a fixed 4096 number summary of the weights minus the arena's base model, so two fine tunes of one base are compared by what they changed. A model of another shape or a quantised model has no sketch and falls back to the hash and the outputs. A router only has a sketch when the arena definition names `references.router_base`. Code is compared after removing comments, docstrings, whitespace and names, and anything also in the pinned miner template is ignored. If the template cannot be fetched, code is not compared that epoch, so nobody is zeroed for it. A miner with a failure or a standing flag does not count as an earlier output for the behaviour comparison, because transcripts are public during the window.
+The change sketch is a fixed 4096 number summary of the weights minus the arena's base model, so two fine tunes of one base are compared by what they changed. A model of another shape or a quantised model has no sketch and falls back to the hash and the outputs. A router only has a sketch when the arena definition names `references.router_base`. Harness and repair code is not compared, so miners may share it. A miner with a failure or a standing flag does not count as an earlier output for the behaviour comparison, because transcripts are public during the window.
 
 On testnet, when the inputs bundle carries no reference harness, your validator and every miner build it from the miner template at the commit pinned in `microtensor_subnet/validator/items.py`, so both sides produce identical prompts.

@@ -1092,7 +1092,6 @@ class MinerModeRunner:
     coordinated: spotcheck.Coordinated | None = None
     spot_failures: dict[str, str] = field(default_factory=dict)
     parts: dict[str, duplicates.Entry] = field(default_factory=dict)
-    template: duplicates.Template | None = None
     serving: dict[str, Any] | None = None
 
     @property
@@ -1292,7 +1291,6 @@ def set_up_miner_mode(
         agent=agent,
         base_dirs=base_dirs,
         known_public=provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json"),
-        template=pinned_template(config),
     )
     coordinator_reference(runner)
     reference_figures_from_labels(runner)
@@ -1300,17 +1298,6 @@ def set_up_miner_mode(
         if runner.mirror.pop(banned, None) is not None:
             log.info("%s is banned this epoch and is left out", banned)
     return runner
-
-
-def pinned_template(config: EpochConfig) -> duplicates.Template | None:
-    try:
-        return duplicates.merged_templates(
-            duplicates.template_of(items.template_tree(config.cache_dir, commit))
-            for commit in items.TEMPLATE_COMMITS
-        )
-    except (items.ReleaseError, OSError) as exc:
-        log.error("the pinned template was not read; code is not compared this epoch: %s", exc)
-        return None
 
 
 def ordered_miners(runner: MinerModeRunner) -> list[str]:
@@ -1434,14 +1421,6 @@ def note_code(runner: MinerModeRunner, record: MinerRecord, artifact: Artifact) 
     problem = checks.code_problem(runner.context, artifact.artifact_dir)
     if problem:
         record.over_limits.update(dict.fromkeys((HARNESS, ESCALATION, SYSTEM), problem))
-    part = runner.parts[record.hotkey]
-    template = runner.template
-    if template is None:
-        return
-    if HARNESS in artifact.has:
-        part.harness = duplicates.own_code(artifact.artifact_dir, duplicates.HARNESS_PART, template)
-    if ESCALATION in artifact.has:
-        part.repair = duplicates.own_code(artifact.artifact_dir, duplicates.REPAIR_PART, template)
 
 
 def model_sketch(runner: MinerModeRunner, hotkey: str, slm_dir: Path, base: str) -> None:

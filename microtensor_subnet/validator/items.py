@@ -141,21 +141,6 @@ def unpack(
 TESTNET = "test"
 TEMPLATE_REPO = "https://github.com/microtensor-io/microtensor-miner-template"
 TEMPLATE_COMMIT = "014dd81ceccc90b7d114b6772cf55ef0c59601e7"
-TEMPLATE_COMMITS = (
-    TEMPLATE_COMMIT,
-    "8e4f02e2f8e910161247dd0f7f4b66f62afdc617",
-    "643cc2dbbaf1ce0339a73bd8f38cf1e07a16dc2b",
-    "1ea91287bc1abe686f943f0bc4717fa01d32987a",
-    "04f4d89bb423a6885e76a827960a83bb43608556",
-    "b3127d6196995363f7e6829bf6b74d13cb9d804b",
-    "8ec565a8b48ce441cfe518e0d4e9d20685d1331d",
-    "bd48655af38b3e99120374543ca6ac2ecb68923e",
-    "4b5103e2d722201f16c289a209846c66bc0b35f6",
-    "3c7919338b5f764b65e051121eaa3b97bac9a16a",
-    "c091e9376eee92deddcda33f0ee2621ef5ed2d04",
-    "d53a2b51e80aea6409d8848cd2a92041b39f29cc",
-    "c2238e3a53959e99e1dd30203ed70fc9ab781470",
-)
 TEMPLATE_ATTEMPTS = 4
 TEMPLATE_PAUSE_SECONDS = 5.0
 TEMPLATE_FILES = ("main.py", "config.json", "requirements.txt")

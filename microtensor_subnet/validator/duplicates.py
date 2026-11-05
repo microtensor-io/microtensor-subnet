@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import functools
 import hashlib
 import logging
@@ -11,10 +10,9 @@ from operator import mul
 from pathlib import Path
 from typing import Any, Final
 
-from microtensor_subnet.artifact import contract
 from microtensor_subnet.artifact.params import QUANT_SUFFIXES, loaded_weights, read_header
 from microtensor_subnet.validator import transcripts
-from microtensor_subnet.validator.context import ESCALATION, HARNESS, ROUTER, SLM, SYSTEM
+from microtensor_subnet.validator.context import ROUTER, SLM, SYSTEM
 
 log = logging.getLogger("microtensor_subnet.validator.duplicates")
 
@@ -32,30 +30,13 @@ FLOAT_TYPES: Final[frozenset[str]] = frozenset({"BF16", "F16", "F32", "F64"})
 METADATA: Final[str] = "__metadata__"
 
 SKETCH_SIMILARITY: Final[float] = 0.9
-CODE_OVERLAP: Final[float] = 0.9
 SAME_OUTPUTS: Final[float] = 0.95
 MIN_COMMON_ITEMS: Final[int] = 20
-
-KGRAM: Final[int] = 20
-WINDOW: Final[int] = 10
-MIN_FRAGMENTS: Final[int] = 8
-MAX_FILE_BYTES: Final[int] = 4 * 1024 * 1024
-PLACEHOLDER: Final[str] = "_"
-SKIPPED_FIELDS: Final[frozenset[str]] = frozenset(
-    {"ctx", "type_comment", "kind", "type_ignores", "asname"}
-)
-PYCACHE: Final[str] = "__pycache__"
-HARNESS_PART: Final[str] = contract.HARNESS_DIR
-REPAIR_PART: Final[str] = contract.ESCALATION_DIR
-CODE_PARTS: Final[tuple[str, ...]] = (HARNESS_PART, REPAIR_PART)
-PART_FILES: Final[dict[str, tuple[str, ...]]] = {HARNESS_PART: (contract.MAIN_FILE,)}
 
 MODEL: Final[str] = "model"
 ROUTER_PART: Final[str] = "router"
 POOLS_OF: Final[dict[str, tuple[str, str]]] = {
     MODEL: (SLM, SYSTEM),
-    HARNESS_PART: (HARNESS, SYSTEM),
-    REPAIR_PART: (ESCALATION, SYSTEM),
     ROUTER_PART: (ROUTER, SYSTEM),
 }
 
@@ -206,131 +187,6 @@ def similarity(a: Sequence[float], b: Sequence[float]) -> float:
     return dot / math.sqrt(left * right) if left and right else 0.0
 
 
-def _emit(node: ast.AST, out: list[str]) -> None:
-    if (
-        isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Constant)
-        and isinstance(node.value.value, str)
-    ):
-        return
-    out.append(type(node).__name__)
-    if isinstance(node, ast.Constant):
-        out.append(repr(node.value))
-        return
-    for name, value in ast.iter_fields(node):
-        if name in SKIPPED_FIELDS:
-            continue
-        for entry in value if isinstance(value, list) else [value]:
-            if isinstance(entry, ast.AST):
-                _emit(entry, out)
-            elif isinstance(entry, str):
-                out.append(PLACEHOLDER)
-            elif entry is not None:
-                out.append(str(entry))
-
-
-def _python_tokens(source: str) -> list[str] | None:
-    out: list[str] = []
-    try:
-        _emit(ast.parse(source), out)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return None
-    return out
-
-
-def _tokens_of(path: Path) -> list[str]:
-    if path.stat().st_size > MAX_FILE_BYTES:
-        return []
-    try:
-        text = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
-    if path.suffix == ".py":
-        tokens = _python_tokens(text)
-        if tokens is not None:
-            return tokens
-    return text.split()
-
-
-def _kgram(tokens: Sequence[str]) -> int:
-    digest = hashlib.blake2b("\x00".join(tokens).encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "big")
-
-
-def _winnowed(tokens: Sequence[str]) -> set[int]:
-    if not tokens:
-        return set()
-    grams = [_kgram(tokens[i : i + KGRAM]) for i in range(max(1, len(tokens) - KGRAM + 1))]
-    return {min(grams[i : i + WINDOW]) for i in range(max(1, len(grams) - WINDOW + 1))}
-
-
-def _part_files(root: Path, part: str) -> list[Path]:
-    folder = root / part
-    found = (
-        [p for p in sorted(folder.rglob("*")) if p.is_file() and PYCACHE not in p.parts]
-        if folder.is_dir()
-        else []
-    )
-    extra = (root / name for name in PART_FILES.get(part, ()))
-    return found + [p for p in extra if p.is_file()]
-
-
-def code_fingerprint(root: Path, part: str) -> tuple[str, frozenset[int]]:
-    digests: list[str] = []
-    fragments: set[int] = set()
-    for path in _part_files(root, part):
-        tokens = _tokens_of(path)
-        if not tokens:
-            continue
-        digests.append(hashlib.sha256("\n".join(tokens).encode("utf-8")).hexdigest())
-        fragments |= _winnowed(tokens)
-    if not digests:
-        return "", frozenset()
-    return hashlib.sha256("\n".join(sorted(digests)).encode("ascii")).hexdigest(), frozenset(
-        fragments
-    )
-
-
-def overlap(later: frozenset[int], earlier: frozenset[int]) -> float:
-    return len(later & earlier) / len(later) if later else 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class Template:
-    hashes: frozenset[str]
-    fragments: frozenset[int]
-
-
-@dataclass(frozen=True, slots=True)
-class Code:
-    digest: str
-    fragments: frozenset[int]
-
-
-def template_of(root: Path) -> Template:
-    found = [code_fingerprint(root, part) for part in CODE_PARTS]
-    return Template(
-        hashes=frozenset(digest for digest, _ in found if digest),
-        fragments=frozenset(f for _, fragments in found for f in fragments),
-    )
-
-
-def merged_templates(templates: Iterable[Template]) -> Template:
-    chosen = list(templates)
-    return Template(
-        hashes=frozenset(digest for found in chosen for digest in found.hashes),
-        fragments=frozenset(fragment for found in chosen for fragment in found.fragments),
-    )
-
-
-def own_code(root: Path, part: str, template: Template) -> Code | None:
-    digest, fragments = code_fingerprint(root, part)
-    if not digest or digest in template.hashes:
-        return None
-    own = fragments - template.fragments
-    return Code(digest, own) if len(own) >= MIN_FRAGMENTS else None
-
-
 def outputs_of(transcript: Mapping[str, Any]) -> dict[str, tuple[int, ...]]:
     found: dict[str, tuple[int, ...]] = {}
     for row in transcripts.items_of(transcript):
@@ -362,8 +218,6 @@ class Entry:
     hotkey: str
     weights_sha256: str = ""
     sketch: list[float] | None = None
-    harness: Code | None = None
-    repair: Code | None = None
     router_sha256: str = ""
     router_sketch: list[float] | None = None
     outputs: dict[str, tuple[int, ...]] = field(default_factory=dict)
@@ -392,21 +246,9 @@ def _same_model(later: Entry, earlier: Entry) -> bool:
     return common >= MIN_COMMON_ITEMS and share >= SAME_OUTPUTS
 
 
-def _same_code(later: Code | None, earlier: Code | None) -> bool:
-    if later is None or earlier is None:
-        return False
-    if later.digest == earlier.digest:
-        return True
-    return overlap(later.fragments, earlier.fragments) >= CODE_OVERLAP
-
-
 def _matched_parts(later: Entry, earlier: Entry) -> Iterable[str]:
     if _same_model(later, earlier):
         yield MODEL
-    if _same_code(later.harness, earlier.harness):
-        yield HARNESS_PART
-    if _same_code(later.repair, earlier.repair):
-        yield REPAIR_PART
     if _same_weights(
         later.router_sha256, earlier.router_sha256, later.router_sketch, earlier.router_sketch
     ):
