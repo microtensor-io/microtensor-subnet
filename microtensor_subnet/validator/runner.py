@@ -619,6 +619,7 @@ class Session:
         try:
             card = engine.health().get("gpu_name") or "an unknown card"
             log.info("the remote engine runs on %s", card)
+            self._fetch_from_repo(engine)
             engine.prepare(self._remote_name(), self.miner.entry.slm_files)
             self._launch_remote(engine)
         except RemoteEngineError as exc:
@@ -626,6 +627,25 @@ class Session:
         self.bridge = EngineBridge(engine)
         self.bridge.start()
         self.engine_url = self.bridge.url
+
+    def _fetch_from_repo(self, engine: RemoteEngine) -> None:
+        entry = self.miner.entry
+        if not entry.slm_repo or not entry.slm_revision:
+            return
+        try:
+            started = engine.request(
+                "POST",
+                "/prepare",
+                {
+                    "kind": "miner",
+                    "name": self._remote_name(),
+                    "hub": {"repo": entry.slm_repo, "revision": entry.slm_revision},
+                },
+            )
+            found = engine.wait_task(str(started["task"]), 1800.0)
+            log.info("the model came from its repo: %s", found.get("state"))
+        except (RemoteEngineError, KeyError) as exc:
+            log.warning("the repo fetch did not finish, the mirror is used: %s", exc)
 
     def _remote_name(self) -> str:
         entry = self.miner.entry
@@ -1351,8 +1371,14 @@ def relay_token(client: ServerClient, arena_id: str) -> dict[str, Any]:
 
 
 def open_relay(client: ServerClient, config: RunnerConfig) -> tuple[TicketDesk | None, int]:
+    saved = config.home / "keys" / "relay.token"
     try:
-        token = client.relay_token() if config.for_miner else relay_token(client, config.arena_id)
+        if config.for_miner and saved.is_file():
+            token = {"token": saved.read_text(encoding="utf-8").strip()}
+        elif config.for_miner:
+            token = client.relay_token()
+        else:
+            token = relay_token(client, config.arena_id)
     except ServerError as exc:
         log.warning("no miner relay token (%s); escalation and system calls are refused", exc)
         return None, 0
