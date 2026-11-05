@@ -2165,14 +2165,30 @@ def serving_fold(
     return shares, Fraction(split.modelling, available), Fraction(split.burned, available)
 
 
-def remember_weights(state: Path, weights: Mapping[str, float], block: int) -> None:
+def kept_rounds(state: Path) -> set[str]:
+    try:
+        found = json.loads((state / WEIGHTS_FILE).read_text(encoding="utf-8"))
+        return {str(name) for name in found.get("rounds") or []}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return set()
+
+
+def remember_weights(
+    state: Path, weights: Mapping[str, float], block: int, rounds: Sequence[str] = ()
+) -> None:
     state.mkdir(parents=True, exist_ok=True)
     target = state / WEIGHTS_FILE
+    known = sorted(kept_rounds(state) | {str(name) for name in rounds})
     partial = target.with_name(target.name + ".part")
     partial.write_text(
-        json.dumps({"block": int(block), "weights": dict(weights)}), encoding="utf-8"
+        json.dumps({"block": int(block), "weights": dict(weights), "rounds": known}),
+        encoding="utf-8",
     )
     partial.replace(target)
+
+
+def round_name(arena_id: str, epoch_index: int) -> str:
+    return f"{arena_id}:{int(epoch_index)}"
 
 
 def kept_weights(state: Path) -> tuple[dict[str, float], int] | None:
@@ -2196,7 +2212,9 @@ def weights_due(chain: Any, block: int, since: int) -> bool:
     return block - since >= WEIGHTS_REFRESH_BLOCKS
 
 
-def _submit(chain: Any, state: Path, weights: Mapping[str, float]) -> tuple[bool, str]:
+def _submit(
+    chain: Any, state: Path, weights: Mapping[str, float], rounds: Sequence[str] = ()
+) -> tuple[bool, str]:
     sent, reason, block = False, "none of the weights is on the metagraph", 0
     try:
         vector = vector_for(weights, chain.snapshot(refresh=True))
@@ -2206,13 +2224,31 @@ def _submit(chain: Any, state: Path, weights: Mapping[str, float]) -> tuple[bool
             block = int(chain.block())
     except ChainError as exc:
         reason = reason if sent else str(exc)
-    remember_weights(state, weights, block)
+    remember_weights(state, weights, block, rounds)
     return sent, reason
 
 
-def submit_weights(chain: Any, state: Path, weights: Mapping[str, float]) -> tuple[bool, str]:
+def submit_weights(
+    chain: Any, state: Path, weights: Mapping[str, float], rounds: Sequence[str] = ()
+) -> tuple[bool, str]:
     with WEIGHTS_LOCK:
-        return _submit(chain, state, weights)
+        return _submit(chain, state, weights, rounds)
+
+
+def burn_for_round(chain: Any, state: Path, name: str) -> bool:
+    with WEIGHTS_LOCK:
+        if name in kept_rounds(state):
+            return False
+        burn_to = _owner(chain)
+        if not burn_to:
+            log.error("round %s is live but the burn address is unknown; weights stay", name)
+            return False
+        sent, reason = _submit(chain, state, {burn_to: 1.0}, (name,))
+    if sent:
+        log.info("round %s is live: emissions burn until it settles", name)
+    else:
+        log.error("round %s is live but the burn was not sent; it goes again: %s", name, reason)
+    return True
 
 
 def refresh_weights(chain: Any, state: Path) -> None:
@@ -2272,7 +2308,12 @@ def miner_mode_weights(
         else {}
     )
     if weights and not config.dry_run:
-        sent, reason = submit_weights(chain, config.home / "state", weights)
+        sent, reason = submit_weights(
+            chain,
+            config.home / "state",
+            weights,
+            (round_name(context.arena_id, context.epoch_index),),
+        )
         if not sent:
             log.error(
                 "weights not set; they are sent again shortly and the report still goes out: %s",

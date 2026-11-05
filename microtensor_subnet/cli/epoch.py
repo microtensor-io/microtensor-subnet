@@ -52,8 +52,11 @@ from microtensor_subnet.validator.client import ServerClient, ServerError
 from microtensor_subnet.validator.config import PROFILE_ENV, EpochConfig
 from microtensor_subnet.validator.epoch import (
     EpochError,
+    burn_for_round,
+    kept_rounds,
     miner_mode_definition,
     refresh_weights,
+    round_name,
     run_miner_mode_epoch,
 )
 from microtensor_subnet.validator.items import ReleaseError
@@ -594,6 +597,8 @@ def _poll_arena(
     if not miner_mode_definition(dict(arena.get("definition") or {})):
         log.warning("arena %s carries no evaluation block; skipped", arena_id)
         return
+    if index is not None and int(index) not in done:
+        _burn_if_new_round(client, server, state, arena_id, int(index))
     if current.get("phase") != "settling" or index is None or int(index) in done:
         log.info("block %d: %s epoch %s is %s", block, arena_id, index, current.get("phase"))
         return
@@ -613,6 +618,18 @@ def _poll_arena(
         len(outcome.failures),
         len(outcome.weights),
     )
+
+
+def _burn_if_new_round(
+    client: Any, server: ServerClient, state: Path, arena_id: str, index: int
+) -> None:
+    name = round_name(arena_id, index)
+    if name in kept_rounds(state):
+        return
+    batch = dict((server.epoch(arena_id, index) or {}).get("batch") or {})
+    if not batch or batch.get("state") == "settled":
+        return
+    burn_for_round(client, state, name)
 
 
 def _keep_weights(client: Any, state: Path) -> None:
