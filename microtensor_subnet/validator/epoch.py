@@ -101,6 +101,9 @@ RECORDS_DIR: Final[str] = "records"
 ROUTERS_DIR: Final[str] = "routers"
 REPORT_FILE: Final[str] = "report.json"
 WEIGHTS_FILE: Final[str] = "weights.json"
+WEIGHTS_GAP_BLOCKS: Final[int] = 100
+WEIGHTS_REFRESH_BLOCKS: Final[int] = 300
+WEIGHTS_LOCK: Final[threading.Lock] = threading.Lock()
 KEPT_AT_CLOSE: Final[frozenset[str]] = frozenset({REPORT_FILE, probe_sets.PROBE_DIR})
 COORDINATOR_WAIT_SECONDS: Final[int] = 5 * 3600
 REFERENCE_POOLS: Final[tuple[str, ...]] = (SLM, SYSTEM, ESCALATION)
@@ -2181,6 +2184,53 @@ def kept_weights(state: Path) -> tuple[dict[str, float], int] | None:
         return None
 
 
+def weights_due(chain: Any, block: int, since: int) -> bool:
+    if block - since < WEIGHTS_GAP_BLOCKS:
+        return False
+    reader = getattr(chain, "last_step_block", None)
+    if callable(reader):
+        try:
+            return since <= int(reader())
+        except ChainError as exc:
+            log.warning("the last chain step was not read; the block count decides: %s", exc)
+    return block - since >= WEIGHTS_REFRESH_BLOCKS
+
+
+def _submit(chain: Any, state: Path, weights: Mapping[str, float]) -> tuple[bool, str]:
+    sent, reason, block = False, "none of the weights is on the metagraph", 0
+    try:
+        vector = vector_for(weights, chain.snapshot(refresh=True))
+        if vector is not None:
+            sent, reason = chain.set_weights(vector)
+        if sent:
+            block = int(chain.block())
+    except ChainError as exc:
+        reason = reason if sent else str(exc)
+    remember_weights(state, weights, block)
+    return sent, reason
+
+
+def submit_weights(chain: Any, state: Path, weights: Mapping[str, float]) -> tuple[bool, str]:
+    with WEIGHTS_LOCK:
+        return _submit(chain, state, weights)
+
+
+def refresh_weights(chain: Any, state: Path) -> None:
+    with WEIGHTS_LOCK:
+        kept = kept_weights(state)
+        if kept is None:
+            return
+        weights, since = kept
+        block = int(chain.block())
+        if not weights_due(chain, block, since):
+            return
+        sent, reason = _submit(chain, state, weights)
+    if sent:
+        log.info("block %d: the weights were sent again for this chain epoch", block)
+    else:
+        log.error("block %d: the weights were not sent again: %s", block, reason)
+
+
 def vector_for(weights: Mapping[str, float], snapshot: Any) -> Any:
     uid_by_hotkey = snapshot.uid_by_hotkey
     by_uid = {uid_by_hotkey[h]: w for h, w in weights.items() if h in uid_by_hotkey}
@@ -2221,16 +2271,13 @@ def miner_mode_weights(
         if total > 0
         else {}
     )
-    try:
-        vector = vector_for(weights, chain.snapshot(refresh=True))
-        if vector is not None and not config.dry_run:
-            ok, reason = chain.set_weights(vector)
-            if ok:
-                remember_weights(config.home / "state", weights, chain.block())
-            else:
-                log.error("weights rejected: %s", reason)
-    except ChainError as exc:
-        log.error("weights not set; the report still goes out: %s", exc)
+    if weights and not config.dry_run:
+        sent, reason = submit_weights(chain, config.home / "state", weights)
+        if not sent:
+            log.error(
+                "weights not set; they are sent again shortly and the report still goes out: %s",
+                reason,
+            )
     return weights, burned
 
 
