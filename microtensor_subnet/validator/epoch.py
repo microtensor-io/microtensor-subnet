@@ -100,6 +100,7 @@ LIVE_POOLS: Final[tuple[str, ...]] = (SLM, HARNESS, ESCALATION, SYSTEM)
 RECORDS_DIR: Final[str] = "records"
 ROUTERS_DIR: Final[str] = "routers"
 REPORT_FILE: Final[str] = "report.json"
+WEIGHTS_FILE: Final[str] = "weights.json"
 KEPT_AT_CLOSE: Final[frozenset[str]] = frozenset({REPORT_FILE, probe_sets.PROBE_DIR})
 COORDINATOR_WAIT_SECONDS: Final[int] = 5 * 3600
 REFERENCE_POOLS: Final[tuple[str, ...]] = (SLM, SYSTEM, ESCALATION)
@@ -2161,6 +2162,25 @@ def serving_fold(
     return shares, Fraction(split.modelling, available), Fraction(split.burned, available)
 
 
+def remember_weights(state: Path, weights: Mapping[str, float], block: int) -> None:
+    state.mkdir(parents=True, exist_ok=True)
+    target = state / WEIGHTS_FILE
+    partial = target.with_name(target.name + ".part")
+    partial.write_text(
+        json.dumps({"block": int(block), "weights": dict(weights)}), encoding="utf-8"
+    )
+    partial.replace(target)
+
+
+def kept_weights(state: Path) -> tuple[dict[str, float], int] | None:
+    try:
+        found = json.loads((state / WEIGHTS_FILE).read_text(encoding="utf-8"))
+        weights = {str(k): float(v) for k, v in dict(found["weights"]).items()}
+        return (weights, int(found["block"])) if weights else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def vector_for(weights: Mapping[str, float], snapshot: Any) -> Any:
     uid_by_hotkey = snapshot.uid_by_hotkey
     by_uid = {uid_by_hotkey[h]: w for h, w in weights.items() if h in uid_by_hotkey}
@@ -2205,7 +2225,9 @@ def miner_mode_weights(
         vector = vector_for(weights, chain.snapshot(refresh=True))
         if vector is not None and not config.dry_run:
             ok, reason = chain.set_weights(vector)
-            if not ok:
+            if ok:
+                remember_weights(config.home / "state", weights, chain.block())
+            else:
                 log.error("weights rejected: %s", reason)
     except ChainError as exc:
         log.error("weights not set; the report still goes out: %s", exc)
