@@ -62,6 +62,7 @@ class ServerClient:
     hotkey: str
     wallet: Any = None
     timeout: float = TIMEOUT_SECONDS
+    for_miner: str = ""
 
     def _headers(
         self, method: str, path: str, body: bytes, content_type: str = "application/json"
@@ -92,6 +93,8 @@ class ServerClient:
             if signed
             else {"accept": "application/json", "content-type": content_type}
         )
+        if self.for_miner:
+            headers["x-mt-for-miner"] = self.for_miner
         try:
             with httpx.Client(
                 base_url=self.base_url.rstrip("/"), timeout=timeout or self.timeout

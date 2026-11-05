@@ -159,6 +159,7 @@ class RunnerConfig:
     gateway_image: str = ""
     engine_url: str = ""
     engine_key: str = field(default="", repr=False)
+    for_miner: str = ""
 
     @property
     def remote(self) -> bool:
@@ -1351,7 +1352,7 @@ def relay_token(client: ServerClient, arena_id: str) -> dict[str, Any]:
 
 def open_relay(client: ServerClient, config: RunnerConfig) -> tuple[TicketDesk | None, int]:
     try:
-        token = relay_token(client, config.arena_id)
+        token = client.relay_token() if config.for_miner else relay_token(client, config.arena_id)
     except ServerError as exc:
         log.warning("no miner relay token (%s); escalation and system calls are refused", exc)
         return None, 0
@@ -1479,7 +1480,7 @@ def services_listen() -> str:
 def run(
     config: RunnerConfig, *, client: ServerClient, wallet: Any, docker: Docker | None = None
 ) -> Upload:
-    hotkey = client.hotkey
+    hotkey = config.for_miner or client.hotkey
     engine = docker or Docker()
     definition = load_definition(client, config.arena_id)
     images = Images.of(definition)
@@ -1496,7 +1497,11 @@ def run(
     miner = fetch_miner(client, config, definition, entry)
     add_coordinator_drafts(client, config, key, inputs, miner)
     desk, allowance = (None, 0) if config.dry_run else open_relay(client, config)
-    allowance = allowance or relay_allowance_of(definition)
+    allowance = (
+        relay_allowance_of(definition)
+        if config.for_miner
+        else (allowance or relay_allowance_of(definition))
+    )
     if desk is not None and not allowance:
         raise RunnerError("the arena sets no relay allowance; frontier calls cannot be capped")
     address = host_ip()
@@ -1532,6 +1537,8 @@ def run(
         session.close()
         served.stop()
     body = build_transcript(config, miner, images, session.entries)
+    if config.for_miner:
+        body = {**body, "signed_by": client.hotkey}
     path = config.work_dir / (DRY_TRANSCRIPT_FILE if config.dry_run else TRANSCRIPT_FILE)
     signed = signed_again(path, body, wallet)
     sha = transcript.transcript_sha256(signed)
