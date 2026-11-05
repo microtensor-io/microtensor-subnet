@@ -340,7 +340,7 @@ def sign(raw: Mapping[str, Any], wallet: Any) -> dict[str, Any]:
 
 def verify_signature(raw: Mapping[str, Any]) -> bool:
     signature = str(raw.get(SIGNATURE_KEY, "") or "")
-    hotkey = str(raw.get("miner_hotkey", "") or "")
+    hotkey = str(raw.get("signed_by") or raw.get("miner_hotkey", "") or "")
     if not signature or not hotkey:
         return False
     message = signing_digest(raw)

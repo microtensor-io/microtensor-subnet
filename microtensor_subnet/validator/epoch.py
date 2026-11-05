@@ -1360,6 +1360,7 @@ def transcript_reason(runner: MinerModeRunner, hotkey: str, transcript: Mapping[
         epoch_index=runner.context.epoch_index,
         leaves=runner.leaves,
         root=runner.receipt_root,
+        stand_ins=transcripts.stand_ins_of(runner.context.definition),
     )
     if reason:
         return reason

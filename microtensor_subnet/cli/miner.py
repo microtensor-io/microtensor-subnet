@@ -52,6 +52,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default=os.environ.get("MT_ENGINE_KEY", ""),
         help="the bearer token of the remote engine",
     )
+    run.add_argument(
+        "--for-miner",
+        default=os.environ.get("MT_FOR_MINER", ""),
+        help="run and upload for this hotkey, signing with a stand in key the arena names",
+    )
     run.set_defaults(handler=_run)
 
     upload = inner.add_parser("upload", help="send a finished transcript without running again")
@@ -142,6 +147,7 @@ def _settings(
         commitment=commitment,
         engine_url=str(getattr(args, "engine_url", "") or ""),
         engine_key=str(getattr(args, "engine_key", "") or ""),
+        for_miner=str(getattr(args, "for_miner", "") or ""),
     )
 
 
@@ -210,10 +216,11 @@ def _run(args: argparse.Namespace) -> int:
     hotkey = hotkey_address(wallet)
     _show_logs()
     _stop_on_sigterm()
-    server = ServerClient(args.server, hotkey, wallet)
+    target = str(args.for_miner or "")
+    server = ServerClient(args.server, hotkey, wallet, for_miner=target)
     try:
         epoch_index = _epoch_index(server, args.arena, args.epoch)
-        commitment = _commitment(args, config, wallet, hotkey)
+        commitment = _commitment(args, config, wallet, target or hotkey)
         settings = _settings(args, epoch_index, commitment)
         upload = runner.run(settings, client=server, wallet=wallet)
     except (runner.RunnerError, ServerError, DockerError, SandboxError, OSError) as exc:

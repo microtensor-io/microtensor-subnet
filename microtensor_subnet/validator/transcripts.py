@@ -5,7 +5,7 @@ import hashlib
 import importlib
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -128,6 +128,12 @@ def parse(raw: bytes, sha256: str) -> dict[str, Any]:
     return parsed
 
 
+def stand_ins_of(definition: Mapping[str, Any] | None) -> tuple[str, ...]:
+    block = (definition or {}).get("evaluation")
+    found = block.get("stand_in_signers") if isinstance(block, Mapping) else None
+    return tuple(str(key) for key in found) if isinstance(found, list) else ()
+
+
 def verify(
     transcript: Mapping[str, Any],
     *,
@@ -136,6 +142,7 @@ def verify(
     epoch_index: int,
     leaves: Mapping[str, str],
     root: str,
+    stand_ins: Collection[str] = (),
 ) -> str:
     if str(transcript.get("version", "")) != VERSION:
         return f"transcript version {transcript.get('version')!r} is not {VERSION!r}"
@@ -147,6 +154,9 @@ def verify(
         return "transcript names another epoch"
     if not isinstance(transcript.get("items"), list):
         return "transcript carries no items"
+    signer = str(transcript.get("signed_by") or hotkey)
+    if signer != hotkey and signer not in stand_ins:
+        return "transcript is signed by another key"
     if not verify_signature(transcript):
         return "miner signature does not verify"
     if not under_root(hotkey, transcript_sha256(transcript), leaves, root):
