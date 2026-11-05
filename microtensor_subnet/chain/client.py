@@ -497,6 +497,19 @@ class SubtensorClient:
         return str(getattr(found, "value", found) or "")
 
     @_serialised
+    def last_step_block(self) -> int:
+        substrate = getattr(self.subtensor, "substrate", None)
+        if substrate is None:
+            raise ChainError(UNADAPTED.format(what="last step reader"))
+        found = with_retry(
+            "last step block",
+            lambda: substrate.query(
+                "SubtensorModule", "LastMechansimStepBlock", [self._config.netuid]
+            ),
+        )
+        return int(getattr(found, "value", found) or 0)
+
+    @_serialised
     def set_weights(self, vector: WeightVector) -> tuple[bool, str]:
         if vector.is_empty:
             return False, "refusing to submit an empty weight vector"
