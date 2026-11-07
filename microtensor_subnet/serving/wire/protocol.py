@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import secrets
+import time
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
 
-VERSION: Final[int] = 4
+from microtensor_subnet.core.hashing import canonical_json
+
+VERSION: Final[int] = 5
 SYSTEMS_ONLY_VERSION: Final[int] = 3
 HELLO: Final[str] = "hello"
 WELCOME: Final[str] = "welcome"
@@ -17,6 +21,9 @@ SYSTEM: Final[str] = "system"
 MODEL: Final[str] = "model"
 KINDS: Final[tuple[str, ...]] = (SYSTEM, MODEL)
 CHAT: Final[str] = "chat"
+HELLO_PREFIX: Final[bytes] = b"microtensor-operator-hello\n"
+
+Signer = Callable[[bytes], str]
 
 
 class WireError(RuntimeError):
@@ -24,24 +31,52 @@ class WireError(RuntimeError):
 
 
 def hello(
-    hotkey: str, worker: str, models: Sequence[Mapping[str, Any]], concurrency: int
+    hotkey: str,
+    worker: str,
+    models: Sequence[Mapping[str, Any]],
+    concurrency: int,
+    *,
+    gpus: Sequence[Mapping[str, Any]] = (),
+    agent: Mapping[str, Any] | None = None,
+    timestamp: int | None = None,
+    nonce: str = "",
 ) -> dict[str, Any]:
     return {
         "type": HELLO,
         "version": VERSION,
         "hotkey": hotkey,
         "worker": worker,
+        "timestamp": int(time.time()) if timestamp is None else int(timestamp),
+        "nonce": nonce or secrets.token_hex(8),
+        "agent": dict(agent or {}),
+        "gpus": [dict(g) for g in gpus],
         "concurrency": concurrency,
         "models": [dict(m) for m in models],
     }
 
 
-def heartbeat(running: int, idle_seconds: float, models: Mapping[str, Any]) -> dict[str, Any]:
+def hello_message(frame: Mapping[str, Any]) -> bytes:
+    return HELLO_PREFIX + canonical_json({k: v for k, v in frame.items() if k != "signature"})
+
+
+def signed(frame: Mapping[str, Any], signer: Signer) -> dict[str, Any]:
+    body = {k: v for k, v in frame.items() if k != "signature"}
+    return {**body, "signature": signer(hello_message(body))}
+
+
+def heartbeat(
+    running: int,
+    idle_seconds: float,
+    models: Mapping[str, Any],
+    *,
+    gpus: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
     return {
         "type": HEARTBEAT,
         "running": running,
         "idle_seconds": round(idle_seconds, 3),
         "models": dict(models),
+        "gpus": [dict(g) for g in gpus],
     }
 
 

@@ -34,9 +34,11 @@ services:
       - run
       - --auto
       - --gpus
-      - "${MT_GPUS:-0}"
+      - "${MT_GPUS:-all}"
       - --gpu-gb
-      - "${MT_GPU_GB:-24}"
+      - "${MT_GPU_GB:-0}"
+      - --worker
+      - "${MT_WORKER:-}"
       - --home
       - /var/lib/microtensor
       - --server

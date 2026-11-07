@@ -1,4 +1,12 @@
-from microtensor_subnet.serving.wire.protocol import VERSION, WireError, decode, encode
+from microtensor_subnet.serving.wire.protocol import (
+    VERSION,
+    Signer,
+    WireError,
+    decode,
+    encode,
+    hello_message,
+    signed,
+)
 from microtensor_subnet.serving.wire.session import (
     Capacity,
     ChatHandler,
@@ -7,6 +15,7 @@ from microtensor_subnet.serving.wire.session import (
     Served,
     SessionError,
     Settings,
+    Stats,
     backoff,
     run,
 )
@@ -20,9 +29,13 @@ __all__ = [
     "Served",
     "SessionError",
     "Settings",
+    "Signer",
+    "Stats",
     "WireError",
     "backoff",
     "decode",
     "encode",
+    "hello_message",
     "run",
+    "signed",
 ]
