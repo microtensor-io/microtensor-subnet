@@ -101,7 +101,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--max-concurrency",
         type=int,
         default=0,
-        help="cap on requests in flight per gpu for general models; 0 keeps the model's own",
+        help="requests in flight per gpu; 0 keeps a general model's own, 8 for a certified image",
     )
     serve.add_argument("--cache-dir", default="", help="where fetched systems and models are kept")
     serve.add_argument(

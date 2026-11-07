@@ -13,7 +13,7 @@ from microtensor_subnet.serving import client, verify
 from microtensor_subnet.serving.probes.ask import Answered, Chatted, ask, ask_chat
 from microtensor_subnet.serving.probes.general import GeneralItem, Target, format_failure
 from microtensor_subnet.serving.probes.sets import ProbeItem, ProbeSet
-from microtensor_subnet.validator import grade
+from microtensor_subnet.validator import compress, grade
 
 log = logging.getLogger("microtensor_subnet.serving.probes")
 
@@ -172,7 +172,20 @@ def _text(value: Any) -> str:
     return str(value if value is not None else "").strip()
 
 
-def judge(kind: str, item: ProbeItem, answered: Answered, held: ProbeSet) -> tuple[str, float, str]:
+def _known_reply(item: ProbeItem) -> str:
+    for value in ((item.reference or {}).get("answer"), item.label.get("answer")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def judge(
+    kind: str,
+    item: ProbeItem,
+    answered: Answered,
+    held: ProbeSet,
+    grader_judge: compress.Judge | None = None,
+) -> tuple[str, float, str]:
     if kind == EXACT:
         reference = item.reference
         if not reference:
@@ -184,19 +197,29 @@ def judge(kind: str, item: ProbeItem, answered: Answered, held: ProbeSet) -> tup
         same = _text(answered.answer) == _text(reference.get("answer"))
         return (verify.PASS if same else FAIL), float(same), ("" if same else "the answer differs")
     if kind == CANARY:
-        wanted = _text((item.reference or {}).get("answer") or item.label.get("answer"))
+        wanted = _known_reply(item)
         if not wanted:
-            return verify.UNPROVEN, 0.0, "the canary carries no known reply"
+            alive = bool(_text(answered.answer))
+            return (verify.PASS if alive else FAIL), float(alive), ("" if alive else "no reply")
         same = _text(answered.answer) == wanted
         return (verify.PASS if same else FAIL), float(same), ("" if same else "the reply differs")
     if not held.grader:
         return verify.UNPROVEN, 0.0, "the server named no grader for this model"
+    if held.grader == grade.CONTEXT_COMPRESSION and grader_judge is None:
+        return verify.UNPROVEN, 0.0, "this prober holds no judge for this grader"
     try:
         graded = grade.grade(
-            held.grader, answered.answer, item.label, held.databases, task=item.task
+            held.grader,
+            answered.answer,
+            item.label,
+            held.databases,
+            task=item.task,
+            judge=grader_judge,
         )
     except grade.GradeError as exc:
         return FAIL, 0.0, f"the answer could not be graded: {exc}"
+    except (RuntimeError, OSError) as exc:
+        return verify.UNPROVEN, 0.0, f"the judge failed: {exc}"
     quality = float(graded.metric)
     if graded.success or quality >= QUALITY_FLOOR:
         return verify.PASS, max(quality, 1.0 if graded.success else quality), ""
@@ -268,6 +291,7 @@ def probe_gpu(
     kind: str = HIDDEN,
     asker: Asker = ask,
     reporter: Reporter = report,
+    grader_judge: compress.Judge | None = None,
 ) -> Probe:
     pool = pool_for(held, kind, floor)
     if not pool and kind == EXACT:
@@ -316,7 +340,7 @@ def probe_gpu(
             **timings,
         )
         return Probe(hotkey, model, digest, item.item_id, False, reason, FAIL, gpu, kind)
-    verdict, quality, reason = judge(kind, item, answered, held)
+    verdict, quality, reason = judge(kind, item, answered, held, grader_judge)
     if verdict == verify.PASS and kind != EXACT and not inside:
         verdict, reason = FAIL, "outside the envelope"
     if verdict == verify.UNPROVEN:
@@ -370,6 +394,7 @@ def cycle_gpus(
     asker: Asker = ask,
     reporter: Reporter = report,
     fetcher: Callable[..., ProbeSet] = withheld_for,
+    grader_judge: compress.Judge | None = None,
 ) -> list[Probe]:
     results: list[Probe] = []
     fetched: dict[str, ProbeSet] = {}
@@ -423,6 +448,7 @@ def cycle_gpus(
                     kind=kind,
                     asker=asker,
                     reporter=reporter,
+                    grader_judge=grader_judge,
                 )
                 results.append(found)
                 if found.success is False or found.success is None:

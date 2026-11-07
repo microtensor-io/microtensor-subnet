@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 import secrets
-import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final
 
 import httpx
@@ -20,6 +19,7 @@ ANY: Final[str] = "0.0.0.0"  # noqa: S104
 RUN_PATH: Final[str] = "/v1/run"
 HEALTH_PATH: Final[str] = "/health"
 POLL_SECONDS: Final[float] = 5.0
+DEFAULT_CONCURRENCY: Final[int] = 8
 LOOPBACK: Final[str] = "127.0.0.1"
 
 
@@ -38,7 +38,6 @@ class ImageHeld:
     container: str
     network: str
     url: str
-    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def certified_image(entry: Mapping[str, Any]) -> tuple[str, str]:
@@ -74,6 +73,7 @@ def open_image(
     slot: int,
     ready_seconds: float,
     shm_size: str = "8g",
+    workers: int = DEFAULT_CONCURRENCY,
 ) -> ImageHeld:
     image, digest = certified_image(entry)
     if not image:
@@ -95,6 +95,7 @@ def open_image(
                     "VLLM_NO_USAGE_STATS": "1",
                     "MT_SHIM_BIND": ANY,
                     "MT_SHIM_PORT": str(SHIM_PORT),
+                    "MT_SHIM_WORKERS": str(max(1, workers)),
                 },
                 gpus=(gpu,),
                 hardened=True,
@@ -130,7 +131,7 @@ def close_image(docker: Docker, held: ImageHeld) -> None:
 def answer_image(held: ImageHeld, request: Mapping[str, Any], *, timeout: float) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        with held.lock, httpx.Client(timeout=timeout) as http:
+        with httpx.Client(timeout=timeout) as http:
             response = http.post(held.url + RUN_PATH, json=dict(request))
     except httpx.TimeoutException:
         return {"error": "the certified image did not answer in time"}
