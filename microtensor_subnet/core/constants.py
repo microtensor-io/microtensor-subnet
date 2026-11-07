@@ -35,7 +35,7 @@ RELEASE_VERSION: Final[str] = "0.5.0"
 # These were one constant. That made every release read as a rule change, so
 # auto-update held all of them forever waiting for an activation block that a
 # bug fix has no reason to declare.
-MECHANISM_VERSION: Final[str] = "0.6.0"
+MECHANISM_VERSION: Final[str] = "0.7.0"
 DEFAULT_NETWORK: Final[str] = os.environ.get("MT_NETWORK", "").strip() or "test"
 DEFAULT_NETUID: Final[int] = _blocks("MT_NETUID", 576)
 GENESIS_BLOCK: Final[int] = _blocks("MT_GENESIS_BLOCK", -17805488)
