@@ -6,6 +6,7 @@ import dataclasses
 import logging
 import signal
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
@@ -102,6 +103,7 @@ class ServingHost:
         signer: wire.Signer | None = None,
         stats: wire.Stats | None = None,
         updater: update.Updater | None = None,
+        shim_urls: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.hotkey = hotkey
@@ -117,6 +119,7 @@ class ServingHost:
         self.model_fetcher: ModelFetcher = model_fetcher or self._fetch_model
         self.accept_licences = accept_licences
         self.engine_url = engine_url
+        self.shim_urls = {str(k): str(v).rstrip("/") for k, v in dict(shim_urls or {}).items()}
         self.signer = signer
         self.stats = stats
         self.updater = updater
@@ -146,7 +149,10 @@ class ServingHost:
         if self._started:
             self.services.stop()
             self._started = False
-        self.docker.sweep()
+        try:
+            self.docker.sweep()
+        except Exception as exc:
+            log.warning("docker sweep skipped: %s", exc)
 
     def _fetch_model(self, entry: Mapping[str, Any], cache_dir: Path) -> FetchedModel:
         return fetch_model(entry, cache_dir, token=self.config.hf_token)
@@ -209,6 +215,8 @@ class ServingHost:
         self.phases_by.pop(gpu, None)
         image = self.images_held.pop(gpu, None)
         if image is not None:
+            if not image.container:
+                return
             try:
                 close_image(self.docker, image)
             except Exception as exc:
@@ -252,7 +260,9 @@ class ServingHost:
             raise HostError(f"gpu {holding.gpu} is not one this host was given")
         self.phases_by[holding.gpu] = protocol.PULLING
         try:
-            if entry.get("kind") == GENERAL:
+            if holding.gpu in self.shim_urls:
+                self._take_shim(holding, entry)
+            elif entry.get("kind") == GENERAL:
                 self._take_model(holding, entry)
             elif certified_image(entry)[0]:
                 self._take_image(holding, entry)
@@ -260,6 +270,40 @@ class ServingHost:
                 self._take_system(holding, entry)
         finally:
             self.phases_by.pop(holding.gpu, None)
+
+    def _take_shim(self, holding: plan.Holding, entry: Mapping[str, Any]) -> None:
+        url = self.shim_urls[holding.gpu]
+        self.phases_by[holding.gpu] = protocol.LOADING
+        deadline = time.monotonic() + self.config.engine_ready_seconds
+        served = ""
+        while True:
+            try:
+                with httpx.Client(timeout=5.0) as http:
+                    response = http.get(url + "/health")
+                if response.status_code == 200:
+                    served = str(dict(response.json()).get("model") or "")
+                    break
+            except (httpx.HTTPError, ValueError):
+                pass
+            if time.monotonic() >= deadline:
+                raise HostError(f"the shim at {url} did not become ready")
+            time.sleep(5.0)
+        if served and served != holding.model:
+            raise HostError(f"the shim at {url} serves {served}, not {holding.model}")
+        self.images_held[holding.gpu] = ImageHeld(
+            model=holding.model,
+            artifact_digest=holding.artifact_digest,
+            image_digest=certified_image(entry)[1],
+            entry=dict(entry),
+            gpu=holding.gpu,
+            slot=self.devices.index(holding.gpu),
+            container="",
+            network="",
+            url=url,
+        )
+        if self.declare is not None:
+            self.declare(holding.model, holding.artifact_digest)
+        log.info("%s ready on gpu %s from the shim at %s", holding.model, holding.gpu, url)
 
     def _take_system(self, holding: plan.Holding, entry: Mapping[str, Any]) -> None:
         fetched = self.fetcher(entry, self.config.cache_dir)
