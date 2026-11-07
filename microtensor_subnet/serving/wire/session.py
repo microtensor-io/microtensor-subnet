@@ -5,6 +5,7 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Final
@@ -20,6 +21,14 @@ READY_RETRY_SECONDS: Final[float] = 60.0
 _RETRIES: set[asyncio.Task[None]] = set()
 RECONNECT_CEILING_SECONDS: Final[float] = 60.0
 HEALTHY_SESSION_SECONDS: Final[float] = 60.0
+STATS_SECONDS: Final[float] = 5.0
+HANDLER_THREADS: Final[int] = 128
+HANDLER_POOL: Final[ThreadPoolExecutor] = ThreadPoolExecutor(
+    max_workers=HANDLER_THREADS, thread_name_prefix="mt-request"
+)
+STATS_POOL: Final[ThreadPoolExecutor] = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="mt-gpu-stats"
+)
 CHALLENGE_SECONDS: Final[float] = 30.0
 DRAIN_SECONDS: Final[float] = 600.0
 DRAINING: Final[str] = "draining"
@@ -310,7 +319,9 @@ async def _report(settings: Settings, state: Capacity, link: Link) -> dict[str, 
     reported: list[Mapping[str, Any]] = []
     if settings.stats is not None:
         try:
-            reported = list(await asyncio.to_thread(settings.stats))
+            loop = asyncio.get_running_loop()
+            found = loop.run_in_executor(STATS_POOL, settings.stats)
+            reported = list(await asyncio.wait_for(found, timeout=STATS_SECONDS))
         except Exception as exc:
             log.debug("gpu stats unavailable: %s", exc)
     phases: Mapping[str, str] = {}
@@ -397,9 +408,13 @@ async def serve_one(
 
     try:
         if _takes_first(handler):
-            found = await asyncio.to_thread(handler, gpu, model, request, on_first)
+            found = await asyncio.get_running_loop().run_in_executor(
+                HANDLER_POOL, handler, gpu, model, request, on_first
+            )
         else:
-            found = await asyncio.to_thread(handler, gpu, model, request)
+            found = await asyncio.get_running_loop().run_in_executor(
+                HANDLER_POOL, handler, gpu, model, request
+            )
     except asyncio.CancelledError:
         state.release(gpu, ok=False)
         raise
