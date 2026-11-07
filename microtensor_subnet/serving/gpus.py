@@ -29,7 +29,7 @@ class Card:
 
     @property
     def memory_gb(self) -> float:
-        return self.memory_mb / MB_PER_GB
+        return float(round(self.memory_mb / MB_PER_GB))
 
     def announced(self) -> dict[str, Any]:
         return {
