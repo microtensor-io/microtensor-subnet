@@ -129,6 +129,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     serve.add_argument("--engine-url", default="", help=argparse.SUPPRESS)
     serve.add_argument(
+        "--shim-url", action="append", default=[], metavar="[GPU=]URL", help=argparse.SUPPRESS
+    )
+    serve.add_argument(
         "--no-auto-update",
         dest="auto_update",
         action="store_false",
@@ -437,6 +440,12 @@ def _run(args: argparse.Namespace) -> int:
     def stats() -> list[dict[str, Any]]:
         return [card.reported() for card in gpus.refresh(cards)]
 
+    shim_urls: dict[str, str] = {}
+    for item in args.shim_url:
+        device, sep, url = str(item).partition("=")
+        if not sep:
+            device, url = cards[0].device if cards else "0", device
+        shim_urls[device] = url
     docker = Docker()
     updater = update.Updater(
         server=args.server,
@@ -460,6 +469,7 @@ def _run(args: argparse.Namespace) -> int:
         stats=stats,
         docker=docker,
         updater=updater,
+        shim_urls=shim_urls,
     )
     for card in cards:
         print(f"gpu {card.device}: {card.name or 'unnamed'} {card.memory_gb:.0f} GB ({card.id})")
