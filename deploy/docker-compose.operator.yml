@@ -1,6 +1,6 @@
 services:
   operator:
-    image: ghcr.io/microtensor-io/validator:1
+    image: ${MT_AGENT_IMAGE:-ghcr.io/microtensor-io/validator:1}
     container_name: microtensor-operator
     restart: unless-stopped
     stop_grace_period: 10m
@@ -22,6 +22,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/microtensor:/var/lib/microtensor
       - ${MT_WALLET_DIR:-~/.bittensor/wallets}:/wallets:ro
+      - ./docker-compose.operator.yml:/opt/microtensor/compose.yml:ro
+      - ./.env:/opt/microtensor/.env
     deploy:
       resources:
         reservations:
