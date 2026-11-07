@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Final
 
 from microtensor_subnet.serving.engines import LLAMA, LLAMA_IMAGE, SGLANG, SGLANG_IMAGE
+from microtensor_subnet.serving.gpus import Card
 from microtensor_subnet.validator.config import (
     ARTIFACT_SECONDS,
     GATEWAY_IMAGE,
@@ -46,6 +47,16 @@ class HostConfig:
     mem_fraction: float = MEM_FRACTION
     engine_ready_seconds: int = ENGINE_READY_SECONDS
     hf_token: str = field(default="", repr=False)
+    cards: tuple[Card, ...] = ()
+
+    @property
+    def gpu_cards(self) -> tuple[Card, ...]:
+        if self.cards:
+            return self.cards
+        return tuple(
+            Card(device=device, id=f"gpu:{device}", memory_mb=int(self.gpu_gb * 1024))
+            for device in self.gpus
+        )
 
     @property
     def images(self) -> dict[str, str]:

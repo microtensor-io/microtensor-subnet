@@ -13,6 +13,8 @@ GENERAL: Final[str] = "general"
 SYSTEM: Final[str] = "system"
 MODEL: Final[str] = "model"
 
+Held = Mapping[str, tuple[str, str]]
+
 
 class PlanError(RuntimeError):
     pass
@@ -177,12 +179,34 @@ class Plan:
         }
 
 
-def rank(offers: Iterable[Offer], held: Mapping[str, str]) -> list[Offer]:
+def rank(offers: Iterable[Offer], held: Iterable[str]) -> list[Offer]:
+    kept = set(held)
+
     def key(offer: Offer) -> tuple[float, int, float, str]:
-        score = offer.wanted * (KEEP_MARGIN if offer.model in held else 1.0)
+        score = offer.wanted * (KEEP_MARGIN if offer.model in kept else 1.0)
         return (-score, 0 if offer.cold else 1, offer.vram_gb, offer.model)
 
     return sorted(offers, key=key)
+
+
+def assign(usable: Sequence[Offer], gpus: Sequence[str], holding: Held) -> dict[str, Offer]:
+    counts: dict[str, int] = {}
+    assigned: dict[str, Offer] = {}
+    for gpu in gpus:
+        if not usable:
+            break
+        current = holding.get(gpu)
+
+        def key(offer: Offer, current: tuple[str, str] | None = current) -> tuple[Any, ...]:
+            keep = current is not None and current[0] == offer.model
+            score = offer.wanted / (counts.get(offer.model, 0) + 1)
+            score *= KEEP_MARGIN if keep else 1.0
+            return (-score, 0 if keep else 1, 0 if offer.cold else 1, offer.vram_gb, offer.model)
+
+        chosen = min(usable, key=key)
+        assigned[gpu] = chosen
+        counts[chosen.model] = counts.get(chosen.model, 0) + 1
+    return assigned
 
 
 def unrunnable(offer: Offer, capacity: Capacity) -> str:
@@ -202,12 +226,12 @@ def build(
     offers: Sequence[Mapping[str, Any]] | Sequence[Offer],
     capacity: Capacity,
     *,
-    held: Mapping[str, str] | None = None,
+    held: Held | None = None,
     policy: Policy | None = None,
     pinned: Mapping[str, str] | None = None,
 ) -> Plan:
     rules = policy or Policy()
-    holding = dict(held or {})
+    holding: dict[str, tuple[str, str]] = dict(held or {})
     rows = [o if isinstance(o, Offer) else Offer.from_wire(o) for o in offers]
     reasons: dict[str, str] = {}
     usable: list[Offer] = []
@@ -241,12 +265,11 @@ def build(
             continue
         usable.append(offer)
 
-    chosen: list[Offer] = []
-    for offer in rank(usable, holding):
-        if len(chosen) >= capacity.ceiling:
+    assigned = assign(usable, capacity.gpus, holding)
+    placed = {offer.model for offer in assigned.values()}
+    for offer in usable:
+        if offer.model not in placed:
             reasons.setdefault(offer.model, "every GPU is already holding a system or a model")
-            continue
-        chosen.append(offer)
 
     hold = tuple(
         Holding(
@@ -256,13 +279,26 @@ def build(
             concurrency=offer.concurrency if offer.general else 1,
             kind=offer.kind,
         )
-        for offer, gpu in zip(chosen, capacity.gpus, strict=False)
+        for gpu, offer in assigned.items()
     )
-    wanted_now = {offer.model: offer.artifact_digest for offer in chosen}
-    fetch = tuple(offer for offer in chosen if holding.get(offer.model) != offer.artifact_digest)
-    drop = tuple(sorted(model for model in holding if model not in wanted_now))
-    return Plan(hold=hold, fetch=fetch, drop=drop, skipped=tuple(sorted(reasons)), reasons=reasons)
+    cached = set(holding.values())
+    fetch_names: set[str] = set()
+    fetch: list[Offer] = []
+    for offer in assigned.values():
+        if offer.model in fetch_names or (offer.model, offer.artifact_digest) in cached:
+            continue
+        fetch_names.add(offer.model)
+        fetch.append(offer)
+    wanted_now = {gpu: (offer.model, offer.artifact_digest) for gpu, offer in assigned.items()}
+    drop = tuple(sorted(gpu for gpu, pair in holding.items() if wanted_now.get(gpu) != pair))
+    return Plan(
+        hold=hold, fetch=tuple(fetch), drop=drop, skipped=tuple(sorted(reasons)), reasons=reasons
+    )
 
 
-def changed(plan: Plan, held: Mapping[str, str]) -> bool:
-    return {h.model: h.artifact_digest for h in plan.hold} != dict(held)
+def wanted_of(plan: Plan) -> dict[str, tuple[str, str]]:
+    return {h.gpu: (h.model, h.artifact_digest) for h in plan.hold}
+
+
+def changed(plan: Plan, held: Held) -> bool:
+    return wanted_of(plan) != dict(held)

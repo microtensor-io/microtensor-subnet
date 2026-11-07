@@ -1,10 +1,18 @@
 # Serving certified systems
 
-Netuid **576** on Bittensor testnet. An inference operator holds the certified system of one or more arenas on its own GPUs and answers customer requests that the gateway at api.microtensor.cloud routes to it. Serving is a separate role from model mining and validating, with its own hotkey and its own settlement.
+Netuid **576** on Bittensor testnet. An inference operator holds the certified system of one or more arenas on its own GPUs and answers customer requests that the gateway at api.microtensor.cloud routes to it. Serving is a separate role from model mining and validating, with its own hotkey and its own settlement. The network shows every provider and every card at https://www.microtensor.cloud/network/inference.
 
 ## What you run
 
 Each held system is the four part artifact its miner submitted and validators certified: a small model served by vLLM, a router served as a classifier, and the miner's harness and repair code running in a sandbox with no network beyond four service URLs. Your host runs the same stack a validator runs, one system per GPU, and dials out to the gateway over a websocket. Nothing listens on a public port.
+
+## GPUs
+
+The GPU is the unit. One hotkey owns any number of cards, on one machine or several, and each card holds one model. The agent reads the cards from `nvidia-smi` on start, announces them in a hello signed by the hotkey, and the network labels them `gpu-0`, `gpu-1` and so on in the order it first sees them. The labels stay with the cards across restarts and appear on the public provider page and in `mt operator status`. Every 15 seconds the agent reports each card's memory in use and utilisation; a card the network has not heard from for 45 seconds shows offline.
+
+Several machines under one hotkey each run the agent with their own `--worker` name. One machine dropping takes only its cards offline. A card that holds a model this hotkey has declared but has not been admitted for connects as probing: validators can reach it, customers cannot, until admission.
+
+The planner spreads the cards over the models the network wants, most wanted first, one model per card and the same model on several cards when demand asks for it. A card keeps its model unless something clearly wants serving more.
 
 The sandbox is a locked down Docker container: no network except the gateway to the four service URLs, CPU, memory and process limits, a read only root file system, the artifact and the model mounted read only, every capability dropped and no privilege escalation. No extra container runtime is needed.
 
@@ -13,12 +21,12 @@ The sandbox is a locked down Docker container: no network except the gateway to 
 | | |
 |---|---|
 | OS | Ubuntu 22.04 or 24.04 |
-| GPU | one 24 GB card per held system (RTX 4090, L4, A10G or better), CUDA 12 driver; general models state their own class |
-| CPU and RAM | 8 cores and 32 GB per held system |
-| Disk | NVMe, 100 GB per held system, under `/var/lib/microtensor` |
+| GPU | one or more 24 GB cards (RTX 4090, L4, A10G or better), CUDA 12 driver, one model per card; general models state their own class |
+| CPU and RAM | 8 cores and 32 GB per card |
+| Disk | NVMe, 100 GB per held model, under `/var/lib/microtensor` |
 | Software | Docker 27 or newer, NVIDIA Container Toolkit |
 | Network | outbound 443 only; one system downloads once per epoch |
-| Stake | 1 TAO collateral to the pool coldkey |
+| Stake | none on testnet; mainnet collateral is announced before launch |
 
 Host preparation (Docker, the NVIDIA toolkit, `/var/lib/microtensor`) is the same as for a validator: follow step 1 of [validator_setup.md](validator_setup.md) and confirm the CUDA check passes.
 
@@ -30,7 +38,7 @@ docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/walle
   operator register --label "my node" --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
-The answer names the collateral amount and the coldkey to pay. Transfer it, then report the extrinsic:
+On testnet that is all: the answer shows `collateral_required_tao: 0` and the hotkey can declare and serve at once. When the answer names an amount, transfer it to the coldkey it names and report the extrinsic:
 
 ```bash
 docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/wallets \
@@ -41,10 +49,10 @@ docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/walle
 ## 2. See what the network wants
 
 ```bash
-docker run --rm --entrypoint mt ghcr.io/microtensor-io/validator:1 operator plan --gpus 0,1 --gpu-gb 24
+docker run --rm --gpus all --entrypoint mt ghcr.io/microtensor-io/validator:1 operator plan
 ```
 
-The plan reads the public catalogue (`GET /v1/public/inference/catalogue`) and ranks each arena's current system by demand: requests in the last hour divided by operators online, cold systems first, held systems kept unless something clearly wants serving more. One system per GPU; a system whose `vram_gb` exceeds `--gpu-gb` is skipped with the reason.
+The plan lists the cards it found and reads the public catalogue (`GET /v1/public/inference/catalogue`), then gives each card the model that wants serving most: requests in the last hour divided by the GPUs already holding it, cold models first, held models kept unless something clearly wants serving more. A model whose `vram_gb` exceeds the smallest card is skipped with the reason. `--gpus 0,1` limits the cards; `--gpu-gb` is only read when `nvidia-smi` cannot be asked.
 
 ## 3. Run
 
@@ -53,21 +61,23 @@ cd microtensor-subnet/deploy
 cat > .env <<EOF
 MT_WALLET_NAME=<coldkey>
 MT_WALLET_HOTKEY=<hotkey>
-MT_GPUS=0
-MT_GPU_GB=24
 DOCKER_GID=$(getent group docker | cut -d: -f3)
 EOF
 docker compose -f docker-compose.operator.yml up -d
 docker compose -f docker-compose.operator.yml logs -f
 ```
 
+Every card `nvidia-smi` lists is used; set `MT_GPUS=0,1` to use some of them. On a second machine under the same hotkey set `MT_WORKER=<a name for that machine>`.
+
 For one pinned system instead of the planner, run `operator run --serve mt/<arena>@<artifact sha prefix>` with the pin from the catalogue.
 
-On start the host fetches the system's two repositories at the committed revisions, verifies every manifest hash, starts vLLM for the model, the router server and the sandbox, declares the system to the server (`POST /v1/inference/operators/models`) and dials the gateway. Expect ten to twenty minutes before the first answer on a fresh cache. Every `--review-seconds` (300) the catalogue is read again and the plan reconciled.
+On start the host fetches the system's two repositories at the committed revisions, verifies every manifest hash, starts vLLM for the model, the router server and the sandbox on each card, declares the system to the server (`POST /v1/inference/operators/models`) and dials the gateway with a hello signed by the hotkey. Expect ten to twenty minutes before the first answer on a fresh cache. Every `--review-seconds` (300) the catalogue is read again; the connection is kept unless the plan changed what a card holds.
+
+`mt operator status` prints one line per card the network knows under this hotkey: label, card, memory, model loaded, online and last seen.
 
 ## 4. Admission
 
-Validators probe operators through the gateway with withheld items the certified system answered correctly and grade your answers. A sequential test admits a clean operator after about sixty probes and rejects one that fails early; a rejection withdraws the operator until a new generation. Until validators probe, the team can admit an operator by hand for a demo. A new epoch winner resets eligibility for that model, so re-admission after each epoch is normal.
+Validators probe operators through the gateway with withheld items the certified system answered correctly and grade your answers. A card holding a declared model connects as probing before admission so validators can reach it; customers are routed to it once the model is admitted. A sequential test admits a clean operator after about sixty probes and rejects one that fails early; a rejection withdraws the operator until a new generation. Until validators probe, the team can admit an operator by hand for a demo. A new epoch winner resets eligibility for that model, so re-admission after each epoch is normal.
 
 ## How a request is answered
 
@@ -82,14 +92,14 @@ Beside certified systems, an operator can serve general open weight chat models 
 | awq, fp8, safetensors | SGLang | `--sglang-image` or `MT_SGLANG_IMAGE` |
 | gguf | llama.cpp server | `--llama-image` or `MT_LLAMA_IMAGE` |
 
-Serving classes are `gpu_24gb`, `gpu_80gb` and `gpu_8x80gb`. Your class follows `--gpu-gb`. The planner keeps one holding per GPU whatever its kind and skips, with the reason, a model whose class or `vram_gb` your card cannot meet or whose engine has no image (pass `none` as an image to turn that engine off).
+Serving classes are `gpu_24gb`, `gpu_80gb` and `gpu_8x80gb`. Your class follows the smallest card. The planner keeps one holding per GPU whatever its kind and skips, with the reason, a model whose class or `vram_gb` your card cannot meet or whose engine has no image (pass `none` as an image to turn that engine off).
 
 The host downloads only the files the manifest names (`--hf-token` or `HF_TOKEN` for gated repositories), checks every sha256 and refuses the model on any mismatch, then starts the engine on one GPU with the weights mounted read only and offline. Each answer streams as chunks (content, reasoning, tool call argument fragments) and ends with the full message, usage, and the prompt and completion token ids. The host caps `max_tokens` at the model's maximum output and refuses a prompt that does not fit the context with `context_length_exceeded`.
 
 Every general model records its licence and a link. The host holds none until you pass `--accept-licences` (`MT_ACCEPT_LICENCES=1` in the compose `.env`); without it the planner skips every general model, names its licence and link as the reason, and keeps your GPUs for certified systems. `operator plan` takes the same flag.
 
 ```bash
-mt operator run --kind model --model glm-4.6-awq --gpus 0 --gpu-gb 80 --accept-licences
+mt operator run --kind model --model glm-4.6-awq --gpus 0 --accept-licences
 ```
 
 Other flags: `--kind system|model|any` (default any), `--model NAME` and `--family NAME` (repeatable), `--mem-fraction` (share of the card the engine keeps, 0.88).

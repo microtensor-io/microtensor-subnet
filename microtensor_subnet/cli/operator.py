@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Any
 
-from microtensor_subnet.chain.wallet import hotkey_address
+from microtensor_subnet.chain.wallet import hotkey_address, sign_bytes
 from microtensor_subnet.cli.common import (
     add_chain_arguments,
     add_common_arguments,
@@ -17,7 +17,7 @@ from microtensor_subnet.cli.common import (
 )
 from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
 from microtensor_subnet.serving import audit as serving_audit
-from microtensor_subnet.serving import client, plan
+from microtensor_subnet.serving import client, gpus, plan
 from microtensor_subnet.serving.client import ServerError
 from microtensor_subnet.serving.engines import LLAMA, LLAMA_IMAGE, SGLANG, SGLANG_IMAGE
 from microtensor_subnet.serving.host import HostConfig, HostError, ServingHost, read_catalogue
@@ -28,6 +28,7 @@ log = logging.getLogger("microtensor_subnet.cli.operator")
 GATEWAY_URL = "wss://api.microtensor.cloud/v1/operators/socket"
 KINDS = ("system", "model", "any")
 NO_IMAGE = "none"
+GPU_COLUMNS = ("gpu", "name", "memory", "model", "state", "last seen")
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -107,8 +108,17 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def _gpu_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--gpus", default="0", help="comma separated GPU indices")
-    parser.add_argument("--gpu-gb", type=float, default=DEFAULT_GPU_GB, help="memory per GPU")
+    parser.add_argument(
+        "--gpus",
+        default=gpus.ALL,
+        help="comma separated GPU indices, or all for every card nvidia-smi lists",
+    )
+    parser.add_argument(
+        "--gpu-gb",
+        type=float,
+        default=0.0,
+        help="memory per GPU when nvidia-smi cannot be asked (default 24 then)",
+    )
 
 
 def _policy_arguments(parser: argparse.ArgumentParser) -> None:
@@ -208,12 +218,34 @@ def _declare(args: argparse.Namespace) -> int:
     return _show(found)
 
 
+def gpu_table(found: dict[str, Any]) -> str:
+    rows = [list(GPU_COLUMNS)]
+    for gpu in found.get("gpus") or []:
+        memory = int(gpu.get("memory_mb") or 0)
+        state = "online" if gpu.get("online") else "offline"
+        rows.append(
+            [
+                str(gpu.get("gpu", "")),
+                str(gpu.get("name") or "unnamed"),
+                f"{memory / 1024:.0f} GB" if memory else "",
+                str(gpu.get("model") or "nothing loaded"),
+                state,
+                str(gpu.get("last_seen_at") or "never"),
+            ]
+        )
+    if len(rows) == 1:
+        return "no gpu has dialled in under this hotkey yet"
+    widths = [max(len(row[i]) for row in rows) for i in range(len(GPU_COLUMNS))]
+    return "\n".join("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)) for row in rows)
+
+
 def _status(args: argparse.Namespace) -> int:
     wallet = _wallet(args)
     try:
         found = client.me(args.server, wallet)
     except ServerError as exc:
         return fail(str(exc))
+    print(gpu_table(found))
     return _show(found)
 
 
@@ -240,8 +272,17 @@ def _audit(args: argparse.Namespace) -> int:
     return 1
 
 
-def _gpus(args: argparse.Namespace) -> tuple[str, ...]:
-    return tuple(g.strip() for g in str(args.gpus).split(",") if g.strip())
+def _cards(args: argparse.Namespace, worker: str = "") -> tuple[gpus.Card, ...]:
+    found = gpus.choose(gpus.detect(), args.gpus)
+    if found:
+        return tuple(found)
+    gpu_gb = float(args.gpu_gb) or DEFAULT_GPU_GB
+    log.warning("nvidia-smi listed no card for --gpus %s; assuming %.0f GB each", args.gpus, gpu_gb)
+    return tuple(gpus.stand_ins(args.gpus, gpu_gb, worker=worker))
+
+
+def _gpu_gb(args: argparse.Namespace, cards: tuple[gpus.Card, ...]) -> float:
+    return float(args.gpu_gb) or gpus.smallest_gb(cards) or DEFAULT_GPU_GB
 
 
 def _policy(args: argparse.Namespace) -> plan.Policy:
@@ -281,14 +322,20 @@ def _plan(args: argparse.Namespace) -> int:
         rows = read_catalogue(args.server)
     except Exception as exc:
         return fail(f"could not read the catalogue: {exc}")
+    cards = _cards(args)
     try:
-        capacity = plan.Capacity(gpus=_gpus(args), gpu_gb=args.gpu_gb, images=_images(args))
+        capacity = plan.Capacity(
+            gpus=tuple(card.device for card in cards),
+            gpu_gb=_gpu_gb(args, cards),
+            images=_images(args),
+        )
     except plan.PlanError as exc:
         return fail(str(exc))
     offers = [plan.Offer.from_wire(row) for row in rows]
     found = plan.build(offers, capacity, policy=_policy(args))
     shown: dict[str, object] = found.to_dict()
     shown["hardware_class"] = capacity.hardware_class
+    shown["gpus"] = [card.announced() for card in cards]
     shown["licences"] = {
         offer.model: {"licence": offer.licence, "licence_url": offer.licence_url}
         for offer in offers
@@ -307,10 +354,11 @@ def _run(args: argparse.Namespace) -> int:
         pinned = parse_pins(args.serve) if args.serve else None
     except HostError as exc:
         return fail(str(exc))
+    cards = _cards(args, worker=args.worker)
     config = HostConfig(
         home=args.home,
-        gpus=_gpus(args),
-        gpu_gb=args.gpu_gb,
+        gpus=tuple(card.device for card in cards),
+        gpu_gb=_gpu_gb(args, cards),
         sandbox_runtime=args.sandbox_runtime,
         request_seconds=args.request_seconds,
         review_seconds=args.review_seconds,
@@ -318,10 +366,17 @@ def _run(args: argparse.Namespace) -> int:
         llama_image=_image(args.llama_image),
         mem_fraction=args.mem_fraction,
         hf_token=args.hf_token,
+        cards=cards,
     )
 
     def declare(model: str, digest: str) -> None:
         client.declare(args.server, wallet, model=model, artifact_digest=digest)
+
+    def signer(message: bytes) -> str:
+        return sign_bytes(wallet, message)
+
+    def stats() -> list[dict[str, Any]]:
+        return [card.reported() for card in gpus.refresh(cards)]
 
     host = ServingHost(
         config,
@@ -334,7 +389,11 @@ def _run(args: argparse.Namespace) -> int:
         declare=declare,
         accept_licences=args.accept_licences,
         engine_url=args.engine_url,
+        signer=signer,
+        stats=stats,
     )
+    for card in cards:
+        print(f"gpu {card.device}: {card.name or 'unnamed'} {card.memory_gb:.0f} GB ({card.id})")
     print(f"serving as {hotkey_address(wallet)} from {args.server}")
     try:
         asyncio.run(host.run())

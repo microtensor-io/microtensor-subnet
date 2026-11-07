@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Final
 
 from microtensor_subnet.serving.wire import protocol
+from microtensor_subnet.serving.wire.protocol import Signer
 
 log = logging.getLogger("microtensor_subnet.serving.wire")
 
@@ -16,10 +17,11 @@ MIN_CONCURRENCY: Final[int] = 1
 HEARTBEAT_SECONDS: Final[float] = 15.0
 RECONNECT_CEILING_SECONDS: Final[float] = 60.0
 
-Handler = Callable[[str, Mapping[str, Any]], dict[str, Any]]
+Handler = Callable[[str, str, Mapping[str, Any]], dict[str, Any]]
 OnChunk = Callable[[Mapping[str, Any]], Awaitable[None]]
-ChatHandler = Callable[[str, Mapping[str, Any], OnChunk], Awaitable[dict[str, Any]]]
+ChatHandler = Callable[[str, str, Mapping[str, Any], OnChunk], Awaitable[dict[str, Any]]]
 Send = Callable[[Mapping[str, Any]], Awaitable[None]]
+Stats = Callable[[], Sequence[Mapping[str, Any]]]
 
 
 class SessionError(RuntimeError):
@@ -30,15 +32,19 @@ class SessionError(RuntimeError):
 class Served:
     model: str
     artifact_digest: str
+    gpu: str
     concurrency: int = 1
     kind: str = protocol.SYSTEM
     context: int = 0
     tool_calling: bool = False
     vision: bool = False
+    engine: str = ""
 
     def __post_init__(self) -> None:
         if not self.model or not self.artifact_digest:
             raise SessionError("a served model is a name pinned by its artifact digest")
+        if not self.gpu:
+            raise SessionError(f"{self.model} must name the gpu that holds it")
         if self.concurrency < MIN_CONCURRENCY:
             raise SessionError(f"concurrency for {self.model} must be at least {MIN_CONCURRENCY}")
         if self.kind not in protocol.KINDS:
@@ -50,7 +56,10 @@ class Served:
             "kind": self.kind,
             "artifact_digest": self.artifact_digest,
             "concurrency": self.concurrency,
+            "gpu": self.gpu,
         }
+        if self.engine:
+            offer["engine"] = self.engine
         if self.kind == protocol.MODEL:
             offer["context"] = self.context
             offer["tool_calling"] = self.tool_calling
@@ -64,7 +73,11 @@ class Settings:
     gateway: str
     hotkey: str
     serves: tuple[Served, ...]
+    gpus: tuple[Mapping[str, Any], ...] = ()
     worker: str = ""
+    signer: Signer | None = None
+    agent: Mapping[str, Any] = field(default_factory=dict)
+    stats: Stats | None = None
 
     def __post_init__(self) -> None:
         if not self.gateway:
@@ -73,16 +86,47 @@ class Settings:
             raise SessionError("an operator serves under its own hotkey")
         if not self.serves:
             raise SessionError("an operator declares at least one model to serve")
-        names = [s.model for s in self.serves]
-        if len(set(names)) != len(names):
-            raise SessionError("a model is declared twice; one entry names one model")
+        gpus = [s.gpu for s in self.serves]
+        if len(set(gpus)) != len(gpus):
+            raise SessionError("a gpu is declared twice; one gpu holds one model")
+        announced = {str(g.get("id", "")) for g in self.gpus}
+        missing = sorted(set(gpus) - announced)
+        if announced and missing:
+            raise SessionError(
+                f"models name gpus the hello does not announce: {', '.join(missing)}"
+            )
 
     @property
     def concurrency(self) -> int:
         return sum(s.concurrency for s in self.serves)
 
-    def of(self, model: str) -> Served | None:
-        return next((s for s in self.serves if s.model == model), None)
+    @property
+    def models(self) -> tuple[str, ...]:
+        return tuple(sorted({s.model for s in self.serves}))
+
+    def of(self, gpu: str) -> Served | None:
+        return next((s for s in self.serves if s.gpu == gpu), None)
+
+    def holding(self, model: str) -> tuple[Served, ...]:
+        return tuple(s for s in self.serves if s.model == model)
+
+    def announced(self) -> tuple[dict[str, Any], ...]:
+        if self.gpus:
+            return tuple(dict(g) for g in self.gpus)
+        return tuple({"id": s.gpu} for s in self.serves)
+
+    def hello(self) -> dict[str, Any]:
+        frame = protocol.hello(
+            self.hotkey,
+            self.worker,
+            [s.to_dict() for s in self.serves],
+            self.concurrency,
+            gpus=self.announced(),
+            agent=self.agent,
+        )
+        if self.signer is None:
+            raise SessionError("a protocol 5 hello is signed by the hotkey; no signer was given")
+        return protocol.signed(frame, self.signer)
 
 
 @dataclass(slots=True)
@@ -119,25 +163,35 @@ class Inflight:
 @dataclass(slots=True)
 class Capacity:
     limits: dict[str, Inflight]
+    models: dict[str, str]
 
     @classmethod
     def of(cls, serves: tuple[Served, ...]) -> Capacity:
-        return cls({s.model: Inflight(limit=s.concurrency) for s in serves})
+        return cls(
+            {s.gpu: Inflight(limit=s.concurrency) for s in serves},
+            {s.gpu: s.model for s in serves},
+        )
 
-    def free(self, model: str) -> int:
-        held = self.limits.get(model)
+    def free(self, gpu: str) -> int:
+        held = self.limits.get(gpu)
         return held.free if held is not None else 0
 
-    def take(self, model: str) -> None:
-        held = self.limits.get(model)
+    def take(self, gpu: str) -> None:
+        held = self.limits.get(gpu)
         if held is None:
-            raise SessionError(f"the gateway routed {model}, which this operator does not serve")
+            raise SessionError(f"the gateway routed to gpu {gpu}, which this operator lacks")
         held.take()
 
-    def release(self, model: str, *, ok: bool) -> None:
-        held = self.limits.get(model)
+    def release(self, gpu: str, *, ok: bool) -> None:
+        held = self.limits.get(gpu)
         if held is not None:
             held.release(ok=ok)
+
+    def freest(self, model: str) -> str:
+        candidates = [gpu for gpu, held in self.models.items() if held == model]
+        if not candidates:
+            return ""
+        return max(candidates, key=lambda gpu: (self.free(gpu), gpu))
 
     @property
     def running(self) -> int:
@@ -151,13 +205,14 @@ class Capacity:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            model: {
+            gpu: {
+                "model": self.models.get(gpu, ""),
                 "running": held.running,
                 "free": held.free,
                 "served": held.served,
                 "failed": held.failed,
             }
-            for model, held in sorted(self.limits.items())
+            for gpu, held in sorted(self.limits.items())
         }
 
 
@@ -179,28 +234,53 @@ async def _send(socket: Any, frame: Mapping[str, Any]) -> None:
     await socket.send(protocol.encode(frame))
 
 
-async def _beat(socket: Any, state: Capacity, every: float = HEARTBEAT_SECONDS) -> None:
+async def _report(settings: Settings, state: Capacity) -> dict[str, Any]:
+    reported: list[Mapping[str, Any]] = []
+    if settings.stats is not None:
+        try:
+            reported = list(await asyncio.to_thread(settings.stats))
+        except Exception as exc:
+            log.debug("gpu stats unavailable: %s", exc)
+    seen = {str(r.get("id", "")) for r in reported}
+    for gpu in settings.announced():
+        if str(gpu.get("id", "")) not in seen:
+            reported.append({"id": gpu.get("id", "")})
+    return protocol.heartbeat(state.running, state.idle_seconds, state.to_dict(), gpus=reported)
+
+
+async def _beat(
+    socket: Any, settings: Settings, state: Capacity, every: float = HEARTBEAT_SECONDS
+) -> None:
     while True:
         await asyncio.sleep(every)
-        await _send(socket, protocol.heartbeat(state.running, state.idle_seconds, state.to_dict()))
+        await _send(socket, await _report(settings, state))
 
 
-async def serve_one(handler: Handler, frame: Mapping[str, Any], state: Capacity) -> dict[str, Any]:
+def gpu_of(frame: Mapping[str, Any], labels: Mapping[str, str], state: Capacity) -> str:
+    named = str(frame.get("gpu", ""))
+    if named:
+        return labels.get(named, named)
+    return state.freest(str(frame.get("model", "")))
+
+
+async def serve_one(
+    handler: Handler, frame: Mapping[str, Any], state: Capacity, gpu: str
+) -> dict[str, Any]:
     correlation = str(frame.get("correlation", ""))
     model = str(frame.get("model", ""))
     raw = frame.get("request")
     request: dict[str, Any] = dict(raw) if isinstance(raw, Mapping) else {}
     started = time.perf_counter()
     try:
-        found = await asyncio.to_thread(handler, model, request)
+        found = await asyncio.to_thread(handler, gpu, model, request)
     except asyncio.CancelledError:
-        state.release(model, ok=False)
+        state.release(gpu, ok=False)
         raise
     except Exception as exc:
         log.warning("request %s on %s failed: %s", correlation or "?", model or "?", exc)
-        state.release(model, ok=False)
+        state.release(gpu, ok=False)
         return protocol.response(correlation, model=model, error=f"{type(exc).__name__}: {exc}")
-    state.release(model, ok=not found.get("error"))
+    state.release(gpu, ok=not found.get("error"))
     if found.get("error"):
         return protocol.response(correlation, model=model, error=str(found["error"]))
     return protocol.response(
@@ -218,7 +298,7 @@ async def serve_one(handler: Handler, frame: Mapping[str, Any], state: Capacity)
 
 
 async def serve_chat(
-    handler: ChatHandler, frame: Mapping[str, Any], state: Capacity, send: Send
+    handler: ChatHandler, frame: Mapping[str, Any], state: Capacity, send: Send, gpu: str
 ) -> dict[str, Any]:
     correlation = str(frame.get("correlation", ""))
     model = str(frame.get("model", ""))
@@ -234,15 +314,15 @@ async def serve_chat(
         await send(out)
 
     try:
-        found = await handler(model, request, on_chunk)
+        found = await handler(gpu, model, request, on_chunk)
     except asyncio.CancelledError:
-        state.release(model, ok=False)
+        state.release(gpu, ok=False)
         raise
     except Exception as exc:
         log.warning("chat %s on %s failed: %s", correlation or "?", model or "?", exc)
-        state.release(model, ok=False)
+        state.release(gpu, ok=False)
         return protocol.response(correlation, model=model, error=f"{type(exc).__name__}: {exc}")
-    state.release(model, ok=not found.get("error"))
+    state.release(gpu, ok=not found.get("error"))
     if found.get("error"):
         return protocol.response(correlation, model=model, error=str(found["error"]))
     return protocol.chat_response(
@@ -264,17 +344,19 @@ def _drop(running: dict[str, asyncio.Task[None]], key: str, _: asyncio.Task[None
     running.pop(key, None)
 
 
-async def _answer(socket: Any, handler: Handler, frame: Mapping[str, Any], state: Capacity) -> None:
-    await _send(socket, await serve_one(handler, frame, state))
+async def _answer(
+    socket: Any, handler: Handler, frame: Mapping[str, Any], state: Capacity, gpu: str
+) -> None:
+    await _send(socket, await serve_one(handler, frame, state, gpu))
 
 
 async def _answer_chat(
-    socket: Any, handler: ChatHandler, frame: Mapping[str, Any], state: Capacity
+    socket: Any, handler: ChatHandler, frame: Mapping[str, Any], state: Capacity, gpu: str
 ) -> None:
     async def send(found: Mapping[str, Any]) -> None:
         await _send(socket, found)
 
-    await _send(socket, await serve_chat(handler, frame, state, send))
+    await _send(socket, await serve_chat(handler, frame, state, send, gpu))
 
 
 def refusal(
@@ -282,10 +364,11 @@ def refusal(
     refused: set[str],
     frame: Mapping[str, Any],
     chat: ChatHandler | None,
+    gpu: str,
 ) -> str:
     model = str(frame.get("model", ""))
-    served = settings.of(model)
-    if served is None or model in refused:
+    served = settings.of(gpu)
+    if served is None or served.model != model or model in refused:
         return "this operator does not serve it"
     raw = frame.get("request")
     asked_chat = isinstance(raw, Mapping) and raw.get("kind") == protocol.CHAT
@@ -298,11 +381,20 @@ def refusal(
     return ""
 
 
-def welcomed(settings: Settings, frame: Mapping[str, Any], refused: set[str]) -> None:
+def welcomed(
+    settings: Settings, frame: Mapping[str, Any], refused: set[str], labels: dict[str, str]
+) -> None:
+    raw = frame.get("gpus")
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, Mapping) and entry.get("label") and entry.get("id"):
+                labels[str(entry["label"])] = str(entry["id"])
+    for reason in frame.get("refused") or []:
+        log.warning("the gateway kept one gpu out: %s", reason)
     version = int(frame.get("version") or 0)
     if not version or version > protocol.SYSTEMS_ONLY_VERSION:
         return
-    dropped = sorted(s.model for s in settings.serves if s.kind != protocol.SYSTEM)
+    dropped = sorted({s.model for s in settings.serves if s.kind != protocol.SYSTEM})
     if dropped:
         log.warning(
             "the gateway speaks protocol %d, which carries no chat; not serving %s",
@@ -317,24 +409,18 @@ async def session(settings: Settings, handler: Handler, *, chat: ChatHandler | N
     state = Capacity.of(settings.serves)
     running: dict[str, asyncio.Task[None]] = {}
     refused: set[str] = set()
+    labels: dict[str, str] = {}
 
     async with websockets.connect(settings.gateway, max_size=None) as socket:
-        await _send(
-            socket,
-            protocol.hello(
-                settings.hotkey,
-                settings.worker,
-                [s.to_dict() for s in settings.serves],
-                settings.concurrency,
-            ),
-        )
+        await _send(socket, settings.hello())
         log.info(
-            "dialled %s as %s for %s",
+            "dialled %s as %s with %d gpus for %s",
             settings.gateway,
             settings.hotkey[:12],
-            ", ".join(s.model for s in settings.serves),
+            len(settings.serves),
+            ", ".join(settings.models),
         )
-        pulse = asyncio.create_task(_beat(socket, state))
+        pulse = asyncio.create_task(_beat(socket, settings, state))
         try:
             async for raw in socket:
                 frame = protocol.decode(raw)
@@ -342,15 +428,16 @@ async def session(settings: Settings, handler: Handler, *, chat: ChatHandler | N
                 correlation = str(frame.get("correlation", ""))
                 model = str(frame.get("model", ""))
                 if kind == protocol.WELCOME:
-                    welcomed(settings, frame, refused)
+                    welcomed(settings, frame, refused, labels)
                 elif kind == protocol.REQUEST:
-                    refused_now = refusal(settings, refused, frame, chat)
+                    gpu = gpu_of(frame, labels, state)
+                    refused_now = refusal(settings, refused, frame, chat, gpu)
                     if refused_now:
                         await _send(
                             socket, protocol.response(correlation, model=model, error=refused_now)
                         )
                         continue
-                    if not state.free(model):
+                    if not state.free(gpu):
                         await _send(
                             socket,
                             protocol.response(
@@ -358,12 +445,12 @@ async def session(settings: Settings, handler: Handler, *, chat: ChatHandler | N
                             ),
                         )
                         continue
-                    state.take(model)
-                    served = settings.of(model)
+                    state.take(gpu)
+                    served = settings.of(gpu)
                     if chat is not None and served is not None and served.kind == protocol.MODEL:
-                        task = asyncio.create_task(_answer_chat(socket, chat, frame, state))
+                        task = asyncio.create_task(_answer_chat(socket, chat, frame, state, gpu))
                     else:
-                        task = asyncio.create_task(_answer(socket, handler, frame, state))
+                        task = asyncio.create_task(_answer(socket, handler, frame, state, gpu))
                     running[correlation] = task
                     task.add_done_callback(partial(_drop, running, correlation))
                 elif kind == protocol.CANCEL:
@@ -371,10 +458,7 @@ async def session(settings: Settings, handler: Handler, *, chat: ChatHandler | N
                     if found is not None:
                         found.cancel()
                 elif kind == protocol.HEARTBEAT:
-                    await _send(
-                        socket,
-                        protocol.heartbeat(state.running, state.idle_seconds, state.to_dict()),
-                    )
+                    await _send(socket, await _report(settings, state))
         finally:
             pulse.cancel()
             for task in list(running.values()):
