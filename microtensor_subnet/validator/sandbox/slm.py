@@ -24,6 +24,12 @@ class SlmError(RuntimeError):
     pass
 
 
+def memory_share_for(vram_gb: float, card_gb: float, share: float = MEMORY_SHARE) -> float:
+    if vram_gb <= 0 or card_gb <= 0:
+        return share
+    return round(min(share, share * vram_gb / card_gb), 4)
+
+
 def engine_seed(seed: int) -> int:
     return int(seed) & ENGINE_SEED_MASK
 

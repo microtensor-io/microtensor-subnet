@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from microtensor_subnet.chain.wallet import hotkey_address, sign_bytes
+from microtensor_subnet.chain.wallet import coldkey_address, hotkey_address, sign_bytes
 from microtensor_subnet.cli import operator_config
 from microtensor_subnet.cli.common import (
     add_chain_arguments,
@@ -229,10 +229,18 @@ def _show(found: dict[str, object]) -> int:
     return 0
 
 
+def _coldkey_of(wallet: Any) -> str:
+    try:
+        return coldkey_address(wallet)
+    except Exception as exc:
+        log.warning("the coldkeypub could not be read: %s", exc)
+        return ""
+
+
 def _register(args: argparse.Namespace) -> int:
     wallet = _wallet(args)
     try:
-        found = client.register(args.server, wallet, label=args.label)
+        found = client.register(args.server, wallet, label=args.label, coldkey=_coldkey_of(wallet))
     except ServerError as exc:
         return fail(str(exc))
     print(f"registered {hotkey_address(wallet)}")
