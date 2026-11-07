@@ -75,6 +75,12 @@ On start the host fetches the system's two repositories at the committed revisio
 
 `mt operator status` prints one line per card the network knows under this hotkey: label, card, memory, model loaded, online and last seen.
 
+## Updates
+
+The agent image is pinned by digest. The network publishes the current image, its digest and the lowest version it still accepts (`GET /v2/agent`). Every review the agent compares the image it runs with the published one; when they differ it pulls the published digest, verifies it, writes it to `.env` as `MT_AGENT_IMAGE` and restarts itself from the compose file through a short lived helper container, which is why the compose file and `.env` are mounted into the container. Pass `--no-auto-update` to stay on the image you chose; a hello from an agent below the minimum version is refused at the gateway with both versions named.
+
+Certified systems run on the engine build their arena was certified with: the catalogue names the engine image and digest per model and the agent refuses any other.
+
 ## 4. Admission
 
 Validators probe operators through the gateway with withheld items the certified system answered correctly and grade your answers. A card holding a declared model connects as probing before admission so validators can reach it; customers are routed to it once the model is admitted. A sequential test admits a clean operator after about sixty probes and rejects one that fails early; a rejection withdraws the operator until a new generation. Until validators probe, the team can admit an operator by hand for a demo. A new epoch winner resets eligibility for that model, so re-admission after each epoch is normal.

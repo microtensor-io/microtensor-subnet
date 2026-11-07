@@ -11,9 +11,9 @@ from typing import Any, Final
 
 import httpx
 
-from microtensor_subnet import __version__
+from microtensor_subnet.core.constants import RELEASE_VERSION
 from microtensor_subnet.core.hashing import DIGEST_PREFIX
-from microtensor_subnet.serving import gpus, plan, wire
+from microtensor_subnet.serving import gpus, plan, update, wire
 from microtensor_subnet.serving.engines import BACKENDS, EngineError
 from microtensor_subnet.serving.host.answer import Held, answer
 from microtensor_subnet.serving.host.config import HostConfig
@@ -90,6 +90,7 @@ class ServingHost:
         engine_url: str = "",
         signer: wire.Signer | None = None,
         stats: wire.Stats | None = None,
+        updater: update.Updater | None = None,
     ) -> None:
         self.config = config
         self.hotkey = hotkey
@@ -107,9 +108,12 @@ class ServingHost:
         self.engine_url = engine_url
         self.signer = signer
         self.stats = stats
+        self.updater = updater
         self.cards: tuple[gpus.Card, ...] = config.gpu_cards
         self.services = Services(host_ip(), config.host_services_port)
         self.sandboxes = SandboxHost(config, self.docker, self.services, host_ip())
+        self.pinned_hosts: dict[str, SandboxHost] = {}
+        self.opened_by: dict[str, SandboxHost] = {}
         self.held: dict[str, Held] = {}
         self.plain: dict[str, PlainHeld] = {}
         self.entries: dict[str, dict[str, Any]] = {}
@@ -175,9 +179,24 @@ class ServingHost:
         if held is None:
             return
         try:
-            self.sandboxes.close(held.sandbox)
+            self.opened_by.pop(gpu, self.sandboxes).close(held.sandbox)
         except Exception as exc:
             log.warning("closing %s on gpu %s failed: %s", held.model, gpu, exc)
+
+    def engine_for(self, entry: Mapping[str, Any]) -> SandboxHost:
+        images = entry.get("images")
+        engine = images.get("engine") if isinstance(images, Mapping) else None
+        image = str(engine.get("image") or "") if isinstance(engine, Mapping) else ""
+        digest = str(engine.get("digest") or "") if isinstance(engine, Mapping) else ""
+        if not image or not digest:
+            return self.sandboxes
+        reference = self.docker.ensure_digest(image, digest)
+        found = self.pinned_hosts.get(reference)
+        if found is None:
+            config = dataclasses.replace(self.config, vllm_image=reference)
+            found = SandboxHost(config, self.docker, self.services, host_ip())
+            self.pinned_hosts[reference] = found
+        return found
 
     def take_up(self, holding: plan.Holding) -> None:
         entry = self.entries.get(holding.model)
@@ -190,7 +209,8 @@ class ServingHost:
             return
         fetched = self.fetcher(entry, self.config.cache_dir)
         slot = self.devices.index(holding.gpu)
-        sandbox = self.sandboxes.open(
+        sandboxes = self.engine_for(entry)
+        sandbox = sandboxes.open(
             artifact_dir=fetched.artifact_dir,
             slm_dir=fetched.slm_dir,
             router_dir=fetched.router_dir,
@@ -211,6 +231,7 @@ class ServingHost:
             gpu=holding.gpu,
             slot=slot,
         )
+        self.opened_by[holding.gpu] = sandboxes
         if self.declare is not None:
             self.declare(holding.model, holding.artifact_digest)
         log.info("%s ready on gpu %s", holding.model, holding.gpu)
@@ -277,7 +298,16 @@ class ServingHost:
         return await chat_model(held, request, on_chunk, timeout=self.config.request_seconds)
 
     def agent(self) -> dict[str, Any]:
-        return {"version": __version__, "engines": dict(self.config.images)}
+        return {"version": RELEASE_VERSION, "engines": dict(self.config.images)}
+
+    def check_update(self) -> None:
+        if self.updater is None or not self.updater.due(self.config.review_seconds):
+            return
+        outcome = self.updater.check()
+        if outcome.get("applied"):
+            log.warning("a newer agent image was pulled; this process will be replaced")
+        elif outcome.get("reason") and self.updater.last_error:
+            log.warning("update check: %s", outcome["reason"])
 
     def settings(self) -> wire.Settings | None:
         offered = [
@@ -324,6 +354,10 @@ class ServingHost:
         review = asyncio.Event()
         try:
             while not halt.is_set():
+                try:
+                    await asyncio.to_thread(self.check_update)
+                except Exception as exc:
+                    log.warning("update check failed: %s", exc)
                 try:
                     offers = await asyncio.to_thread(self.catalogue, self.server)
                 except Exception as exc:

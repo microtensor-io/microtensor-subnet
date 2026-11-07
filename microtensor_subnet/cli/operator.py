@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from microtensor_subnet.chain.wallet import hotkey_address, sign_bytes
@@ -17,11 +18,12 @@ from microtensor_subnet.cli.common import (
 )
 from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
 from microtensor_subnet.serving import audit as serving_audit
-from microtensor_subnet.serving import client, gpus, plan
+from microtensor_subnet.serving import client, gpus, plan, update
 from microtensor_subnet.serving.client import ServerError
 from microtensor_subnet.serving.engines import LLAMA, LLAMA_IMAGE, SGLANG, SGLANG_IMAGE
 from microtensor_subnet.serving.host import HostConfig, HostError, ServingHost, read_catalogue
 from microtensor_subnet.serving.host.config import DEFAULT_GPU_GB, MEM_FRACTION, REVIEW_SECONDS
+from microtensor_subnet.validator.sandbox.docker import Docker
 
 log = logging.getLogger("microtensor_subnet.cli.operator")
 
@@ -100,6 +102,22 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="Hugging Face token for gated model repositories (env HF_TOKEN)",
     )
     serve.add_argument("--engine-url", default="", help=argparse.SUPPRESS)
+    serve.add_argument(
+        "--no-auto-update",
+        dest="auto_update",
+        action="store_false",
+        help="keep running this image when the network publishes a newer one",
+    )
+    serve.add_argument(
+        "--compose-file",
+        default=os.environ.get("MT_COMPOSE_FILE", "/opt/microtensor/compose.yml"),
+        help="the compose file the updater restarts this service from",
+    )
+    serve.add_argument(
+        "--env-file",
+        default=os.environ.get("MT_ENV_FILE", "/opt/microtensor/.env"),
+        help="the env file the updater pins the new image in",
+    )
     _gpu_arguments(serve)
     _policy_arguments(serve)
     _engine_arguments(serve)
@@ -378,6 +396,14 @@ def _run(args: argparse.Namespace) -> int:
     def stats() -> list[dict[str, Any]]:
         return [card.reported() for card in gpus.refresh(cards)]
 
+    docker = Docker()
+    updater = update.Updater(
+        server=args.server,
+        docker=docker,
+        compose_file=Path(args.compose_file),
+        env_file=Path(args.env_file),
+        enabled=bool(args.auto_update),
+    )
     host = ServingHost(
         config,
         hotkey=hotkey_address(wallet),
@@ -391,6 +417,8 @@ def _run(args: argparse.Namespace) -> int:
         engine_url=args.engine_url,
         signer=signer,
         stats=stats,
+        docker=docker,
+        updater=updater,
     )
     for card in cards:
         print(f"gpu {card.device}: {card.name or 'unnamed'} {card.memory_gb:.0f} GB ({card.id})")
