@@ -259,6 +259,12 @@ class ServingHost:
         if holding.gpu not in self.devices:
             raise HostError(f"gpu {holding.gpu} is not one this host was given")
         self.phases_by[holding.gpu] = protocol.PULLING
+        log.info(
+            "taking up %s (%s) on gpu %s",
+            holding.model,
+            holding.artifact_digest[:12],
+            holding.gpu,
+        )
         try:
             if holding.gpu in self.shim_urls:
                 self._take_shim(holding, entry)
@@ -547,6 +553,12 @@ class ServingHost:
                     log.warning("catalogue unreadable (%s); keeping what is held", exc)
                     offers = list(self.entries.values())
                 found = self.plan_now(offers)
+                log.info(
+                    "plan: hold %s, drop %s, holding %s",
+                    [(h.gpu, h.model) for h in found.hold] or "nothing",
+                    list(found.drop) or "nothing",
+                    self.holding() or "nothing",
+                )
                 for model, reason in sorted(found.reasons.items()):
                     log.info("skip %s: %s", model, reason)
                 before = self.settings()
