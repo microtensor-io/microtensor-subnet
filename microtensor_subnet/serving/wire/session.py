@@ -16,6 +16,8 @@ log = logging.getLogger("microtensor_subnet.serving.wire")
 
 MIN_CONCURRENCY: Final[int] = 1
 HEARTBEAT_SECONDS: Final[float] = 10.0
+READY_RETRY_SECONDS: Final[float] = 60.0
+_RETRIES: set[asyncio.Task[None]] = set()
 RECONNECT_CEILING_SECONDS: Final[float] = 60.0
 CHALLENGE_SECONDS: Final[float] = 30.0
 DRAIN_SECONDS: Final[float] = 600.0
@@ -276,6 +278,20 @@ def _websockets() -> Any:
 
 async def _send(socket: Any, frame: Mapping[str, Any]) -> None:
     await socket.send(protocol.encode(frame))
+
+
+async def _retry_ready(
+    socket: Any, settings: Settings, link: Link, label: str, delay: float = READY_RETRY_SECONDS
+) -> None:
+    await asyncio.sleep(delay)
+    for served in settings.serves:
+        if link.label(served.gpu) != label:
+            continue
+        try:
+            await _send(socket, served.ready(label))
+        except Exception as exc:
+            log.debug("ready for %s could not be resent: %s", label, exc)
+        return
 
 
 def _stats_by_id(
@@ -581,7 +597,11 @@ async def session(
                 link.statuses[label] = str(frame.get("status", ""))
                 log.info("instance %s accepted as %s", label, link.statuses[label])
             elif kind == protocol.REFUSED:
-                log.warning("instance %s refused: %s", frame.get("instance"), frame.get("reason"))
+                label = str(frame.get("instance", ""))
+                log.warning("instance %s refused: %s", label, frame.get("reason"))
+                retry = asyncio.create_task(_retry_ready(socket, settings, link, label))
+                _RETRIES.add(retry)
+                retry.add_done_callback(_RETRIES.discard)
             elif kind == protocol.ASSIGN:
                 if settings.on_assign is not None:
                     settings.on_assign(link.assigned(frame.get("assign")))
