@@ -18,6 +18,7 @@ def default_home() -> Path:
 
 
 ROOT_LOGGER = "microtensor"
+PACKAGE_LOGGER = "microtensor_subnet"
 
 _level = logging.INFO
 
@@ -35,17 +36,18 @@ def configure_logging(level: str = "INFO") -> None:
 def reclaim_logging() -> None:
     logging.disable(logging.NOTSET)
 
-    ours = logging.getLogger(ROOT_LOGGER)
-    ours.setLevel(_level)
-    ours.propagate = False
-    if not ours.handlers:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%H:%M:%S"))
-        ours.addHandler(handler)
+    for root in (ROOT_LOGGER, PACKAGE_LOGGER):
+        ours = logging.getLogger(root)
+        ours.setLevel(_level)
+        ours.propagate = False
+        if not ours.handlers:
+            handler = logging.StreamHandler(sys.stderr)
+            handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%H:%M:%S"))
+            ours.addHandler(handler)
 
-    prefix = ROOT_LOGGER + "."
+    prefixes = (ROOT_LOGGER + ".", PACKAGE_LOGGER + ".")
     for name, logger in list(logging.Logger.manager.loggerDict.items()):
-        if name.startswith(prefix) and isinstance(logger, logging.Logger):
+        if name.startswith(prefixes) and isinstance(logger, logging.Logger):
             logger.setLevel(logging.NOTSET)
 
 
