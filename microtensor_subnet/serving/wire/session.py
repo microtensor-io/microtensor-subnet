@@ -19,6 +19,7 @@ HEARTBEAT_SECONDS: Final[float] = 10.0
 READY_RETRY_SECONDS: Final[float] = 60.0
 _RETRIES: set[asyncio.Task[None]] = set()
 RECONNECT_CEILING_SECONDS: Final[float] = 60.0
+HEALTHY_SESSION_SECONDS: Final[float] = 60.0
 CHALLENGE_SECONDS: Final[float] = 30.0
 DRAIN_SECONDS: Final[float] = 600.0
 DRAINING: Final[str] = "draining"
@@ -706,6 +707,7 @@ async def run(
     while stop is None or not stop.is_set():
         if drain is not None and drain.is_set():
             return
+        started = time.monotonic()
         try:
             await session(settings, handler, chat=chat, drain=drain)
             attempt = 0
@@ -714,6 +716,8 @@ async def run(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if time.monotonic() - started >= HEALTHY_SESSION_SECONDS:
+                attempt = 0
             attempt += 1
             delay = backoff(attempt)
             log.warning("dial failed (%s); retrying in %.0fs", exc, delay)
