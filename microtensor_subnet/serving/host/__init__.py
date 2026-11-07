@@ -45,9 +45,10 @@ from microtensor_subnet.serving.host.plain import (
 from microtensor_subnet.serving.host.plain import chat as chat_model
 from microtensor_subnet.serving.tokens import TokenError
 from microtensor_subnet.serving.wire import protocol
-from microtensor_subnet.validator.sandbox import SandboxError, SandboxHost, host_ip
+from microtensor_subnet.validator.sandbox import Limits, SandboxError, SandboxHost, host_ip
 from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
 from microtensor_subnet.validator.sandbox.services import Services
+from microtensor_subnet.validator.sandbox.slm import memory_share_for
 
 log = logging.getLogger("microtensor_subnet.serving.host")
 
@@ -81,6 +82,12 @@ def read_catalogue(server: str, timeout: float = 30.0) -> list[dict[str, Any]]:
     response.raise_for_status()
     found = response.json()
     return [dict(row) for row in found.get("models") or []]
+
+
+def limits_of(entry: Mapping[str, Any]) -> Limits | None:
+    context = int(entry.get("context") or 0)
+    output = int(entry.get("max_output") or 0)
+    return Limits(max_model_len=context + output) if context else None
 
 
 class ServingHost:
@@ -127,7 +134,7 @@ class ServingHost:
         self.cards: tuple[gpus.Card, ...] = config.gpu_cards
         self.services = Services(host_ip(), config.host_services_port)
         self.sandboxes = SandboxHost(config, self.docker, self.services, host_ip())
-        self.pinned_hosts: dict[str, SandboxHost] = {}
+        self.pinned_hosts: dict[tuple[str, float], SandboxHost] = {}
         self.opened_by: dict[str, SandboxHost] = {}
         self.held: dict[str, Held] = {}
         self.plain: dict[str, PlainHeld] = {}
@@ -238,19 +245,30 @@ class ServingHost:
         except Exception as exc:
             log.warning("closing %s on gpu %s failed: %s", held.model, gpu, exc)
 
+    def memory_share_of(self, entry: Mapping[str, Any]) -> float:
+        if self.config.slm_memory_share:
+            return self.config.slm_memory_share
+        envelope = entry.get("envelope")
+        vram = float(envelope.get("vram_gb") or 0.0) if isinstance(envelope, Mapping) else 0.0
+        card = gpus.smallest_gb(self.cards) or self.config.gpu_gb
+        return memory_share_for(vram, card) if vram and card > vram else 0.0
+
     def engine_for(self, entry: Mapping[str, Any]) -> SandboxHost:
         images = entry.get("images")
         engine = images.get("engine") if isinstance(images, Mapping) else None
         image = str(engine.get("image") or "") if isinstance(engine, Mapping) else ""
         digest = str(engine.get("digest") or "") if isinstance(engine, Mapping) else ""
-        if not image or not digest:
+        share = self.memory_share_of(entry)
+        if (not image or not digest) and not share:
             return self.sandboxes
-        reference = self.docker.ensure_digest(image, digest)
-        found = self.pinned_hosts.get(reference)
+        reference = (
+            self.docker.ensure_digest(image, digest) if image and digest else self.config.vllm_image
+        )
+        found = self.pinned_hosts.get((reference, share))
         if found is None:
-            config = dataclasses.replace(self.config, vllm_image=reference)
+            config = dataclasses.replace(self.config, vllm_image=reference, slm_memory_share=share)
             found = SandboxHost(config, self.docker, self.services, host_ip())
-            self.pinned_hosts[reference] = found
+            self.pinned_hosts[(reference, share)] = found
         return found
 
     def take_up(self, holding: plan.Holding) -> None:
@@ -329,6 +347,7 @@ class ServingHost:
             slot=slot,
             databases={},
             item_databases={},
+            limits=limits_of(entry),
         )
         self.held[holding.gpu] = Held(
             model=holding.model,

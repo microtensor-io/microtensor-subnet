@@ -22,7 +22,8 @@ import httpx
 from microtensor_subnet.artifact import contract
 from microtensor_subnet.artifact.validate import bare_hex, weights_sha256
 from microtensor_subnet.core.hashing import digest_file
-from microtensor_subnet.serving.host.answer import Held, answer
+from microtensor_subnet.serving import gpus
+from microtensor_subnet.serving.host.answer import ROUTE_MODEL, Held, answer
 from microtensor_subnet.validator.sandbox import (
     GATEWAY_PORT,
     MAIN_PORT,
@@ -31,7 +32,7 @@ from microtensor_subnet.validator.sandbox import (
     router_server,
 )
 from microtensor_subnet.validator.sandbox.services import ArtifactSession, Services
-from microtensor_subnet.validator.sandbox.slm import vllm_command
+from microtensor_subnet.validator.sandbox.slm import memory_share_for, vllm_command
 
 log = logging.getLogger("microtensor_subnet.serving.shim")
 
@@ -42,6 +43,8 @@ ROOT_ENV: Final[str] = "MT_SYSTEM_DIR"
 BIND_ENV: Final[str] = "MT_SHIM_BIND"
 PORT_ENV: Final[str] = "MT_SHIM_PORT"
 WORKERS_ENV: Final[str] = "MT_SHIM_WORKERS"
+ROUTE_ENV: Final[str] = "MT_SHIM_ROUTE"
+MEMORY_FLAG: Final[str] = "--gpu-memory-utilization"
 DEFAULT_WORKERS: Final[int] = 8
 DEFAULT_MAX_SEQS: Final[int] = 16
 LOOPBACK: Final[str] = "127.0.0.1"
@@ -121,16 +124,30 @@ def check_weights(build: Mapping[str, Any], slm_dir: Path) -> None:
         raise ShimError(f"the weights hash is {found[:12]}, the build record says {expected[:12]}")
 
 
+def vram_of(build: Mapping[str, Any]) -> float:
+    envelope = build.get("envelope")
+    return float(envelope.get("vram_gb") or 0.0) if isinstance(envelope, Mapping) else 0.0
+
+
 def engine_argv(
-    build: Mapping[str, Any], slm_dir: Path, workers: int = DEFAULT_WORKERS
+    build: Mapping[str, Any],
+    slm_dir: Path,
+    workers: int = DEFAULT_WORKERS,
+    card_gb: float = 0.0,
 ) -> list[str]:
+    share = memory_share_for(vram_of(build), card_gb)
     engine = build.get("engine")
-    flags = list(engine.get("flags") or []) if isinstance(engine, Mapping) else []
+    flags = (
+        [str(flag) for flag in (engine.get("flags") or [])] if isinstance(engine, Mapping) else []
+    )
     if flags:
-        return [str(flag) for flag in flags]
+        if vram_of(build) and card_gb and MEMORY_FLAG in flags:
+            flags[flags.index(MEMORY_FLAG) + 1] = str(share)
+        return flags
     return vllm_command(
         str(slm_dir),
         max_model_len=int(build.get("max_model_len") or 8192),
+        memory_share=share,
         max_seqs=int(build.get("max_seqs") or max(DEFAULT_MAX_SEQS, workers)),
         dtype=str(build.get("dtype") or ""),
         prefix_caching=False,
@@ -166,7 +183,7 @@ def start_engine(
     build: Mapping[str, Any], slm_dir: Path, workers: int = DEFAULT_WORKERS
 ) -> subprocess.Popen[bytes]:
     argv = [sys.executable, "-m", "vllm.entrypoints.openai.api_server"]
-    argv += engine_argv(build, slm_dir, workers)
+    argv += engine_argv(build, slm_dir, workers, gpus.smallest_gb(gpus.detect()))
     process = subprocess.Popen(argv, env=engine_env(build))  # noqa: S603
     _wait(f"http://{LOOPBACK}:{ENGINE_PORT}/health", READY_SECONDS, process)
     return process
@@ -221,6 +238,9 @@ def entry_of(build: Mapping[str, Any]) -> dict[str, Any]:
         "arena": str(build.get("arena") or ""),
         "slm_prompt": str(build.get("slm_prompt") or os.environ.get("MT_SLM_PROMPT", "")),
         "grader": str(build.get("grader") or os.environ.get("MT_GRADER", "")),
+        "route": os.environ.get(ROUTE_ENV) or str(build.get("route") or ""),
+        "max_output": int(build.get("max_output") or 0),
+        "stop": [str(token) for token in build.get("stop") or []],
         "envelope": dict(build.get("envelope") or {}),
         "image_digest": str(build.get("image_digest") or digest),
     }
@@ -245,7 +265,6 @@ class Shim:
             self.held is not None
             and self.engine is not None
             and self.engine.poll() is None
-            and bool(self.harnesses)
             and all(process.poll() is None for process in self.harnesses)
         )
 
@@ -276,9 +295,10 @@ class Shim:
             router_url=router_url,
             desk=None,
         )
-        self.services.attach(key, session)
-        base = start_gateway(self.services.port, key, GATEWAY_PORT + index)
-        self.harnesses.append(spawn_harness(self.root, base, MAIN_PORT + index))
+        if entry.get("route") != ROUTE_MODEL:
+            self.services.attach(key, session)
+            base = start_gateway(self.services.port, key, GATEWAY_PORT + index)
+            self.harnesses.append(spawn_harness(self.root, base, MAIN_PORT + index))
         sandbox = Sandbox(
             key=key,
             network="",
