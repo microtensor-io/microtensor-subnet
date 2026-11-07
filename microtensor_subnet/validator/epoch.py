@@ -2117,7 +2117,9 @@ def serving_fold(
     billing = 0.0
     try:
         document = serving_audit.fetch(config.server_url)
-        checked = serving_audit.check(document)
+        checked = serving_audit.check(
+            document, receipts=serving_audit.receipts_of(config.server_url, document)
+        )
         record["audit"] = checked.to_dict()
         if checked.holds:
             settled = [
@@ -2146,7 +2148,13 @@ def serving_fold(
             now=dt.datetime.now(dt.timezone.utc),
             epoch_seconds=context.epoch_blocks * BLOCK_SECONDS,
         )
-        split = serving_pools.divide(SERVING_SCALE, settled, dials, floors=floors)
+        split = serving_pools.divide(
+            SERVING_SCALE,
+            settled,
+            dials,
+            floors=floors,
+            bounty_share=serving_pools.bounty_share_of(serving),
+        )
     except serving_pools.PoolError as exc:
         record["error"] = str(exc)
         log.error("the serving block of %s is invalid; its pool is burned: %s", arena_id, exc)

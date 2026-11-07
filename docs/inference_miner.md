@@ -178,7 +178,11 @@ Two sources, both per arena, settled per card.
 
 **Revenue share.** When billing opens you receive 95% of the metered billing for the requests you served; Microtensor keeps 5%. A request that fell back to a frontier model is billed to the customer at the frontier list price and passed through; it is outside the 95%. On testnet every answered request counts as billed for the pool and no customer is charged.
 
-**The serving pool.** Each arena's epoch emission sets aside a serving pool for inference operators, at most 10% at launch, and splits the rest equally across the five system pools (18% each). A serving epoch is one UTC day, closed at midnight, so every validator settles the same window. At epoch close every validator reads the published settlement, recomputes it, and pays the pool by billed score per card: a card's share is its billed tokens at the reference rate over everyone's, after the gates. Serving emission that no served request earned is burned to the burn hotkey, the same rule as an empty system pool; it never flows back to the system pools.
+**The serving pool.** Each arena's epoch emission sets aside a serving pool for inference operators, at most 10% at launch, and splits the rest equally across the five system pools (18% each). A serving epoch is one UTC day, closed at midnight, so every validator settles the same window from the same receipts. At epoch close every validator reads the published settlement, checks the receipts root and every gateway signature, recomputes the scores and pays the pool by score per card: a card's score is the requests it served successfully, each weighted 1.0 inside the envelope and 0.5 outside it, times the card's probe pass rate for the window; time spent paused earns nothing. Your share is your score over the sum of paid scores. The rebate keeps the pool at 1/25 of the billing served, and serving emission that no score earned is burned to the burn hotkey, the same rule as an empty system pool; it never flows back to the system pools.
+
+**One hotkey per coldkey.** Only the hotkey with the highest score under a coldkey is paid; the others score zero and their share burns. Operators the team flags as its own earn nothing from the pool.
+
+**New model bounty.** The first outside operator whose card goes live on a newly certified image earns the arena's `bounty_share` of the pool for that window (5% unless the arena sets otherwise); unclaimed bounties burn.
 
 The cap slides with the arena's billing over the last 30 days, read from the gateway each epoch, and the freed share returns to the five system pools:
 
@@ -190,7 +194,7 @@ The cap slides with the arena's billing over the last 30 days, read from the gat
 
 **Admission floor.** Where the arena sets one, a newly admitted operator earns a small fixed share of the serving pool for its first serving epochs even at zero traffic, so a new arena always has someone serving. After that, pay is usage only.
 
-**Gates.** Serving pay requires the success rate, TTFT p99, TPOT p99 and cheat share gates to pass per card; a failed gate zeroes that card's score for the window and leaves the hotkey's other cards alone. Inputs above the arena's `long_above_tokens` are judged against the long input limits (`long_ttft_ms`, `long_e2e_ms`) instead of the ordinary ones. `mt operator audit` recomputes the published settlement.
+**Receipts.** The gateway signs one receipt per request with its Ed25519 key (`policy.receipt_public_key` in the catalogue): request id, time, hashed customer key, model, image digest, operator, card, tokens, first token and total time, outcome, probe flag and price. The settlement names the Merkle root of the window's receipts and `GET /v1/public/inference/receipts?since=&until=` exports them; `mt operator audit` recomputes the root, checks the signatures and the scores, and a validator burns the pool rather than pay from a settlement whose receipts do not add up. Inputs above the arena's `long_above_tokens` count as inside the envelope under the long input limits (`long_ttft_ms`, `long_e2e_ms`) instead of the ordinary ones.
 
 ## Troubleshooting
 
