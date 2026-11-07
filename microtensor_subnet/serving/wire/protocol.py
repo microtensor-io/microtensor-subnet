@@ -1,26 +1,37 @@
 from __future__ import annotations
 
 import json
-import secrets
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
 
 from microtensor_subnet.core.hashing import canonical_json
 
-VERSION: Final[int] = 5
-SYSTEMS_ONLY_VERSION: Final[int] = 3
+VERSION: Final[int] = 6
+CHALLENGE: Final[str] = "challenge"
 HELLO: Final[str] = "hello"
 WELCOME: Final[str] = "welcome"
-REQUEST: Final[str] = "request"
-RESPONSE: Final[str] = "response"
+READY: Final[str] = "ready"
+ACCEPTED: Final[str] = "accepted"
+REFUSED: Final[str] = "refused"
 HEARTBEAT: Final[str] = "heartbeat"
-CANCEL: Final[str] = "cancel"
+ASSIGN: Final[str] = "assign"
+REQUEST: Final[str] = "request"
 CHUNK: Final[str] = "chunk"
+DONE: Final[str] = "done"
+ERROR: Final[str] = "error"
+CANCEL: Final[str] = "cancel"
+DRAIN: Final[str] = "drain"
+DRAINED: Final[str] = "drained"
 SYSTEM: Final[str] = "system"
 MODEL: Final[str] = "model"
 KINDS: Final[tuple[str, ...]] = (SYSTEM, MODEL)
 CHAT: Final[str] = "chat"
+PULLING: Final[str] = "pulling"
+LOADING: Final[str] = "loading"
+READY_PHASE: Final[str] = "ready"
+DRAINING: Final[str] = "draining"
+PHASES: Final[tuple[str, ...]] = (PULLING, LOADING, READY_PHASE, DRAINING)
 HELLO_PREFIX: Final[bytes] = b"microtensor-operator-hello\n"
 
 Signer = Callable[[bytes], str]
@@ -33,25 +44,23 @@ class WireError(RuntimeError):
 def hello(
     hotkey: str,
     worker: str,
-    models: Sequence[Mapping[str, Any]],
-    concurrency: int,
     *,
+    nonce: str,
     gpus: Sequence[Mapping[str, Any]] = (),
     agent: Mapping[str, Any] | None = None,
     timestamp: int | None = None,
-    nonce: str = "",
 ) -> dict[str, Any]:
+    if not nonce:
+        raise WireError("a hello answers the gateway's challenge; it needs the nonce")
     return {
         "type": HELLO,
         "version": VERSION,
         "hotkey": hotkey,
         "worker": worker,
+        "nonce": nonce,
         "timestamp": int(time.time()) if timestamp is None else int(timestamp),
-        "nonce": nonce or secrets.token_hex(8),
         "agent": dict(agent or {}),
         "gpus": [dict(g) for g in gpus],
-        "concurrency": concurrency,
-        "models": [dict(m) for m in models],
     }
 
 
@@ -64,104 +73,101 @@ def signed(frame: Mapping[str, Any], signer: Signer) -> dict[str, Any]:
     return {**body, "signature": signer(hello_message(body))}
 
 
-def heartbeat(
-    running: int,
-    idle_seconds: float,
-    models: Mapping[str, Any],
-    *,
-    gpus: Sequence[Mapping[str, Any]] = (),
-) -> dict[str, Any]:
-    return {
-        "type": HEARTBEAT,
-        "running": running,
-        "idle_seconds": round(idle_seconds, 3),
-        "models": dict(models),
-        "gpus": [dict(g) for g in gpus],
-    }
-
-
-def response(
-    correlation: str,
+def ready(
+    instance: str,
     *,
     model: str,
-    answer: Any = None,
-    p: float = 0.0,
-    floor_met: bool = False,
-    verified: bool = False,
-    trace: str = "",
-    usage: Mapping[str, int] | None = None,
-    latency_ms: float = 0.0,
-    finish_reason: str = "stop",
-    error: str = "",
+    kind: str,
+    artifact_digest: str,
+    image_digest: str = "",
+    concurrency: int = 1,
+    engine: str = "",
+    context: int = 0,
+    tool_calling: bool = False,
+    vision: bool = False,
 ) -> dict[str, Any]:
-    if error:
-        return {"type": RESPONSE, "correlation": correlation, "model": model, "error": error}
-    counted = dict(usage or {})
     return {
-        "type": RESPONSE,
-        "correlation": correlation,
+        "type": READY,
+        "instance": instance,
         "model": model,
-        "answer": answer,
-        "p": round(float(p), 6),
-        "floor_met": bool(floor_met),
-        "verified": bool(verified),
-        "trace": trace[:4000],
-        "usage": {
-            "prompt_tokens": int(counted.get("prompt_tokens", 0)),
-            "completion_tokens": int(counted.get("completion_tokens", 0)),
-        },
-        "latency_ms": round(float(latency_ms), 1),
-        "finish_reason": finish_reason,
-    }
-
-
-def chunk(correlation: str, *, model: str, seq: int, delta: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "type": CHUNK,
-        "correlation": correlation,
-        "model": model,
-        "seq": int(seq),
-        "delta": dict(delta),
-    }
-
-
-def chat_response(
-    correlation: str,
-    *,
-    model: str,
-    content: str = "",
-    reasoning: str = "",
-    tool_calls: Sequence[Mapping[str, Any]] = (),
-    finish_reason: str = "stop",
-    usage: Mapping[str, int] | None = None,
-    tokens: Mapping[str, Sequence[int]] | None = None,
-    artifact_digest: str = "",
-    latency_ms: float = 0.0,
-    ttft_ms: float = 0.0,
-) -> dict[str, Any]:
-    counted = dict(usage or {})
-    ids = dict(tokens or {})
-    return {
-        "type": RESPONSE,
-        "correlation": correlation,
-        "model": model,
-        "kind": CHAT,
-        "content": content,
-        "reasoning": reasoning,
-        "tool_calls": [dict(call) for call in tool_calls],
-        "finish_reason": finish_reason,
-        "usage": {
-            "prompt_tokens": int(counted.get("prompt_tokens", 0)),
-            "completion_tokens": int(counted.get("completion_tokens", 0)),
-        },
-        "tokens": {
-            "prompt": [int(t) for t in ids.get("prompt") or ()],
-            "completion": [int(t) for t in ids.get("completion") or ()],
-        },
+        "kind": kind,
         "artifact_digest": artifact_digest,
-        "latency_ms": round(float(latency_ms), 1),
-        "ttft_ms": round(float(ttft_ms), 1),
+        "image_digest": image_digest,
+        "concurrency": int(concurrency),
+        "engine": engine,
+        "context": int(context),
+        "tool_calling": bool(tool_calling),
+        "vision": bool(vision),
     }
+
+
+def instance_report(
+    instance: str,
+    *,
+    phase: str,
+    in_flight: int = 0,
+    queue: int = 0,
+    gpu_utilisation: float = 0.0,
+    free_vram_mb: int = 0,
+    memory_used_mb: int = 0,
+) -> dict[str, Any]:
+    if phase not in PHASES:
+        raise WireError(f"{phase!r} is not a phase; phases are {', '.join(PHASES)}")
+    return {
+        "instance": instance,
+        "phase": phase,
+        "in_flight": int(in_flight),
+        "queue": int(queue),
+        "gpu_utilisation": round(min(1.0, max(0.0, float(gpu_utilisation))), 4),
+        "free_vram_mb": int(free_vram_mb),
+        "memory_used_mb": int(memory_used_mb),
+    }
+
+
+def heartbeat(instances: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    return {"type": HEARTBEAT, "instances": [dict(i) for i in instances]}
+
+
+def done(
+    request_id: str,
+    *,
+    instance: str,
+    model: str,
+    usage: Mapping[str, int] | None = None,
+    ttft_ms: float = 0.0,
+    total_ms: float = 0.0,
+    **fields: Any,
+) -> dict[str, Any]:
+    counted = dict(usage or {})
+    return {
+        "type": DONE,
+        "id": request_id,
+        "instance": instance,
+        "model": model,
+        **fields,
+        "usage": {
+            "input_tokens": int(counted.get("input_tokens", counted.get("prompt_tokens", 0))),
+            "output_tokens": int(counted.get("output_tokens", counted.get("completion_tokens", 0))),
+        },
+        "ttft_ms": round(float(ttft_ms), 1),
+        "total_ms": round(float(total_ms), 1),
+    }
+
+
+def error(request_id: str, message: str) -> dict[str, Any]:
+    return {"type": ERROR, "id": request_id, "error": str(message)[:300]}
+
+
+def chunk(request_id: str, *, seq: int, delta: Mapping[str, Any]) -> dict[str, Any]:
+    return {"type": CHUNK, "id": request_id, "seq": int(seq), "delta": dict(delta)}
+
+
+def drain(instance: str = "") -> dict[str, Any]:
+    return {"type": DRAIN, "instance": instance}
+
+
+def drained(instance: str = "") -> dict[str, Any]:
+    return {"type": DRAINED, "instance": instance}
 
 
 def decode(raw: str | bytes) -> dict[str, Any]:

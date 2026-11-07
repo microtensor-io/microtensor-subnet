@@ -34,6 +34,7 @@ from microtensor_subnet.serving.host import GENERAL, read_catalogue
 from microtensor_subnet.serving.host.config import ENGINE_READY_SECONDS, MEM_FRACTION
 from microtensor_subnet.serving.host.fetch import FetchedModel, FetchError, fetch_model
 from microtensor_subnet.serving.host.plain import PlainError, close_model
+from microtensor_subnet.serving.probes.loop import DAY_SECONDS, PROBES_PER_GPU_PER_DAY
 from microtensor_subnet.serving.tokens import TokenError
 from microtensor_subnet.serving.verifier import (
     Calibrated,
@@ -513,21 +514,36 @@ def _probe(args: argparse.Namespace) -> int:
         while True:
             sets = probes.latest(work_root, args.arena) if args.arena else {}
             if args.arena and not sets:
-                log.warning("no probe sets under %s yet; run an epoch first", work_root)
-            if sets or targets:
+                log.info("no local probe sets under %s; drawing items from the server", work_root)
+            if sets or targets or args.arena:
+                every = max(30.0, float(args.pause))
+                chance = (
+                    1.0 if args.once else min(1.0, PROBES_PER_GPU_PER_DAY * every / DAY_SECONDS)
+                )
                 try:
                     found = probes.cycle(
                         server=args.server,
                         gateway=args.gateway_url,
                         credential=args.credential,
                         wallet=wallet,
-                        sets=sets,
+                        sets={},
                         floor=args.floor,
                         per_operator=args.per_operator,
                         rng=rng,
                         pause=min(float(args.pause), 5.0),
                         general=targets,
                     )
+                    if args.arena:
+                        found += probes.cycle_gpus(
+                            server=args.server,
+                            gateway=args.gateway_url,
+                            credential=args.credential,
+                            wallet=wallet,
+                            sets=sets or None,
+                            floor=args.floor,
+                            chance=chance,
+                            rng=rng,
+                        )
                 except ServingError as exc:
                     log.error("probe cycle: %s", exc)
                     found = []

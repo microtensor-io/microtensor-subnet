@@ -144,6 +144,19 @@ class Updater:
     last_error: str = ""
     applied: str = ""
 
+    def pending(self) -> Release | None:
+        self.last_check = time.monotonic()
+        try:
+            release = read_release(self.server)
+        except (httpx.HTTPError, ValueError) as exc:
+            self.last_error = f"release unreadable: {exc}"
+            return None
+        if release is None or not self.enabled:
+            return None
+        if running_digest(self.docker, own_container_id()) == release.digest:
+            return None
+        return release if self.compose_file.is_file() else None
+
     def check(self) -> dict[str, Any]:
         self.last_check = time.monotonic()
         try:

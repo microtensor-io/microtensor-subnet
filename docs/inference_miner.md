@@ -14,11 +14,11 @@ Each held system is the four part artifact its miner submitted and validators ce
 
 <img src="assets/serving-cards.png" width="100%" alt="One hotkey, many cards, many machines: the agent announces each card, the server labels them gpu-0, gpu-1 and so on, and each card is judged on its own">
 
-The GPU is the unit. One hotkey owns any number of cards, on one machine or several, and each card holds one model. The agent reads the cards from `nvidia-smi` on start, announces them in a hello signed by the hotkey, and the network labels them `gpu-0`, `gpu-1` and so on in the order it first sees them. The labels stay with the cards across restarts and appear on the public provider page and in `mt operator status`. Every 15 seconds the agent reports each card's memory in use and utilisation; a card the network has not heard from for 45 seconds shows offline.
+The GPU is the unit. One hotkey owns any number of cards, on one machine or several, and each card holds one model. The agent reads the cards from `nvidia-smi` on start, answers the gateway's challenge with a hello signed by the hotkey that announces them, and the network labels them `gpu-0`, `gpu-1` and so on in the order it first sees them. The labels stay with the cards across restarts and appear on the public provider page and in `mt operator status`. The agent connects before anything is loaded, so a card shows `pulling` while its model downloads and `probing` once it is ready; every 10 seconds it reports each card's phase, requests in flight, memory in use and utilisation, and a card the network has not heard from for 45 seconds shows offline.
 
-Several machines under one hotkey each run the agent with their own `--worker` name. One machine dropping takes only its cards offline. A card that holds a model this hotkey has declared but has not been admitted for connects as probing: validators can reach it, customers cannot, until admission.
+Several machines under one hotkey each run the agent with their own `--worker` name. One machine dropping takes only its cards offline. Once a card has loaded a model the agent sends `ready` for it and the server answers whether it is `probing` or `serving`; customers reach it only after admission.
 
-The planner spreads the cards over the models the network wants, most wanted first, one model per card and the same model on several cards when demand asks for it. A card keeps its model unless something clearly wants serving more.
+The planner spreads the cards over the models the network wants, most wanted first, one model per card and the same model on several cards when demand asks for it. The gateway also sends `assign` suggestions from the GPUs wanted signal, which the planner takes as its first preference when the card can hold the model. A card keeps its model unless something clearly wants serving more. When the agent stops, or before it updates itself, it drains: open requests finish, no new ones arrive, and the gateway hears `drained` before the connection closes.
 
 The sandbox is a locked down Docker container: no network except the gateway to the four service URLs, CPU, memory and process limits, a read only root file system, the artifact and the model mounted read only, every capability dropped and no privilege escalation. No extra container runtime is needed.
 
@@ -64,6 +64,28 @@ The plan lists the cards it found and reads the public catalogue (`GET /v1/publi
 
 ## 3. Run
 
+Write the config file and start the agent with one command:
+
+```yaml
+hotkey_path: /wallets/<coldkey>/hotkeys/<hotkey>
+gateway: wss://api.microtensor.cloud/v1/operators/socket
+gpus: all                    # or a list of GPU indexes
+models: auto                 # or a list of certified model names
+max_concurrency_per_gpu: 8
+cache_dir: /data/cache
+collateral_tao_per_gpu: 0
+```
+
+```bash
+docker run -d --name mt-operator --gpus all --restart unless-stopped \
+  -v ~/.bittensor/wallets:/wallets:ro \
+  -v /var/lib/mt-operator:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  ghcr.io/microtensor-io/mt-operator:latest --config /data/operator.yaml
+```
+
+The image is the validator image with `mt operator run` as its entrypoint; flags on the command line override the file. The compose file keeps working for hosts that prefer it:
+
 ```bash
 cd microtensor-subnet/deploy
 cat > .env <<EOF
@@ -79,7 +101,7 @@ Every card `nvidia-smi` lists is used; set `MT_GPUS=0,1` to use some of them. On
 
 For one pinned system instead of the planner, run `operator run --serve mt/<arena>@<artifact sha prefix>` with the pin from the catalogue.
 
-On start the host fetches the system's two repositories at the committed revisions, verifies every manifest hash, starts vLLM for the model, the router server and the sandbox on each card, declares the system to the server (`POST /v1/inference/operators/models`) and dials the gateway with a hello signed by the hotkey. Expect ten to twenty minutes before the first answer on a fresh cache. Every `--review-seconds` (300) the catalogue is read again; the connection is kept unless the plan changed what a card holds.
+On start the host dials the gateway, then per card either pulls the model's certified image by digest (`images.certified` in the catalogue) and runs it with the GPU passed through, or, while no image is certified, fetches the system's two repositories at the committed revisions, verifies every manifest hash and starts vLLM for the model, the router server and the sandbox itself. The certified image holds the engine, the weights, the harness, the router and the repair code of the winning submission; on start it checks the weights against the hash in its build record and refuses to serve on a mismatch, then answers on localhost only. Either way the host declares the system to the server (`POST /v1/inference/operators/models`) and sends `ready` for the card. Expect ten to twenty minutes before the first answer on a fresh cache. Every `--review-seconds` (300) the catalogue is read again; the connection is kept unless the plan changed what a card holds.
 
 `mt operator status` prints one line per card the network knows under this hotkey: label, card, memory, model loaded, status and last seen.
 
@@ -93,22 +115,27 @@ Certified systems run on the engine build their arena was certified with: the ca
 
 <img src="assets/serving-probes.png" width="100%" alt="How a card is checked: a probe is picked, sent through the gateway, answered by the card, graded by the prober, recorded per card and fed to a sequential test">
 
-Probes reach each card through the gateway on the same path and frames as customer traffic, so a card cannot tell them apart. Four in five are withheld items the certified system answered correctly, graded with the arena's grader; the rest are short canaries with a known reply; the exact token check comes later. The coordinator runs the loop for every card at about ten probes per card per day, and validators the network permits add to it. Each verdict is recorded per card and feeds a sequential test: about fifty clean answers admit the card, two failures early on reject it. A rejected card shows `failed_probe`, takes no customer traffic and earns nothing until three clean probes in a row reopen it; the hotkey's other cards carry on. A new epoch winner resets eligibility for that model, so re-admission after each epoch is normal. Until probes run, the team can admit an operator by hand for a demo. The probe log on the provider page shows kind, size and timings, never the item.
+Probes reach each card through the gateway on the same path and frames as customer traffic, so a card cannot tell them apart. Three kinds exist: a hidden item from the withheld pool, graded with the arena's grader and passed at a quality of at least 0.60 inside the envelope; an exact token check, the same request replayed on the reference run, whose output tokens must match; and a short canary with a known reply. Admission is five probes in a row, all passing; after that a live card sees about one probe every two to three hours (hidden three times in five, exact and canary once each), plus one after any timeout. The coordinator runs the loop for every card, and validators the network permits add to it. A failed probe pauses the card: no traffic and no pay, probed again after ten minutes, back to serving on a pass. Three failed probes within 24 hours remove the card until the team re-admits it by hand; an exact token mismatch the coordinator confirms on its reference run slashes the operator. The hotkey's other cards carry on throughout. A new epoch winner resets admission for that model, so re-admission after each epoch is normal. The probe log on the provider page shows kind, size and timings, never the item.
 
 <img src="assets/serving-lifecycle.png" width="100%" alt="Life of a card: offline, probing, serving and failed_probe, with the transitions between them">
 
 | State | Meaning | Customers | Paid |
 |---|---|---|---|
-| `offline` | no heartbeat for 45 seconds, or its machine dropped | no | no |
-| `probing` | the model is loading, or it is declared but the card is not admitted yet | no | no |
+| `registered` | the card is announced; nothing is loading yet | no | no |
+| `pulling` | the model's image or repositories are downloading, or the engine is starting | no | no |
+| `probing` | ready; the five admission probes are not all passed yet | no | no |
 | `serving` | admitted; customers and probes | yes | yes |
-| `failed_probe` | the sequential test rejected this card; three clean probes reopen it | no | no |
+| `paused` | a probe failed; probed again after ten minutes | no | no |
+| `removed` | three failed probes within 24 hours; the team re-admits by hand | no | no |
+| `draining` | finishing open requests before a stop or an update; no new ones | no | for finished work |
+| `offline` | no heartbeat for 45 seconds, or its machine dropped | no | no |
+| `slashed` | the operator served weights that match no certified image; every card | no | no |
 
 ## How a request is answered
 
 <img src="assets/serving-request.png" width="100%" alt="One request end to end: the gateway picks the freest serving card, sends the request down the websocket naming the card, streams the answer back and records the usage per card">
 
-The gateway picks the freest serving card that holds the model and sends `{task, floor, max_tokens}` over the websocket, naming the card. The host registers the task's schema as a SQLite database for the sandbox tools, calls the harness (`POST /harness/run`), asks the router for the probability that the draft is right, and answers `{answer, p, floor_met, verified, trace, usage}`. `floor_met` is whether the harness's own check passed and `p` cleared the customer's quality floor. The gateway counts the tokens, times the first token and the end itself and records one row per request and card; nothing an operator reports is used for pay. When no serving card holds the model the request is refused and recorded, which raises `wanted`. No frontier call happens on an operator.
+The gateway picks a serving card that holds the model, lowest in flight first, and sends a `request` frame with an id, the card, the deadline and `{task, floor, max_tokens}` over the websocket. The host refuses a request whose deadline has passed, registers the task's schema as a SQLite database for the sandbox tools, calls the harness (`POST /harness/run`), sends an empty `chunk` the moment the harness makes its first model call, asks the router for the probability that the draft is right, and answers a `done` frame with `{answer, p, floor_met, verified, trace, usage, ttft_ms, total_ms}`. `floor_met` is whether the harness's own check passed and `p` cleared the customer's quality floor. The gateway counts the tokens, times the first token and the end itself, signs a receipt and records one row per request and card; nothing an operator reports is used for pay. No first token within the limit means the gateway cancels and retries once on another card; when no serving card holds the model the request falls back to the frontier relay where one is configured and is otherwise refused and recorded, which raises `wanted`. No frontier call happens on an operator.
 
 ## General models
 

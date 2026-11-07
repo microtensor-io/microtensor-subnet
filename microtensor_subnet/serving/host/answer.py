@@ -4,7 +4,7 @@ import json
 import secrets
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,7 +38,13 @@ def _text(answer: Any) -> str:
     return json.dumps(answer, ensure_ascii=False) if answer is not None else ""
 
 
-def answer(held: Held, request: Mapping[str, Any], *, timeout: float) -> dict[str, Any]:
+def answer(
+    held: Held,
+    request: Mapping[str, Any],
+    *,
+    timeout: float,
+    on_first: Callable[[], None] | None = None,
+) -> dict[str, Any]:
     raw = request.get("task")
     task: dict[str, Any] = dict(raw) if isinstance(raw, Mapping) else {}
     floor = float(request.get("floor") or DEFAULT_FLOOR)
@@ -52,6 +58,7 @@ def answer(held: Held, request: Mapping[str, Any], *, timeout: float) -> dict[st
         session.reset_counters()
         with session.lock:
             session.current_item = correlation
+            session.first_call = on_first
         try:
             call = call_main(
                 held.sandbox.main_url,
@@ -77,6 +84,8 @@ def answer(held: Held, request: Mapping[str, Any], *, timeout: float) -> dict[st
                 }
                 session.current_item = ""
         finally:
+            with session.lock:
+                session.first_call = None
             session.forget_item(correlation)
     return {
         "answer": found,
