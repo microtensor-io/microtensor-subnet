@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import signal
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -24,6 +25,14 @@ from microtensor_subnet.serving.host.fetch import (
     fetch,
     fetch_model,
 )
+from microtensor_subnet.serving.host.image import (
+    ImageError,
+    ImageHeld,
+    answer_image,
+    certified_image,
+    close_image,
+    open_image,
+)
 from microtensor_subnet.serving.host.plain import (
     PlainError,
     PlainHeld,
@@ -33,6 +42,7 @@ from microtensor_subnet.serving.host.plain import (
 )
 from microtensor_subnet.serving.host.plain import chat as chat_model
 from microtensor_subnet.serving.tokens import TokenError
+from microtensor_subnet.serving.wire import protocol
 from microtensor_subnet.validator.sandbox import SandboxError, SandboxHost, host_ip
 from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
 from microtensor_subnet.validator.sandbox.services import Services
@@ -58,6 +68,7 @@ SERVE_FAILURES: Final[tuple[type[Exception], ...]] = (
     EngineError,
     TokenError,
     DockerError,
+    ImageError,
     OSError,
 )
 
@@ -116,7 +127,11 @@ class ServingHost:
         self.opened_by: dict[str, SandboxHost] = {}
         self.held: dict[str, Held] = {}
         self.plain: dict[str, PlainHeld] = {}
+        self.images_held: dict[str, ImageHeld] = {}
         self.entries: dict[str, dict[str, Any]] = {}
+        self.phases_by: dict[str, str] = {}
+        self.preferred: dict[str, str] = {}
+        self.drain = asyncio.Event()
         self._lock = threading.Lock()
         self._started = False
 
@@ -126,7 +141,7 @@ class ServingHost:
             self._started = True
 
     def stop(self) -> None:
-        for gpu in [*self.held, *self.plain]:
+        for gpu in [*self.held, *self.plain, *self.images_held]:
             self.release(gpu)
         if self._started:
             self.services.stop()
@@ -153,6 +168,9 @@ class ServingHost:
     def holding(self) -> dict[str, tuple[str, str]]:
         found = {gpu: (held.model, held.artifact_digest) for gpu, held in self.held.items()}
         found.update({gpu: (held.model, held.artifact_digest) for gpu, held in self.plain.items()})
+        found.update(
+            {gpu: (held.model, held.artifact_digest) for gpu, held in self.images_held.items()}
+        )
         return found
 
     def images(self) -> frozenset[str]:
@@ -160,14 +178,42 @@ class ServingHost:
             return frozenset(BACKENDS)
         return frozenset(self.config.images)
 
+    def phases(self) -> dict[str, str]:
+        return {self.card(device).id: phase for device, phase in self.phases_by.items()}
+
+    def assign(self, entries: Sequence[Mapping[str, Any]]) -> None:
+        wished = {
+            self.device_of(str(entry.get("gpu", ""))): str(entry.get("model", ""))
+            for entry in entries
+            if entry.get("model")
+        }
+        if wished != self.preferred:
+            log.info("the gateway suggests %s", wished or "nothing")
+        self.preferred = wished
+
     def plan_now(self, offers: Sequence[Mapping[str, Any]]) -> plan.Plan:
         self.entries = {str(row.get("model") or row.get("id") or ""): dict(row) for row in offers}
         gpu_gb = gpus.smallest_gb(self.cards) or self.config.gpu_gb
         capacity = plan.Capacity(gpus=self.devices, gpu_gb=gpu_gb, images=self.images())
         rules = dataclasses.replace(self.policy, accept_licences=self.accept_licences)
-        return plan.build(offers, capacity, held=self.holding(), policy=rules, pinned=self.pinned)
+        return plan.build(
+            offers,
+            capacity,
+            held=self.holding(),
+            policy=rules,
+            pinned=self.pinned,
+            preferred=self.preferred,
+        )
 
     def release(self, gpu: str) -> None:
+        self.phases_by.pop(gpu, None)
+        image = self.images_held.pop(gpu, None)
+        if image is not None:
+            try:
+                close_image(self.docker, image)
+            except Exception as exc:
+                log.warning("closing %s on gpu %s failed: %s", image.model, gpu, exc)
+            return
         plain = self.plain.pop(gpu, None)
         if plain is not None:
             try:
@@ -204,12 +250,22 @@ class ServingHost:
             raise HostError(f"{holding.model} is not in the catalogue")
         if holding.gpu not in self.devices:
             raise HostError(f"gpu {holding.gpu} is not one this host was given")
-        if entry.get("kind") == GENERAL:
-            self._take_model(holding, entry)
-            return
+        self.phases_by[holding.gpu] = protocol.PULLING
+        try:
+            if entry.get("kind") == GENERAL:
+                self._take_model(holding, entry)
+            elif certified_image(entry)[0]:
+                self._take_image(holding, entry)
+            else:
+                self._take_system(holding, entry)
+        finally:
+            self.phases_by.pop(holding.gpu, None)
+
+    def _take_system(self, holding: plan.Holding, entry: Mapping[str, Any]) -> None:
         fetched = self.fetcher(entry, self.config.cache_dir)
         slot = self.devices.index(holding.gpu)
         sandboxes = self.engine_for(entry)
+        self.phases_by[holding.gpu] = protocol.LOADING
         sandbox = sandboxes.open(
             artifact_dir=fetched.artifact_dir,
             slm_dir=fetched.slm_dir,
@@ -226,7 +282,7 @@ class ServingHost:
         self.held[holding.gpu] = Held(
             model=holding.model,
             artifact_digest=holding.artifact_digest,
-            entry=entry,
+            entry=dict(entry),
             sandbox=sandbox,
             gpu=holding.gpu,
             slot=slot,
@@ -235,6 +291,23 @@ class ServingHost:
         if self.declare is not None:
             self.declare(holding.model, holding.artifact_digest)
         log.info("%s ready on gpu %s", holding.model, holding.gpu)
+
+    def _take_image(self, holding: plan.Holding, entry: Mapping[str, Any]) -> None:
+        slot = self.devices.index(holding.gpu)
+        held = open_image(
+            self.docker,
+            entry,
+            gpu=holding.gpu,
+            slot=slot,
+            ready_seconds=self.config.engine_ready_seconds,
+        )
+        if held.artifact_digest.lower() != holding.artifact_digest.lower():
+            close_image(self.docker, held)
+            raise HostError(f"{holding.model} is certified under another artifact than the plan")
+        self.images_held[holding.gpu] = held
+        if self.declare is not None:
+            self.declare(holding.model, holding.artifact_digest)
+        log.info("%s ready on gpu %s from its certified image", holding.model, holding.gpu)
 
     def _take_model(self, holding: plan.Holding, entry: Mapping[str, Any]) -> None:
         model = holding.model
@@ -248,6 +321,7 @@ class ServingHost:
         fetched = self.model_fetcher(entry, self.config.cache_dir)
         if fetched.artifact_digest != holding.artifact_digest.lower().removeprefix(DIGEST_PREFIX):
             raise HostError(f"{model} fetched under a different digest than the plan holds")
+        self.phases_by[holding.gpu] = protocol.LOADING
         if self.engine_url:
             held = attach_model(fetched, entry, self.engine_url, gpu=holding.gpu)
         else:
@@ -273,7 +347,7 @@ class ServingHost:
             pair = (holding.model, holding.artifact_digest)
             if self.holding().get(holding.gpu) == pair:
                 continue
-            if holding.gpu in self.held or holding.gpu in self.plain:
+            if holding.gpu in self.holding():
                 self.release(holding.gpu)
             try:
                 self.take_up(holding)
@@ -283,11 +357,21 @@ class ServingHost:
             if gpu not in wanted:
                 self.release(gpu)
 
-    def handler(self, gpu: str, model: str, request: Mapping[str, Any]) -> dict[str, Any]:
-        held = self.held.get(self.device_of(gpu))
+    def handler(
+        self,
+        gpu: str,
+        model: str,
+        request: Mapping[str, Any],
+        on_first: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        device = self.device_of(gpu)
+        image = self.images_held.get(device)
+        if image is not None and image.model == model:
+            return answer_image(image, request, timeout=self.config.request_seconds)
+        held = self.held.get(device)
         if held is None or held.model != model:
             return {"error": "this operator does not hold that system on that gpu"}
-        return answer(held, request, timeout=self.config.request_seconds)
+        return answer(held, request, timeout=self.config.request_seconds, on_first=on_first)
 
     async def chat(
         self, gpu: str, model: str, request: Mapping[str, Any], on_chunk: wire.OnChunk
@@ -300,14 +384,25 @@ class ServingHost:
     def agent(self) -> dict[str, Any]:
         return {"version": RELEASE_VERSION, "engines": dict(self.config.images)}
 
-    def check_update(self) -> None:
+    def pending_update(self) -> update.Release | None:
         if self.updater is None or not self.updater.due(self.config.review_seconds):
-            return
+            return None
+        try:
+            return self.updater.pending()
+        except Exception as exc:
+            log.warning("update check failed: %s", exc)
+            return None
+
+    def apply_update(self) -> bool:
+        if self.updater is None:
+            return False
         outcome = self.updater.check()
         if outcome.get("applied"):
             log.warning("a newer agent image was pulled; this process will be replaced")
-        elif outcome.get("reason") and self.updater.last_error:
+            return True
+        if outcome.get("reason") and self.updater.last_error:
             log.warning("update check: %s", outcome["reason"])
+        return False
 
     def settings(self) -> wire.Settings | None:
         offered = [
@@ -324,7 +419,21 @@ class ServingHost:
                 model=held.model,
                 artifact_digest=held.artifact_digest,
                 gpu=self.card(gpu).id,
-                concurrency=held.concurrency,
+                concurrency=1,
+                image_digest=held.image_digest,
+            )
+            for gpu, held in self.images_held.items()
+        ]
+        offered += [
+            wire.Served(
+                model=held.model,
+                artifact_digest=held.artifact_digest,
+                gpu=self.card(gpu).id,
+                concurrency=(
+                    min(held.concurrency, self.config.max_concurrency)
+                    if self.config.max_concurrency
+                    else held.concurrency
+                ),
                 kind="model",
                 context=held.context,
                 tool_calling=held.tool_calling,
@@ -334,7 +443,7 @@ class ServingHost:
             for gpu, held in self.plain.items()
         ]
         serves = tuple(sorted(offered, key=lambda served: (served.gpu, served.model)))
-        if not serves:
+        if not serves and not self.cards:
             return None
         return wire.Settings(
             gateway=self.gateway,
@@ -345,19 +454,49 @@ class ServingHost:
             signer=self.signer,
             agent=self.agent(),
             stats=self.stats,
+            phases=self.phases,
+            on_assign=self.assign,
         )
+
+    def _dial(self, settings: wire.Settings, review: asyncio.Event) -> asyncio.Task[None]:
+        return asyncio.create_task(
+            wire.run(settings, self.handler, chat=self.chat, stop=review, drain=self.drain)
+        )
+
+    def _watch_signals(self, halt: asyncio.Event) -> None:
+        loop = asyncio.get_running_loop()
+
+        def stopping() -> None:
+            log.warning("stop requested; draining open requests")
+            self.drain.set()
+            halt.set()
+
+        for name in ("SIGTERM", "SIGINT"):
+            number = getattr(signal, name, None)
+            if number is None:
+                continue
+            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                loop.add_signal_handler(number, stopping)
 
     async def run(self, *, stop: asyncio.Event | None = None) -> None:
         self.start()
         halt = stop or asyncio.Event()
+        self._watch_signals(halt)
         dial: asyncio.Task[None] | None = None
         review = asyncio.Event()
         try:
             while not halt.is_set():
-                try:
-                    await asyncio.to_thread(self.check_update)
-                except Exception as exc:
-                    log.warning("update check failed: %s", exc)
+                pending = await asyncio.to_thread(self.pending_update)
+                if pending is not None:
+                    log.warning("agent image %s is published; draining first", pending.digest[:19])
+                    self.drain.set()
+                    if dial is not None:
+                        await asyncio.gather(dial, return_exceptions=True)
+                        dial = None
+                    if await asyncio.to_thread(self.apply_update):
+                        halt.set()
+                        break
+                    self.drain = asyncio.Event()
                 try:
                     offers = await asyncio.to_thread(self.catalogue, self.server)
                 except Exception as exc:
@@ -367,6 +506,9 @@ class ServingHost:
                 for model, reason in sorted(found.reasons.items()):
                     log.info("skip %s: %s", model, reason)
                 before = self.settings()
+                if (dial is None or dial.done()) and before is not None:
+                    review = asyncio.Event()
+                    dial = self._dial(before, review)
                 if plan.changed(found, self.holding()):
                     await asyncio.to_thread(self.apply, found)
                 settings = self.settings()
@@ -382,13 +524,15 @@ class ServingHost:
                         )
                     else:
                         review = asyncio.Event()
-                        dial = asyncio.create_task(
-                            wire.run(settings, self.handler, chat=self.chat, stop=review)
-                        )
+                        dial = self._dial(settings, review)
+                if self.drain.is_set():
+                    break
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(halt.wait(), timeout=self.config.review_seconds)
         finally:
             if dial is not None:
+                if self.drain.is_set():
+                    await asyncio.gather(dial, return_exceptions=True)
                 review.set()
                 dial.cancel()
                 await asyncio.gather(dial, return_exceptions=True)
@@ -404,6 +548,7 @@ __all__ = [
     "Held",
     "HostConfig",
     "HostError",
+    "ImageHeld",
     "PlainHeld",
     "ServingHost",
     "answer",

@@ -63,6 +63,7 @@ dev = [
 mt = "microtensor_subnet.cli.main:main"
 mt-validator = "neurons.validator:run"
 mt-operator = "neurons.operator:run"
+mt-shim = "microtensor_subnet.serving.shim:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "microtensor_subnet.core.constants.RELEASE_VERSION" }

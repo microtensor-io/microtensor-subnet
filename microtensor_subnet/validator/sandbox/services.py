@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -294,6 +295,7 @@ class ArtifactSession:
     engine_failures: int = 0
     relay_purpose: str = ""
     relay_cap_micros: int = 0
+    first_call: Callable[[], None] | None = None
 
     @property
     def recording(self) -> bool:
@@ -340,7 +342,11 @@ class ArtifactSession:
             if self.max_model_calls and made >= self.max_model_calls:
                 return False, made
             self.item_calls[item_id] = made + 1
-            return True, made
+            first = self.first_call if made == 0 else None
+        if first is not None:
+            with contextlib.suppress(Exception):
+                first()
+        return True, made
 
     def begin_item(
         self,

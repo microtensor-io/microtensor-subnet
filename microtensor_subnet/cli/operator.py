@@ -9,10 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from microtensor_subnet.chain.wallet import hotkey_address, sign_bytes
+from microtensor_subnet.cli import operator_config
 from microtensor_subnet.cli.common import (
     add_chain_arguments,
     add_common_arguments,
     chain_config,
+    default_home,
     fail,
     open_wallet,
 )
@@ -30,7 +32,18 @@ log = logging.getLogger("microtensor_subnet.cli.operator")
 GATEWAY_URL = "wss://api.microtensor.cloud/v1/operators/socket"
 KINDS = ("system", "model", "any")
 NO_IMAGE = "none"
-GPU_COLUMNS = ("gpu", "name", "memory", "model", "state", "last seen")
+GPU_COLUMNS = ("gpu", "name", "memory", "model", "status", "last seen")
+CONFIG_DEFAULTS: dict[str, Any] = {
+    "wallet_path": None,
+    "wallet_name": None,
+    "wallet_hotkey": None,
+    "gateway": GATEWAY_URL,
+    "gpus": gpus.ALL,
+    "models": [],
+    "auto": False,
+    "max_concurrency": 0,
+    "cache_dir": "",
+}
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -78,6 +91,19 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "run", help="hold certified systems or general models and answer the gateway"
     )
     serve.add_argument("--auto", action="store_true", help="let the catalogue choose what to hold")
+    serve.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="an operator.yaml with hotkey_path, gateway, gpus, models and cache_dir",
+    )
+    serve.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=0,
+        help="cap on requests in flight per gpu for general models; 0 keeps the model's own",
+    )
+    serve.add_argument("--cache-dir", default="", help="where fetched systems and models are kept")
     serve.add_argument(
         "--serve",
         action="append",
@@ -240,14 +266,14 @@ def gpu_table(found: dict[str, Any]) -> str:
     rows = [list(GPU_COLUMNS)]
     for gpu in found.get("gpus") or []:
         memory = int(gpu.get("memory_mb") or 0)
-        state = "online" if gpu.get("online") else "offline"
+        status = str(gpu.get("status") or ("online" if gpu.get("online") else "offline"))
         rows.append(
             [
-                str(gpu.get("gpu", "")),
+                str(gpu.get("gpu") or gpu.get("label") or ""),
                 str(gpu.get("name") or "unnamed"),
                 f"{memory / 1024:.0f} GB" if memory else "",
                 str(gpu.get("model") or "nothing loaded"),
-                state,
+                status,
                 str(gpu.get("last_seen_at") or "never"),
             ]
         )
@@ -362,7 +388,20 @@ def _plan(args: argparse.Namespace) -> int:
     return _show(shown)
 
 
+def _configured(args: argparse.Namespace) -> list[str]:
+    if args.config is None:
+        return []
+    defaults = dict(CONFIG_DEFAULTS, home=default_home())
+    return operator_config.apply(args, operator_config.read(args.config), defaults)
+
+
 def _run(args: argparse.Namespace) -> int:
+    try:
+        notes = _configured(args)
+    except operator_config.ConfigError as exc:
+        return fail(str(exc))
+    for note in notes:
+        print(note)
     if not args.auto and not args.serve and not args.models:
         return fail("pass --auto to let the catalogue choose, --serve MODEL@SHA, or --model NAME")
     if args.engine_url and len(args.models) != 1:
@@ -385,6 +424,8 @@ def _run(args: argparse.Namespace) -> int:
         mem_fraction=args.mem_fraction,
         hf_token=args.hf_token,
         cards=cards,
+        cache=Path(args.cache_dir) if args.cache_dir else None,
+        max_concurrency=max(0, int(args.max_concurrency or 0)),
     )
 
     def declare(model: str, digest: str) -> None:

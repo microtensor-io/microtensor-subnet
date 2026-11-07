@@ -189,19 +189,35 @@ def rank(offers: Iterable[Offer], held: Iterable[str]) -> list[Offer]:
     return sorted(offers, key=key)
 
 
-def assign(usable: Sequence[Offer], gpus: Sequence[str], holding: Held) -> dict[str, Offer]:
+def assign(
+    usable: Sequence[Offer],
+    gpus: Sequence[str],
+    holding: Held,
+    preferred: Mapping[str, str] | None = None,
+) -> dict[str, Offer]:
     counts: dict[str, int] = {}
     assigned: dict[str, Offer] = {}
+    wished = dict(preferred or {})
     for gpu in gpus:
         if not usable:
             break
         current = holding.get(gpu)
+        wish = wished.get(gpu, "")
 
-        def key(offer: Offer, current: tuple[str, str] | None = current) -> tuple[Any, ...]:
+        def key(
+            offer: Offer, current: tuple[str, str] | None = current, wish: str = wish
+        ) -> tuple[Any, ...]:
             keep = current is not None and current[0] == offer.model
             score = offer.wanted / (counts.get(offer.model, 0) + 1)
             score *= KEEP_MARGIN if keep else 1.0
-            return (-score, 0 if keep else 1, 0 if offer.cold else 1, offer.vram_gb, offer.model)
+            return (
+                0 if wish and offer.model == wish else 1,
+                -score,
+                0 if keep else 1,
+                0 if offer.cold else 1,
+                offer.vram_gb,
+                offer.model,
+            )
 
         chosen = min(usable, key=key)
         assigned[gpu] = chosen
@@ -229,6 +245,7 @@ def build(
     held: Held | None = None,
     policy: Policy | None = None,
     pinned: Mapping[str, str] | None = None,
+    preferred: Mapping[str, str] | None = None,
 ) -> Plan:
     rules = policy or Policy()
     holding: dict[str, tuple[str, str]] = dict(held or {})
@@ -265,7 +282,7 @@ def build(
             continue
         usable.append(offer)
 
-    assigned = assign(usable, capacity.gpus, holding)
+    assigned = assign(usable, capacity.gpus, holding, preferred)
     placed = {offer.model for offer in assigned.values()}
     for offer in usable:
         if offer.model not in placed:

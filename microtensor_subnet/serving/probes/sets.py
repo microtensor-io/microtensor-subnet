@@ -36,6 +36,8 @@ class ProbeItem:
     family: str
     task: dict[str, Any]
     label: dict[str, Any]
+    kind: str = ""
+    reference: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -49,6 +51,7 @@ class ProbeSet:
     items: dict[str, ProbeItem]
     databases: dict[str, bytes] = field(default_factory=dict)
     canaries: list[str] = field(default_factory=list)
+    envelope: dict[str, Any] = field(default_factory=dict)
 
     def floors(self) -> list[float]:
         return sorted(float(k) for k in self.right)
@@ -61,6 +64,9 @@ class ProbeSet:
 
     def canary_items(self) -> list[ProbeItem]:
         return [self.items[i] for i in self.canaries if i in self.items]
+
+    def exact_items(self) -> list[ProbeItem]:
+        return [item for item in self.items.values() if item.reference and item.kind == "exact"]
 
     def wire(self) -> dict[str, Any]:
         return {

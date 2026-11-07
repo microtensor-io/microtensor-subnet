@@ -48,6 +48,8 @@ class HostConfig:
     engine_ready_seconds: int = ENGINE_READY_SECONDS
     hf_token: str = field(default="", repr=False)
     cards: tuple[Card, ...] = ()
+    cache: Path | None = None
+    max_concurrency: int = 0
 
     @property
     def gpu_cards(self) -> tuple[Card, ...]:
@@ -68,7 +70,7 @@ class HostConfig:
 
     @property
     def cache_dir(self) -> Path:
-        return self.home / "cache"
+        return self.cache or self.home / "cache"
 
     @property
     def work_dir(self) -> Path:

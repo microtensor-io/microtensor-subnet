@@ -1,0 +1,5 @@
+ARG BASE=ghcr.io/microtensor-io/validator:1
+FROM ${BASE}
+
+ENTRYPOINT ["/usr/local/bin/mt-entrypoint", "operator", "run"]
+CMD ["--config", "/data/operator.yaml", "--home", "/data"]

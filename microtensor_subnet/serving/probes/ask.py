@@ -25,6 +25,7 @@ class Answered:
     gpu: str = ""
     prompt_tokens: int = 0
     ttft_ms: float = 0.0
+    completion_ids: tuple[int, ...] = ()
 
 
 def ask(
@@ -37,10 +38,14 @@ def ask(
     floor: float,
     timeout: float = TIMEOUT_SECONDS,
     gpu: str = "",
+    kind: str = "",
 ) -> Answered:
     body: dict[str, Any] = {"hotkey": hotkey, "model": model, "task": task, "floor": floor}
     if gpu:
         body["gpu"] = gpu
+        body["instance"] = gpu
+    if kind:
+        body["kind"] = kind
     try:
         with httpx.Client(base_url=gateway.rstrip("/"), timeout=timeout) as http:
             response = http.post(PROBE_PATH, json=body, headers={CREDENTIAL_HEADER: credential})
@@ -51,6 +56,11 @@ def ask(
         return Answered(False, error=f"gateway answered {response.status_code}: {detail}")
     found = response.json()
     usage = found.get("usage") if isinstance(found.get("usage"), Mapping) else {}
+    tokens = found.get("tokens") if isinstance(found.get("tokens"), Mapping) else {}
+    try:
+        completion = _ids(tokens.get("completion"))
+    except (TypeError, ValueError):
+        completion = ()
     return Answered(
         True,
         answer=found.get("answer"),
@@ -58,10 +68,11 @@ def ask(
         floor_met=bool(found.get("floor_met")),
         verified=bool(found.get("verified")),
         artifact_digest=str(found.get("artifact_digest") or ""),
-        latency_ms=float(found.get("latency_ms") or 0.0),
-        gpu=str(found.get("gpu") or gpu),
-        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        latency_ms=float(found.get("latency_ms") or found.get("total_ms") or 0.0),
+        gpu=str(found.get("gpu") or found.get("instance") or gpu),
+        prompt_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
         ttft_ms=float(found.get("ttft_ms") or 0.0),
+        completion_ids=completion,
     )
 
 
