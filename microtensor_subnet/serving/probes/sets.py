@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from microtensor_subnet.core.items import Item
     from microtensor_subnet.validator.context import Artifact, EpochContext
     from microtensor_subnet.validator.results import ArtifactOutcome
 
@@ -16,6 +18,8 @@ log = logging.getLogger("microtensor_subnet.serving.probes")
 PROBE_DIR = "probe"
 DB_DIR = "db"
 MODEL_PREFIX = "mt/"
+ALL_FLOOR = "1.00"
+CANARIES = 3
 
 
 def alias(arena_id: str) -> str:
@@ -44,6 +48,7 @@ class ProbeSet:
     right: dict[str, list[str]]
     items: dict[str, ProbeItem]
     databases: dict[str, bytes] = field(default_factory=dict)
+    canaries: list[str] = field(default_factory=list)
 
     def floors(self) -> list[float]:
         return sorted(float(k) for k in self.right)
@@ -53,6 +58,9 @@ class ProbeSet:
             return []
         nearest = min(self.right, key=lambda k: (abs(float(k) - floor), k))
         return [self.items[i] for i in self.right[nearest] if i in self.items]
+
+    def canary_items(self) -> list[ProbeItem]:
+        return [self.items[i] for i in self.canaries if i in self.items]
 
     def wire(self) -> dict[str, Any]:
         return {
@@ -67,7 +75,50 @@ class ProbeSet:
                 for i, it in self.items.items()
             },
             "databases": sorted(self.databases),
+            "canaries": list(self.canaries),
         }
+
+
+def pick_canaries(
+    arena: str, epoch: int, item_ids: Iterable[str], count: int = CANARIES
+) -> list[str]:
+    def rank(item_id: str) -> str:
+        return hashlib.sha256(f"{arena}:{epoch}:{item_id}".encode()).hexdigest()
+
+    return sorted(sorted(set(item_ids)), key=rank)[: max(0, count)]
+
+
+def from_items(
+    arena: str,
+    epoch: int,
+    artifact_sha: str,
+    grader: str,
+    items: Iterable[Item],
+    databases: Mapping[str, bytes],
+    *,
+    canaries: int = CANARIES,
+) -> ProbeSet:
+    held = {
+        item.item_id: ProbeItem(
+            item_id=item.item_id,
+            family=item.family,
+            task=dict(item.task),
+            label=dict(item.label),
+        )
+        for item in items
+    }
+    needed = _needed(held)
+    return ProbeSet(
+        arena=arena,
+        epoch=epoch,
+        artifact_sha=artifact_sha.lower(),
+        model=alias(arena),
+        grader=grader,
+        right={ALL_FLOOR: sorted(held)},
+        items=held,
+        databases={sha: databases[sha] for sha in needed if sha in databases},
+        canaries=pick_canaries(arena, epoch, held, canaries),
+    )
 
 
 def _needed(items: Mapping[str, ProbeItem]) -> set[str]:
@@ -149,6 +200,7 @@ def load(path: Path) -> ProbeSet:
         grader=str(raw.get("grader", "")),
         right={str(k): [str(i) for i in v] for k, v in dict(raw.get("right") or {}).items()},
         items=items,
+        canaries=[str(i) for i in raw.get("canaries") or []],
     )
     for sha in raw.get("databases") or []:
         blob = path.parent / DB_DIR / str(sha)

@@ -54,7 +54,13 @@ def _call(url: str, *, method: str, body: bytes | None, headers: dict[str, str])
 
 
 def _signed(
-    base: str, wallet: Any, *, method: str, path: str, payload: dict[str, Any] | None = None
+    base: str,
+    wallet: Any,
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    query: dict[str, Any] | None = None,
 ) -> Any:
     hotkey = hotkey_address(wallet)
     body = (
@@ -70,7 +76,10 @@ def _signed(
     }
     if payload is not None:
         headers["content-type"] = "application/json"
-    return _call(_url(base, path), method=method, body=body or None, headers=headers)
+    url = _url(base, path)
+    if query:
+        url = f"{url}?{urllib.parse.urlencode({k: str(v) for k, v in query.items()})}"
+    return _call(url, method=method, body=body or None, headers=headers)
 
 
 def register(base: str, wallet: Any, *, label: str = "", coldkey: str = "") -> dict[str, Any]:
