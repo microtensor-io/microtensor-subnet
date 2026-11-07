@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -40,6 +41,9 @@ MANIFEST: Final[str] = "manifest.json"
 ROOT_ENV: Final[str] = "MT_SYSTEM_DIR"
 BIND_ENV: Final[str] = "MT_SHIM_BIND"
 PORT_ENV: Final[str] = "MT_SHIM_PORT"
+WORKERS_ENV: Final[str] = "MT_SHIM_WORKERS"
+DEFAULT_WORKERS: Final[int] = 8
+DEFAULT_MAX_SEQS: Final[int] = 16
 LOOPBACK: Final[str] = "127.0.0.1"
 ENGINE_PORT: Final[int] = 8000
 ROUTER_PORT: Final[int] = 8011
@@ -117,7 +121,9 @@ def check_weights(build: Mapping[str, Any], slm_dir: Path) -> None:
         raise ShimError(f"the weights hash is {found[:12]}, the build record says {expected[:12]}")
 
 
-def engine_argv(build: Mapping[str, Any], slm_dir: Path) -> list[str]:
+def engine_argv(
+    build: Mapping[str, Any], slm_dir: Path, workers: int = DEFAULT_WORKERS
+) -> list[str]:
     engine = build.get("engine")
     flags = list(engine.get("flags") or []) if isinstance(engine, Mapping) else []
     if flags:
@@ -125,7 +131,7 @@ def engine_argv(build: Mapping[str, Any], slm_dir: Path) -> list[str]:
     return vllm_command(
         str(slm_dir),
         max_model_len=int(build.get("max_model_len") or 8192),
-        max_seqs=int(build.get("max_seqs") or 16),
+        max_seqs=int(build.get("max_seqs") or max(DEFAULT_MAX_SEQS, workers)),
         dtype=str(build.get("dtype") or ""),
         prefix_caching=False,
     )
@@ -156,9 +162,11 @@ def _wait(url: str, seconds: float, alive: Any = None) -> None:
     raise ShimError(f"{url} never became ready")
 
 
-def start_engine(build: Mapping[str, Any], slm_dir: Path) -> subprocess.Popen[bytes]:
+def start_engine(
+    build: Mapping[str, Any], slm_dir: Path, workers: int = DEFAULT_WORKERS
+) -> subprocess.Popen[bytes]:
     argv = [sys.executable, "-m", "vllm.entrypoints.openai.api_server"]
-    argv += engine_argv(build, slm_dir)
+    argv += engine_argv(build, slm_dir, workers)
     process = subprocess.Popen(argv, env=engine_env(build))  # noqa: S603
     _wait(f"http://{LOOPBACK}:{ENGINE_PORT}/health", READY_SECONDS, process)
     return process
@@ -177,19 +185,19 @@ def start_router(root: Path, build: Mapping[str, Any]) -> str:
     return f"http://{LOOPBACK}:{ROUTER_PORT}"
 
 
-def start_gateway(services_port: int) -> str:
-    handler = gateway.build(f"http://{LOOPBACK}:{services_port}", SESSION_KEY)
-    server = ThreadingHTTPServer((LOOPBACK, GATEWAY_PORT), handler)
+def start_gateway(services_port: int, key: str = SESSION_KEY, port: int = GATEWAY_PORT) -> str:
+    handler = gateway.build(f"http://{LOOPBACK}:{services_port}", key)
+    server = ThreadingHTTPServer((LOOPBACK, port), handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    return f"http://{LOOPBACK}:{GATEWAY_PORT}"
+    return f"http://{LOOPBACK}:{port}"
 
 
-def start_harness(root: Path, base: str) -> subprocess.Popen[bytes]:
+def spawn_harness(root: Path, base: str, port: int = MAIN_PORT) -> subprocess.Popen[bytes]:
     env = dict(os.environ)
     env.update(
         {
-            contract.ENV_PORT: str(MAIN_PORT),
+            contract.ENV_PORT: str(port),
             contract.ENV_SLM_URL: base + "/slm",
             contract.ENV_ROUTER_URL: base + "/router",
             contract.ENV_TOOLS_URL: base,
@@ -199,11 +207,9 @@ def start_harness(root: Path, base: str) -> subprocess.Popen[bytes]:
         }
     )
     main = root / "artifact" / contract.MAIN_FILE
-    process = subprocess.Popen(  # noqa: S603
+    return subprocess.Popen(  # noqa: S603
         [sys.executable, str(main)], env=env, cwd=str(main.parent)
     )
-    _wait(f"http://{LOOPBACK}:{MAIN_PORT}/health", READY_SECONDS, process)
-    return process
 
 
 def entry_of(build: Mapping[str, Any]) -> dict[str, Any]:
@@ -227,9 +233,11 @@ class Shim:
     metrics: Metrics = field(default_factory=Metrics)
     held: Held | None = None
     engine: subprocess.Popen[bytes] | None = None
-    harness: subprocess.Popen[bytes] | None = None
+    harnesses: list[subprocess.Popen[bytes]] = field(default_factory=list)
     services: Services | None = None
     request_seconds: float = REQUEST_SECONDS
+    workers: int = DEFAULT_WORKERS
+    idle: queue.Queue[Held] = field(default_factory=queue.Queue)
 
     @property
     def ready(self) -> bool:
@@ -237,15 +245,30 @@ class Shim:
             self.held is not None
             and self.engine is not None
             and self.engine.poll() is None
-            and self.harness is not None
-            and self.harness.poll() is None
+            and bool(self.harnesses)
+            and all(process.poll() is None for process in self.harnesses)
         )
 
     def start(self) -> None:
         slm_dir = self.root / "slm"
         check_weights(self.build, slm_dir)
-        self.engine = start_engine(self.build, slm_dir)
+        self.engine = start_engine(self.build, slm_dir, self.workers)
         router_url = start_router(self.root, self.build)
+        self.services = Services(LOOPBACK, SERVICES_PORT)
+        self.services.start()
+        entry = entry_of(self.build)
+        built = [self.add_worker(index, router_url, entry) for index in range(self.workers)]
+        for index, process in enumerate(self.harnesses):
+            _wait(f"http://{LOOPBACK}:{MAIN_PORT + index}/health", READY_SECONDS, process)
+        for held in built:
+            self.idle.put(held)
+        self.held = built[0]
+        log.info("certified image ready for %s with %d workers", entry["model"], self.workers)
+
+    def add_worker(self, index: int, router_url: str, entry: dict[str, Any]) -> Held:
+        if self.services is None:
+            raise ShimError("the services are not started")
+        key = f"{SESSION_KEY}-{index}"
         session = ArtifactSession(
             sample_database=b"",
             fault_plan=None,
@@ -253,14 +276,11 @@ class Shim:
             router_url=router_url,
             desk=None,
         )
-        self.services = Services(LOOPBACK, SERVICES_PORT)
-        self.services.attach(SESSION_KEY, session)
-        self.services.start()
-        base = start_gateway(self.services.port)
-        self.harness = start_harness(self.root, base)
-        entry = entry_of(self.build)
+        self.services.attach(key, session)
+        base = start_gateway(self.services.port, key, GATEWAY_PORT + index)
+        self.harnesses.append(spawn_harness(self.root, base, MAIN_PORT + index))
         sandbox = Sandbox(
-            key=SESSION_KEY,
+            key=key,
             network="",
             slm_container="",
             gateway_container="",
@@ -268,29 +288,33 @@ class Shim:
             router_process=None,
             slm_url=session.slm_url,
             router_url=router_url,
-            main_url=f"http://{LOOPBACK}:{MAIN_PORT}",
+            main_url=f"http://{LOOPBACK}:{MAIN_PORT + index}",
             session=session,
             gpu="0",
         )
-        self.held = Held(
+        return Held(
             model=entry["model"],
             artifact_digest=entry["artifact_digest"],
             entry=entry,
             sandbox=sandbox,
             gpu="0",
-            slot=0,
+            slot=index,
         )
-        log.info("certified image ready for %s", entry["model"])
 
     def run(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if self.held is None:
             return {"error": "the system is still starting"}
         started = time.perf_counter()
+        try:
+            worker = self.idle.get(timeout=self.request_seconds)
+        except queue.Empty:
+            return {"error": "every worker stayed busy"}
         with self.metrics.lock:
             self.metrics.in_flight += 1
         try:
-            found = answer(self.held, request, timeout=self.request_seconds)
+            found = answer(worker, request, timeout=self.request_seconds)
         finally:
+            self.idle.put(worker)
             elapsed = (time.perf_counter() - started) * 1000
             with self.metrics.lock:
                 self.metrics.in_flight -= 1
@@ -320,7 +344,7 @@ class Shim:
         return response.status_code, response.content
 
     def stop(self) -> None:
-        for process in (self.harness, self.engine):
+        for process in (*self.harnesses, self.engine):
             if process is not None and process.poll() is None:
                 process.terminate()
                 with contextlib.suppress(subprocess.TimeoutExpired):
@@ -391,10 +415,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--listen", default=os.environ.get(BIND_ENV, LOOPBACK))
     parser.add_argument("--port", type=int, default=int(os.environ.get(PORT_ENV, SHIM_PORT)))
     parser.add_argument("--request-seconds", type=float, default=REQUEST_SECONDS)
+    parser.add_argument(
+        "--workers", type=int, default=int(os.environ.get(WORKERS_ENV) or DEFAULT_WORKERS)
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     try:
-        shim = Shim(args.root, read_build(args.root), request_seconds=args.request_seconds)
+        shim = Shim(
+            args.root,
+            read_build(args.root),
+            request_seconds=args.request_seconds,
+            workers=max(1, args.workers),
+        )
     except ShimError as exc:
         print(str(exc), file=sys.stderr)
         return 2

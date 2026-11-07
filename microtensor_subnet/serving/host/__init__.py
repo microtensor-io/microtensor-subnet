@@ -27,6 +27,7 @@ from microtensor_subnet.serving.host.fetch import (
     fetch_model,
 )
 from microtensor_subnet.serving.host.image import (
+    DEFAULT_CONCURRENCY,
     ImageError,
     ImageHeld,
     answer_image,
@@ -350,6 +351,7 @@ class ServingHost:
             gpu=holding.gpu,
             slot=slot,
             ready_seconds=self.config.engine_ready_seconds,
+            workers=self.config.max_concurrency or DEFAULT_CONCURRENCY,
         )
         if held.artifact_digest.lower() != holding.artifact_digest.lower():
             close_image(self.docker, held)
@@ -469,7 +471,7 @@ class ServingHost:
                 model=held.model,
                 artifact_digest=held.artifact_digest,
                 gpu=self.card(gpu).id,
-                concurrency=1,
+                concurrency=self.config.max_concurrency or DEFAULT_CONCURRENCY,
                 image_digest=held.image_digest,
             )
             for gpu, held in self.images_held.items()

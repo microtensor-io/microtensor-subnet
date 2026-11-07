@@ -86,7 +86,7 @@ docker run -d --name mt-operator --gpus all --restart unless-stopped \
   ghcr.io/microtensor-io/mt-operator:latest --config /data/operator.yaml
 ```
 
-The image is the validator image with `mt operator run` as its entrypoint; flags on the command line override the file. The compose file keeps working for hosts that prefer it:
+The image is the validator image with `mt operator run` as its entrypoint; flags on the command line override the file. `max_concurrency_per_gpu` is how many requests a card takes at once: the certified image runs that many workers against one engine, so the engine batches them. The compose file keeps working for hosts that prefer it:
 
 ```bash
 cd microtensor-subnet/deploy
