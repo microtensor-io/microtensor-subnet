@@ -12,15 +12,21 @@ from microtensor_subnet.core.hashing import DIGEST_PREFIX
 from microtensor_subnet.serving import client, verify
 from microtensor_subnet.serving.probes.ask import Answered, Chatted, ask, ask_chat
 from microtensor_subnet.serving.probes.general import GeneralItem, Target, format_failure
-from microtensor_subnet.serving.probes.sets import ProbeSet
+from microtensor_subnet.serving.probes.sets import ProbeItem, ProbeSet
 from microtensor_subnet.validator import grade
 
 log = logging.getLogger("microtensor_subnet.serving.probes")
 
 OPERATORS_PATH = "/v1/inference/validators/operators"
 PROBES_PATH = "/v1/inference/validators/probes"
+ITEMS_PATH = "/v1/inference/validators/probe-items"
+ITEMS_PER_FETCH: Final[int] = 5
 PROBED_STATES = ("collateralised", "probing", "admitted")
+GPU_PROBED: Final[tuple[str, ...]] = ("serving", "probing", "failed_probe")
 FORMAT: Final[str] = "format"
+HIDDEN: Final[str] = "hidden"
+CANARY: Final[str] = "canary"
+KIND_WEIGHTS: Final[tuple[tuple[str, float], ...]] = ((HIDDEN, 0.8), (CANARY, 0.2))
 FAILING: Final[tuple[str, ...]] = (verify.CHEAT, FORMAT)
 OUTCOME_ONLY: Final[str] = "outcome and format only; no validator class can prefill this model"
 Lister = Callable[[str, Any], list[dict[str, Any]]]
@@ -38,6 +44,8 @@ class Probe:
     success: bool | None
     reason: str = ""
     verdict: str = ""
+    gpu: str = ""
+    kind: str = ""
 
     @property
     def reported(self) -> bool:
@@ -49,16 +57,81 @@ def operators_for(server: str, wallet: Any) -> list[dict[str, Any]]:
     return [dict(row) for row in (found or {}).get("operators") or []]
 
 
+def withheld_for(server: str, wallet: Any, model: str, count: int = ITEMS_PER_FETCH) -> ProbeSet:
+    found = client._signed(
+        server, wallet, method="GET", path=ITEMS_PATH, query={"model": model, "count": count}
+    )
+    body = dict(found or {})
+    held = {
+        str(row["item_id"]): ProbeItem(
+            item_id=str(row["item_id"]),
+            family=str(row.get("family", "")),
+            task=dict(row.get("task") or {}),
+            label={},
+        )
+        for row in [*(body.get("items") or []), *(body.get("canaries") or [])]
+        if isinstance(row, Mapping) and row.get("item_id")
+    }
+    canaries = [
+        str(row["item_id"])
+        for row in body.get("canaries") or []
+        if isinstance(row, Mapping) and row.get("item_id")
+    ]
+    hidden = [i for i in held if i not in canaries]
+    return ProbeSet(
+        arena=str(body.get("arena", "")),
+        epoch=int(body.get("epoch") or 0),
+        artifact_sha="",
+        model=model,
+        grader="",
+        right={"1.00": hidden},
+        items=held,
+        canaries=canaries,
+    )
+
+
 def report(
-    server: str, wallet: Any, *, operator: str, model: str, failed: bool, verdict: str = ""
+    server: str,
+    wallet: Any,
+    *,
+    operator: str,
+    model: str,
+    failed: bool,
+    verdict: str = "",
+    gpu: str = "",
+    kind: str = "",
+    reason: str = "",
+    input_tokens: int = 0,
+    ttft_ms: float = 0.0,
+    total_ms: float = 0.0,
+    item_id: str = "",
+    answer: Any = None,
 ) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "operator_hotkey": operator,
         "model": model,
         "failed": bool(failed),
         "verdict": verdict,
+        "gpu": gpu,
+        "kind": kind,
+        "reason": reason[:200],
+        "input_tokens": max(0, int(input_tokens)),
+        "ttft_ms": max(0.0, float(ttft_ms)),
+        "total_ms": max(0.0, float(total_ms)),
     }
+    if item_id:
+        payload["item_id"] = item_id
+        payload["answer"] = answer
     return dict(client._signed(server, wallet, method="POST", path=PROBES_PATH, payload=payload))
+
+
+def pick_kind(rng: random.Random) -> str:
+    draw = rng.random() * sum(weight for _, weight in KIND_WEIGHTS)
+    for kind, weight in KIND_WEIGHTS:
+        draw -= weight
+        if draw < 0:
+            return kind
+    return KIND_WEIGHTS[-1][0]
 
 
 def _pairs(row: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -82,11 +155,188 @@ def _send(
     model: str,
     failed: bool,
     verdict: str,
-) -> None:
+    **fields: Any,
+) -> dict[str, Any] | None:
     try:
-        reporter(server, wallet, operator=operator, model=model, failed=failed, verdict=verdict)
+        return dict(
+            reporter(
+                server,
+                wallet,
+                operator=operator,
+                model=model,
+                failed=failed,
+                verdict=verdict,
+                **fields,
+            )
+            or {}
+        )
     except client.ServerError as exc:
         log.warning("probe of %s not recorded: %s", operator[:12], exc)
+        return None
+
+
+def probe_gpu(
+    *,
+    server: str,
+    gateway: str,
+    credential: str,
+    wallet: Any,
+    hotkey: str,
+    gpu: str,
+    model: str,
+    digest: str,
+    held: ProbeSet,
+    floor: float,
+    rng: random.Random,
+    kind: str = HIDDEN,
+    asker: Asker = ask,
+    reporter: Reporter = report,
+) -> Probe:
+    pool = held.canary_items() if kind == CANARY else held.right_at(floor)
+    if not pool:
+        return Probe(hotkey, model, digest, "", None, "no item for this probe", gpu=gpu, kind=kind)
+    item = rng.choice(pool)
+    answered = asker(
+        gateway, credential, hotkey=hotkey, model=model, task=item.task, floor=floor, gpu=gpu
+    )
+    if not answered.ok:
+        return Probe(hotkey, model, digest, item.item_id, None, answered.error, gpu=gpu, kind=kind)
+    timings = {
+        "gpu": gpu,
+        "kind": kind,
+        "input_tokens": answered.prompt_tokens,
+        "ttft_ms": answered.ttft_ms,
+        "total_ms": answered.latency_ms,
+    }
+    if answered.artifact_digest and digest and answered.artifact_digest.lower() != digest:
+        reason = "answered with another artifact"
+        _send(
+            reporter,
+            server,
+            wallet,
+            operator=hotkey,
+            model=model,
+            failed=True,
+            verdict="",
+            reason=reason,
+            **timings,
+        )
+        return Probe(hotkey, model, digest, item.item_id, False, reason, gpu=gpu, kind=kind)
+    if not held.grader:
+        recorded = _send(
+            reporter,
+            server,
+            wallet,
+            operator=hotkey,
+            model=model,
+            failed=False,
+            verdict="",
+            item_id=item.item_id,
+            answer=answered.answer,
+            **timings,
+        )
+        graded = dict((recorded or {}).get("graded") or {})
+        if recorded is None or not graded:
+            reason = "the server did not grade the answer"
+            return Probe(hotkey, model, digest, item.item_id, None, reason, gpu=gpu, kind=kind)
+        success = bool(graded.get("ok"))
+        reason = str(graded.get("reason") or "")
+        verdict = verify.PASS if success else ""
+        return Probe(
+            hotkey, model, digest, item.item_id, success, reason, verdict, gpu=gpu, kind=kind
+        )
+    try:
+        graded_locally = grade.grade(
+            held.grader, answered.answer, item.label, held.databases, task=item.task
+        )
+    except grade.GradeError as exc:
+        success, reason = False, f"the answer could not be graded: {exc}"
+    else:
+        success, reason = graded_locally.success, graded_locally.reason
+    verdict = verify.PASS if success else ""
+    _send(
+        reporter,
+        server,
+        wallet,
+        operator=hotkey,
+        model=model,
+        failed=not success,
+        verdict=verdict,
+        reason=reason,
+        **timings,
+    )
+    return Probe(hotkey, model, digest, item.item_id, success, reason, verdict, gpu=gpu, kind=kind)
+
+
+def cycle_gpus(
+    *,
+    server: str,
+    gateway: str,
+    credential: str,
+    wallet: Any,
+    sets: Mapping[str, ProbeSet] | None,
+    floor: float,
+    chance: float,
+    rng: random.Random,
+    lister: Lister = operators_for,
+    asker: Asker = ask,
+    reporter: Reporter = report,
+    fetcher: Callable[..., ProbeSet] = withheld_for,
+) -> list[Probe]:
+    results: list[Probe] = []
+    fetched: dict[str, ProbeSet] = {}
+    for row in lister(server, wallet):
+        hotkey = str(row.get("hotkey", ""))
+        if str(row.get("state", "")).lower() not in PROBED_STATES:
+            continue
+        digests = dict(_pairs(row))
+        for card in row.get("gpus") or []:
+            if not isinstance(card, Mapping):
+                continue
+            label = str(card.get("label", ""))
+            model = str(card.get("model", ""))
+            if not label or not model or str(card.get("status", "")) not in GPU_PROBED:
+                continue
+            digest = digests.get(model, "")
+            if rng.random() >= chance:
+                continue
+            held: ProbeSet | None
+            if sets is not None:
+                held = sets.get(digest)
+            elif model in fetched:
+                held = fetched[model]
+            else:
+                try:
+                    held = fetcher(server, wallet, model)
+                except client.ServerError as exc:
+                    log.warning("no probe items for %s: %s", model, exc)
+                    held = None
+                else:
+                    fetched[model] = held
+            if held is None or not held.items:
+                results.append(
+                    Probe(hotkey, model, digest, "", None, "no withheld items", gpu=label)
+                )
+                continue
+            results.append(
+                probe_gpu(
+                    server=server,
+                    gateway=gateway,
+                    credential=credential,
+                    wallet=wallet,
+                    hotkey=hotkey,
+                    gpu=label,
+                    model=model,
+                    digest=digest,
+                    held=held,
+                    floor=floor,
+                    rng=rng,
+                    kind=pick_kind(rng),
+                    asker=asker,
+                    reporter=reporter,
+                )
+            )
+    return results
 
 
 def _judged(target: Target, item: GeneralItem, answered: Chatted) -> tuple[str, str]:

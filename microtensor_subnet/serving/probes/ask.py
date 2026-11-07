@@ -22,6 +22,9 @@ class Answered:
     artifact_digest: str = ""
     latency_ms: float = 0.0
     error: str = ""
+    gpu: str = ""
+    prompt_tokens: int = 0
+    ttft_ms: float = 0.0
 
 
 def ask(
@@ -33,8 +36,11 @@ def ask(
     task: dict[str, Any],
     floor: float,
     timeout: float = TIMEOUT_SECONDS,
+    gpu: str = "",
 ) -> Answered:
-    body = {"hotkey": hotkey, "model": model, "task": task, "floor": floor}
+    body: dict[str, Any] = {"hotkey": hotkey, "model": model, "task": task, "floor": floor}
+    if gpu:
+        body["gpu"] = gpu
     try:
         with httpx.Client(base_url=gateway.rstrip("/"), timeout=timeout) as http:
             response = http.post(PROBE_PATH, json=body, headers={CREDENTIAL_HEADER: credential})
@@ -44,6 +50,7 @@ def ask(
         detail = response.text[:200]
         return Answered(False, error=f"gateway answered {response.status_code}: {detail}")
     found = response.json()
+    usage = found.get("usage") if isinstance(found.get("usage"), Mapping) else {}
     return Answered(
         True,
         answer=found.get("answer"),
@@ -52,6 +59,9 @@ def ask(
         verified=bool(found.get("verified")),
         artifact_digest=str(found.get("artifact_digest") or ""),
         latency_ms=float(found.get("latency_ms") or 0.0),
+        gpu=str(found.get("gpu") or gpu),
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        ttft_ms=float(found.get("ttft_ms") or 0.0),
     )
 
 

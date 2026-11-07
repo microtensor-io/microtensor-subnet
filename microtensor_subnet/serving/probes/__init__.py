@@ -8,15 +8,32 @@ from microtensor_subnet.serving.probes.general import (
     verifiable,
 )
 from microtensor_subnet.serving.probes.loop import (
+    CANARY,
+    HIDDEN,
     Probe,
     cycle,
+    cycle_gpus,
     operators_for,
+    pick_kind,
     probe_general,
+    probe_gpu,
     report,
+    withheld_for,
 )
-from microtensor_subnet.serving.probes.sets import ProbeItem, ProbeSet, alias, latest, load, write
+from microtensor_subnet.serving.probes.sets import (
+    ProbeItem,
+    ProbeSet,
+    alias,
+    from_items,
+    latest,
+    load,
+    pick_canaries,
+    write,
+)
 
 __all__ = [
+    "CANARY",
+    "HIDDEN",
     "POOL",
     "Answered",
     "Chatted",
@@ -28,13 +45,19 @@ __all__ = [
     "alias",
     "ask_chat",
     "cycle",
+    "cycle_gpus",
     "format_failure",
+    "from_items",
     "items_for",
     "latest",
     "load",
     "operators_for",
+    "pick_canaries",
+    "pick_kind",
     "probe_general",
+    "probe_gpu",
     "report",
     "verifiable",
+    "withheld_for",
     "write",
 ]
