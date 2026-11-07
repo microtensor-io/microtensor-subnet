@@ -238,6 +238,12 @@ def unrunnable(offer: Offer, capacity: Capacity) -> str:
     return ""
 
 
+def pin_matches(pin: str | None, digest: str) -> bool:
+    if not pin or len(pin) < 7:
+        return False
+    return digest.lower().startswith(pin.lower())
+
+
 def build(
     offers: Sequence[Mapping[str, Any]] | Sequence[Offer],
     capacity: Capacity,
@@ -255,7 +261,7 @@ def build(
     for offer in rows:
         if not offer.model or not offer.artifact_digest:
             continue
-        if pinned is not None and pinned.get(offer.model) != offer.artifact_digest:
+        if pinned is not None and not pin_matches(pinned.get(offer.model), offer.artifact_digest):
             if offer.model in pinned:
                 reasons[offer.model] = "the catalogue moved past the pin you asked for"
             continue
