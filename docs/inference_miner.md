@@ -4,11 +4,13 @@ Netuid **576** on Bittensor testnet. An inference operator holds the certified s
 
 <img src="assets/serving-overview.png" width="100%" alt="How inference serving fits together: customers reach the gateway, the gateway routes to operator cards over outbound websockets, the coordinator probes through the gateway, validators score from the gateway's records">
 
-The gateway keeps the registry of cards, routes every request to one card, meters it and records it. The agent on each machine dials out, so nothing listens on a public port and a rented GPU works. The coordinator and permitted validators probe through the same gateway, and validators set the serving pool weights on CPU from the gateway's records and the probe verdicts. The frontier fallback in the figure is not switched on yet: a request no card can answer is refused and recorded as refused.
+The gateway keeps the registry of cards, routes every request to one card, meters it and signs a receipt for it. The agent on each machine dials out, so nothing listens on a public port and a rented GPU works. The coordinator and permitted validators probe through the same gateway, and validators set the serving pool weights on CPU from the receipts and the probe verdicts. The frontier model answers only when no card can, and only where the gateway is given an upstream; otherwise such a request is refused and recorded.
 
 ## What you run
 
-Each held system is the four part artifact its miner submitted and validators certified: a small model served by vLLM, a router served as a classifier, and the miner's harness and repair code running in a sandbox with no network beyond four service URLs. Your host runs the same stack a validator runs, one system per GPU, on the engine image and digest the arena was certified with (`images.engine` in the catalogue), and dials out to the gateway over a websocket. Nothing listens on a public port.
+<img src="assets/serving-image.png" width="100%" alt="From a settled epoch to a certified image: the epoch settles, the coordinator builds the image, verifies it on the reference GPU, signs it and publishes it">
+
+Each held system is the four part artifact its miner submitted and validators certified: a small model served by vLLM, a router served as a classifier, and the miner's harness and repair code. After an epoch settles the coordinator builds one image per winning submission holding the engine, the weights, the harness, the router and the repair code, replays forty scored calls through it on the reference GPU requiring an exact token match, signs the manifest and publishes the image to the registry and the archive; the catalogue then carries it as `images.certified`. Your host runs that image, one per GPU, and dials out to the gateway over a websocket. Nothing listens on a public port.
 
 ## GPUs
 
@@ -113,11 +115,11 @@ Certified systems run on the engine build their arena was certified with: the ca
 
 ## 4. Admission
 
-<img src="assets/serving-probes.png" width="100%" alt="How a card is checked: a probe is picked, sent through the gateway, answered by the card, graded by the prober, recorded per card and fed to a sequential test">
+<img src="assets/serving-probes.png" width="100%" alt="How the coordinator checks operators: a probe is picked, sent through the gateway, answered by the card, checked for exact tokens, the envelope and quality, then passed or failed">
 
 Probes reach each card through the gateway on the same path and frames as customer traffic, so a card cannot tell them apart. Three kinds exist: a hidden item from the withheld pool, graded with the arena's grader and passed at a quality of at least 0.60 inside the envelope; an exact token check, the same request replayed on the reference run, whose output tokens must match; and a short canary with a known reply. Admission is five probes in a row, all passing; after that a live card sees about one probe every two to three hours (hidden three times in five, exact and canary once each), plus one after any timeout. The coordinator runs the loop for every card, and validators the network permits add to it. A failed probe pauses the card: no traffic and no pay, probed again after ten minutes, back to serving on a pass. Three failed probes within 24 hours remove the card until the team re-admits it by hand; an exact token mismatch the coordinator confirms on its reference run slashes the operator. The hotkey's other cards carry on throughout. A new epoch winner resets admission for that model, so re-admission after each epoch is normal. The probe log on the provider page shows kind, size and timings, never the item.
 
-<img src="assets/serving-lifecycle.png" width="100%" alt="Life of a card: offline, probing, serving and failed_probe, with the transitions between them">
+<img src="assets/serving-lifecycle.png" width="100%" alt="Operator lifecycle: registered, pulling, probing, live, paused, removed, draining, offline and slashed, with the transitions between them">
 
 | State | Meaning | Customers | Paid |
 |---|---|---|---|
@@ -133,7 +135,7 @@ Probes reach each card through the gateway on the same path and frames as custom
 
 ## How a request is answered
 
-<img src="assets/serving-request.png" width="100%" alt="One request end to end: the gateway picks the freest serving card, sends the request down the websocket naming the card, streams the answer back and records the usage per card">
+<img src="assets/serving-request.png" width="100%" alt="One request end to end: the gateway picks a live operator, sends the request down its websocket, retries once on another operator when no first token arrives in time, streams the answer back, signs a receipt, and falls back to the frontier only when both fail">
 
 The gateway picks a serving card that holds the model, lowest in flight first, and sends a `request` frame with an id, the card, the deadline and `{task, floor, max_tokens}` over the websocket. The host refuses a request whose deadline has passed, registers the task's schema as a SQLite database for the sandbox tools, calls the harness (`POST /harness/run`), sends an empty `chunk` the moment the harness makes its first model call, asks the router for the probability that the draft is right, and answers a `done` frame with `{answer, p, floor_met, verified, trace, usage, ttft_ms, total_ms}`. `floor_met` is whether the harness's own check passed and `p` cleared the customer's quality floor. The gateway counts the tokens, times the first token and the end itself, signs a receipt and records one row per request and card; nothing an operator reports is used for pay. No first token within the limit means the gateway cancels and retries once on another card; when no serving card holds the model the request falls back to the frontier relay where one is configured and is otherwise refused and recorded, which raises `wanted`. No frontier call happens on an operator.
 
