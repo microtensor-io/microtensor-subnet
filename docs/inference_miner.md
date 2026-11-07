@@ -2,11 +2,17 @@
 
 Netuid **576** on Bittensor testnet. An inference operator holds the certified system of one or more arenas on its own GPUs and answers customer requests that the gateway at api.microtensor.cloud routes to it. Serving is a separate role from model mining and validating, with its own hotkey and its own settlement. The network shows every provider and every card at https://www.microtensor.cloud/network/inference.
 
+<img src="assets/serving-overview.png" width="100%" alt="How inference serving fits together: customers reach the gateway, the gateway routes to operator cards over outbound websockets, the coordinator probes through the gateway, validators score from the gateway's records">
+
+The gateway keeps the registry of cards, routes every request to one card, meters it and records it. The agent on each machine dials out, so nothing listens on a public port and a rented GPU works. The coordinator and permitted validators probe through the same gateway, and validators set the serving pool weights on CPU from the gateway's records and the probe verdicts. The frontier fallback in the figure is not switched on yet: a request no card can answer is refused and recorded as refused.
+
 ## What you run
 
-Each held system is the four part artifact its miner submitted and validators certified: a small model served by vLLM, a router served as a classifier, and the miner's harness and repair code running in a sandbox with no network beyond four service URLs. Your host runs the same stack a validator runs, one system per GPU, and dials out to the gateway over a websocket. Nothing listens on a public port.
+Each held system is the four part artifact its miner submitted and validators certified: a small model served by vLLM, a router served as a classifier, and the miner's harness and repair code running in a sandbox with no network beyond four service URLs. Your host runs the same stack a validator runs, one system per GPU, on the engine image and digest the arena was certified with (`images.engine` in the catalogue), and dials out to the gateway over a websocket. Nothing listens on a public port.
 
 ## GPUs
+
+<img src="assets/serving-cards.png" width="100%" alt="One hotkey, many cards, many machines: the agent announces each card, the server labels them gpu-0, gpu-1 and so on, and each card is judged on its own">
 
 The GPU is the unit. One hotkey owns any number of cards, on one machine or several, and each card holds one model. The agent reads the cards from `nvidia-smi` on start, announces them in a hello signed by the hotkey, and the network labels them `gpu-0`, `gpu-1` and so on in the order it first sees them. The labels stay with the cards across restarts and appear on the public provider page and in `mt operator status`. Every 15 seconds the agent reports each card's memory in use and utilisation; a card the network has not heard from for 45 seconds shows offline.
 
@@ -48,11 +54,13 @@ docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/walle
 
 ## 2. See what the network wants
 
+<img src="assets/serving-demand.png" width="100%" alt="How capacity follows demand: customers send traffic, the gateway measures load per model, GPUs wanted is published, operators move to it">
+
 ```bash
 docker run --rm --gpus all --entrypoint mt ghcr.io/microtensor-io/validator:1 operator plan
 ```
 
-The plan lists the cards it found and reads the public catalogue (`GET /v1/public/inference/catalogue`), then gives each card the model that wants serving most: requests in the last hour divided by the GPUs already holding it, cold models first, held models kept unless something clearly wants serving more. A model whose `vram_gb` exceeds the smallest card is skipped with the reason. `--gpus 0,1` limits the cards; `--gpu-gb` is only read when `nvidia-smi` cannot be asked.
+The plan lists the cards it found and reads the public catalogue (`GET /v1/public/inference/catalogue`), then gives each card the model that wants serving most: `wanted` first, then requests in the last hour divided by the cards already holding it, cold models first, held models kept unless something clearly wants serving more. `wanted` is one card when requests arrive and none is online, otherwise the cards needed to bring the model's utilisation above 55% back to 40%. A model whose `vram_gb` exceeds the smallest card is skipped with the reason. `--gpus 0,1` limits the cards; `--gpu-gb` is only read when `nvidia-smi` cannot be asked.
 
 ## 3. Run
 
@@ -73,7 +81,7 @@ For one pinned system instead of the planner, run `operator run --serve mt/<aren
 
 On start the host fetches the system's two repositories at the committed revisions, verifies every manifest hash, starts vLLM for the model, the router server and the sandbox on each card, declares the system to the server (`POST /v1/inference/operators/models`) and dials the gateway with a hello signed by the hotkey. Expect ten to twenty minutes before the first answer on a fresh cache. Every `--review-seconds` (300) the catalogue is read again; the connection is kept unless the plan changed what a card holds.
 
-`mt operator status` prints one line per card the network knows under this hotkey: label, card, memory, model loaded, online and last seen.
+`mt operator status` prints one line per card the network knows under this hotkey: label, card, memory, model loaded, status and last seen.
 
 ## Updates
 
@@ -83,15 +91,28 @@ Certified systems run on the engine build their arena was certified with: the ca
 
 ## 4. Admission
 
-Validators probe operators through the gateway with withheld items the certified system answered correctly and grade your answers. A card holding a declared model connects as probing before admission so validators can reach it; customers are routed to it once the model is admitted. A sequential test admits a clean operator after about sixty probes and rejects one that fails early; a rejection withdraws the operator until a new generation. Until validators probe, the team can admit an operator by hand for a demo. A new epoch winner resets eligibility for that model, so re-admission after each epoch is normal.
+<img src="assets/serving-probes.png" width="100%" alt="How a card is checked: a probe is picked, sent through the gateway, answered by the card, graded by the prober, recorded per card and fed to a sequential test">
+
+Probes reach each card through the gateway on the same path and frames as customer traffic, so a card cannot tell them apart. Four in five are withheld items the certified system answered correctly, graded with the arena's grader; the rest are short canaries with a known reply; the exact token check comes later. The coordinator runs the loop for every card at about ten probes per card per day, and validators the network permits add to it. Each verdict is recorded per card and feeds a sequential test: about fifty clean answers admit the card, two failures early on reject it. A rejected card shows `failed_probe`, takes no customer traffic and earns nothing until three clean probes in a row reopen it; the hotkey's other cards carry on. A new epoch winner resets eligibility for that model, so re-admission after each epoch is normal. Until probes run, the team can admit an operator by hand for a demo. The probe log on the provider page shows kind, size and timings, never the item.
+
+<img src="assets/serving-lifecycle.png" width="100%" alt="Life of a card: offline, probing, serving and failed_probe, with the transitions between them">
+
+| State | Meaning | Customers | Paid |
+|---|---|---|---|
+| `offline` | no heartbeat for 45 seconds, or its machine dropped | no | no |
+| `probing` | the model is loading, or it is declared but the card is not admitted yet | no | no |
+| `serving` | admitted; customers and probes | yes | yes |
+| `failed_probe` | the sequential test rejected this card; three clean probes reopen it | no | no |
 
 ## How a request is answered
 
-The gateway sends `{task, floor, max_tokens}` over the websocket. The host registers the task's schema as a SQLite database for the sandbox tools, calls the harness (`POST /harness/run`), asks the router for the probability that the draft is right, and answers `{answer, p, floor_met, verified, trace, usage}`. `floor_met` is whether the harness's own check passed and `p` cleared the customer's quality floor. No frontier call happens on an operator.
+<img src="assets/serving-request.png" width="100%" alt="One request end to end: the gateway picks the freest serving card, sends the request down the websocket naming the card, streams the answer back and records the usage per card">
+
+The gateway picks the freest serving card that holds the model and sends `{task, floor, max_tokens}` over the websocket, naming the card. The host registers the task's schema as a SQLite database for the sandbox tools, calls the harness (`POST /harness/run`), asks the router for the probability that the draft is right, and answers `{answer, p, floor_met, verified, trace, usage}`. `floor_met` is whether the harness's own check passed and `p` cleared the customer's quality floor. The gateway counts the tokens, times the first token and the end itself and records one row per request and card; nothing an operator reports is used for pay. When no serving card holds the model the request is refused and recorded, which raises `wanted`. No frontier call happens on an operator.
 
 ## General models
 
-Beside certified systems, an operator can serve general open weight chat models by name (GLM, Qwen, DeepSeek, Kimi and similar releases) over the same socket, which now speaks operator protocol 4. Such a model appears in the catalogue with `kind: "general"`, a repository pinned at a revision, a sha256 manifest of every file it needs, its format, engine settings, context, maximum output, tool calling, family, serving class, memory and licence.
+Beside certified systems, an operator can serve general open weight chat models by name (GLM, Qwen, DeepSeek, Kimi and similar releases) over the same socket. Such a model appears in the catalogue with `kind: "general"`, a repository pinned at a revision, a sha256 manifest of every file it needs, its format, engine settings, context, maximum output, tool calling, family, serving class, memory and licence.
 
 | Format | Engine | Image |
 |---|---|---|
@@ -126,11 +147,11 @@ Calibration and the per model verifiability table wait for a GPU box. A threshol
 
 ## Earnings
 
-Two sources, both per arena.
+Two sources, both per arena, settled per card.
 
-**Revenue share.** You receive 95% of the metered billing for the requests you served; Microtensor keeps 5%. A request that fell back to a frontier model is billed to the customer at the frontier list price and passed through; it is outside the 95%.
+**Revenue share.** When billing opens you receive 95% of the metered billing for the requests you served; Microtensor keeps 5%. A request that fell back to a frontier model is billed to the customer at the frontier list price and passed through; it is outside the 95%. On testnet every answered request counts as billed for the pool and no customer is charged.
 
-**The serving pool.** Each arena's epoch emission sets aside a serving pool for inference miners, at most 10% at launch, and splits the rest equally across the five system pools (18% each). At epoch close every validator reads the published settlement, recomputes it, and pays the pool by billed score per operator: your share is your billed tokens at the reference rate over everyone's, after the gates. Serving emission that no served request earned is burned to the burn hotkey, the same rule as an empty system pool; it never flows back to the system pools.
+**The serving pool.** Each arena's epoch emission sets aside a serving pool for inference operators, at most 10% at launch, and splits the rest equally across the five system pools (18% each). A serving epoch is one UTC day, closed at midnight, so every validator settles the same window. At epoch close every validator reads the published settlement, recomputes it, and pays the pool by billed score per card: a card's share is its billed tokens at the reference rate over everyone's, after the gates. Serving emission that no served request earned is burned to the burn hotkey, the same rule as an empty system pool; it never flows back to the system pools.
 
 The cap slides with the arena's billing over the last 30 days, read from the gateway each epoch, and the freed share returns to the five system pools:
 
@@ -140,12 +161,14 @@ The cap slides with the arena's billing over the last 30 days, read from the gat
 | below 50,000 USD | 5% |
 | above | 2% |
 
-**Admission floor.** For your first 3 epochs after admission you earn 1% of the serving pool even at zero traffic, so a new arena always has someone serving. After that, pay is usage only.
+**Admission floor.** Where the arena sets one, a newly admitted operator earns a small fixed share of the serving pool for its first serving epochs even at zero traffic, so a new arena always has someone serving. After that, pay is usage only.
 
-**Gates.** Serving pay requires the success rate, TTFT p99, TPOT p99 and cheat share gates to pass, as above; a failed gate zeroes the epoch's score. `mt operator audit` recomputes the published settlement.
+**Gates.** Serving pay requires the success rate, TTFT p99, TPOT p99 and cheat share gates to pass per card; a failed gate zeroes that card's score for the window and leaves the hotkey's other cards alone. Inputs above the arena's `long_above_tokens` are judged against the long input limits (`long_ttft_ms`, `long_e2e_ms`) instead of the ordinary ones. `mt operator audit` recomputes the published settlement.
 
 ## Troubleshooting
 
 - `the docker socket is not reachable`: mount `/var/run/docker.sock` and set `DOCKER_GID`.
 - `the model server did not become ready`: the card is too small for the model or another process holds it; `nvidia-smi` on the host.
 - `this operator does not hold that system`: the gateway routed a model the plan dropped; it recovers at the next review.
+- `agent ... is below the ... this network requires`: the published minimum moved; let the updater run, or pull the published digest yourself.
+- A card stays `probing`: it is not admitted yet, or its model is not the admitted digest; `mt operator status` shows which.
