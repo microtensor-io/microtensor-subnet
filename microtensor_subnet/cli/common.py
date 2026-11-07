@@ -78,11 +78,13 @@ def chain_config(args: argparse.Namespace) -> ChainConfig:
 
 def open_wallet(config: ChainConfig, *, required: bool = True):  # type: ignore[no-untyped-def]
     try:
-        return load_wallet(config)
+        wallet = load_wallet(config)
     except WalletError as exc:
         if required:
             raise SystemExit(f"wallet unavailable: {exc}") from exc
         return None
+    reclaim_logging()
+    return wallet
 
 
 def open_client(config: ChainConfig, wallet: object | None = None) -> SubtensorClient:
