@@ -95,7 +95,9 @@ def recompute(evidence: Mapping[str, Any]) -> list[Any]:
 
 
 def _key(row: Mapping[str, Any]) -> str:
-    return f"{row.get('operator', '')}/{row.get('model', '')}"
+    head = f"{row.get('operator', '')}/{row.get('model', '')}"
+    gpu = str(row.get("gpu", "") or "")
+    return f"{head}/{gpu}" if gpu else head
 
 
 def check(document: Mapping[str, Any]) -> Audit:

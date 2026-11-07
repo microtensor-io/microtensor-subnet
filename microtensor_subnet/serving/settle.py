@@ -65,11 +65,13 @@ class Settled:
     score: int
     gate_reason: str
     verdicts: tuple[Verdict, ...] = field(default_factory=tuple)
+    gpu: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "operator": self.operator,
             "model": self.model,
+            "gpu": self.gpu,
             "tokens": self.tokens,
             "requests": self.requests,
             "score": self.score,
@@ -128,6 +130,7 @@ def settle_pair(
     observations: Mapping[str, Observation],
     thresholds: Mapping[str, Fraction],
     z: Fraction = WILSON_Z,
+    gpu: str = "",
 ) -> Settled:
     verdicts: list[Verdict] = []
     reason = ""
@@ -148,6 +151,7 @@ def settle_pair(
         score=0 if reason else score_of(tokens, rate),
         gate_reason=reason,
         verdicts=tuple(verdicts),
+        gpu=gpu,
     )
 
 
@@ -176,7 +180,8 @@ def settle_epoch(
                 observations=observations,
                 thresholds=thresholds,
                 z=z,
+                gpu=str(row.get("gpu", "") or ""),
             )
         )
-    settled.sort(key=lambda s: (s.operator, s.model))
+    settled.sort(key=lambda s: (s.operator, s.model, s.gpu))
     return settled
