@@ -13,6 +13,10 @@ DEFAULT_CAP: Final[Fraction] = Fraction(1, 10)
 DEFAULT_REBATE: Final[Fraction] = Fraction(1, 25)
 DEFAULT_REVENUE_SHARE: Final[Fraction] = Fraction(19, 20)
 MAX_FLOOR_SHARE: Final[Fraction] = Fraction(1, 2)
+DEFAULT_BOUNTY_SHARE: Final[Fraction] = Fraction(1, 20)
+MAX_BOUNTY_SHARE: Final[Fraction] = Fraction(1, 2)
+TEAM: Final[str] = "team"
+COLDKEY: Final[str] = "coldkey"
 MODEL_PREFIX: Final[str] = "mt/"
 
 
@@ -55,6 +59,8 @@ class Split:
     shares: dict[str, int]
     burned: int = 0
     floors: dict[str, int] = field(default_factory=dict)
+    bounties: dict[str, int] = field(default_factory=dict)
+    excluded: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +73,8 @@ class Split:
             "shares": dict(self.shares),
             "burned": self.burned,
             "floors": dict(self.floors),
+            "bounties": dict(self.bounties),
+            "excluded": dict(self.excluded),
         }
 
 
@@ -120,6 +128,14 @@ def dials_for(serving: Mapping[str, Any], billing_usd: Any) -> Dials:
     return Dials(cap=cap_for(serving.get("cap_schedule"), billing_usd))
 
 
+def bounty_share_of(serving: Mapping[str, Any]) -> Fraction:
+    raw = serving.get("bounty_share")
+    share = DEFAULT_BOUNTY_SHARE if raw is None else fraction_of(raw)
+    if share > MAX_BOUNTY_SHARE:
+        raise PoolError(f"a bounty share of {share} would hand most of the pool to one operator")
+    return share
+
+
 def floors_for(
     serving: Mapping[str, Any],
     operators: Sequence[Mapping[str, Any]],
@@ -159,26 +175,82 @@ def identity(row: Settled) -> str:
     return row.operator
 
 
+def excluded_of(settled: Sequence[Settled]) -> dict[str, str]:
+    found: dict[str, str] = {}
+    totals: dict[str, int] = {}
+    coldkeys: dict[str, str] = {}
+    for row in settled:
+        totals[row.operator] = totals.get(row.operator, 0) + row.score
+        if row.coldkey:
+            coldkeys[row.operator] = row.coldkey
+        if row.team:
+            found[row.operator] = TEAM
+    best: dict[str, str] = {}
+    for operator, coldkey in sorted(coldkeys.items()):
+        if operator in found:
+            continue
+        leader = best.get(coldkey)
+        if leader is None or (totals[operator], operator) > (totals[leader], leader):
+            best[coldkey] = operator
+    for operator, coldkey in coldkeys.items():
+        if operator not in found and best.get(coldkey) != operator:
+            found[operator] = COLDKEY
+    return found
+
+
+def bounties_of(
+    reserve: int, settled: Sequence[Settled], excluded: Mapping[str, str]
+) -> dict[str, int]:
+    claims: dict[str, set[str]] = {}
+    for row in settled:
+        if row.operator in excluded:
+            continue
+        for digest in row.first_live:
+            claims.setdefault(digest, set()).add(row.operator)
+    if reserve <= 0 or not claims:
+        return {}
+    per_digest = reserve // len(claims)
+    found: dict[str, int] = {}
+    for digest in sorted(claims):
+        winners = sorted(claims[digest])
+        each = per_digest // len(winners)
+        for operator in winners:
+            found[operator] = found.get(operator, 0) + each
+    return {operator: amount for operator, amount in found.items() if amount > 0}
+
+
 def divide(
     emission: int,
     settled: Sequence[Settled],
     dials: Dials | None = None,
     *,
     floors: Mapping[str, Fraction] | None = None,
+    bounty_share: Fraction = Fraction(0),
 ) -> Split:
     if emission < 0:
         raise PoolError("emission cannot be negative")
+    if not 0 <= bounty_share <= MAX_BOUNTY_SHARE:
+        raise PoolError("the bounty share must be a fraction of the serving pool")
     rules = dials or Dials()
 
     available = int(Fraction(emission) * (1 - rules.reserve))
     earned = [row for row in settled if row.score > 0]
     total_score = sum(row.score for row in earned)
+    billing = sum(row.billing for row in earned)
 
-    rebated = int(Fraction(total_score) * rules.rebate)
+    rebated = int(Fraction(billing) * rules.rebate)
     ceiling = int(Fraction(available) * rules.cap)
     paid = min(rebated, ceiling)
+    reserve = int(Fraction(paid) * bounty_share) if earned else 0
 
-    shares = _shares(paid, earned)
+    excluded = excluded_of(settled)
+    shares = _shares(paid - reserve, earned)
+    for operator in list(shares):
+        if operator in excluded:
+            del shares[operator]
+    bounties = bounties_of(reserve, settled, excluded)
+    for operator, amount in bounties.items():
+        shares[operator] = shares.get(operator, 0) + amount
     granted = _floors(ceiling, shares, floors or {})
     return Split(
         emission=emission,
@@ -190,6 +262,8 @@ def divide(
         shares=shares,
         burned=ceiling - sum(shares.values()),
         floors=granted,
+        bounties=bounties,
+        excluded=excluded,
     )
 
 

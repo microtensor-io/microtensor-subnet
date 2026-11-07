@@ -1,20 +1,12 @@
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, Final
 
-SUCCESS: Final[str] = "success_rate"
-TTFT: Final[str] = "ttft_p99"
-TPOT: Final[str] = "tpot_p99"
-CHEAT_SHARE: Final[str] = "cheat_share"
-
-GATES: Final[tuple[str, ...]] = (SUCCESS, TTFT, TPOT, CHEAT_SHARE)
-
-WILSON_Z: Final[Fraction] = Fraction(23263, 10000)
-
+SCALE: Final[int] = 1000
+OUTSIDE_WEIGHT: Final[Fraction] = Fraction(1, 2)
 TOKENS_PER_RATE_UNIT: Final[int] = 1000
 
 
@@ -23,165 +15,103 @@ class SettlementError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class Observation:
-    trials: int
-    failures: int
-
-    def __post_init__(self) -> None:
-        if self.trials < 0 or self.failures < 0:
-            raise SettlementError("a gate cannot observe a negative count")
-        if self.failures > self.trials:
-            raise SettlementError(
-                f"{self.failures} failures out of {self.trials} trials is not a rate"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class Verdict:
-    name: str
-    passed: bool
-    trials: int
-    failures: int
-    bound: Fraction
-    threshold: Fraction
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "gate": self.name,
-            "passed": self.passed,
-            "trials": self.trials,
-            "failures": self.failures,
-            "lower_bound": [self.bound.numerator, self.bound.denominator],
-            "threshold": [self.threshold.numerator, self.threshold.denominator],
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class Settled:
     operator: str
     model: str
+    gpu: str
+    inside: int
+    outside: int
+    probes: int
+    passes: int
     tokens: int
-    requests: int
+    billing: int
     score: int
-    gate_reason: str
-    verdicts: tuple[Verdict, ...] = field(default_factory=tuple)
-    gpu: str = ""
+    coldkey: str = ""
+    team: bool = False
+    first_live: tuple[str, ...] = ()
+
+    @property
+    def served(self) -> int:
+        return self.inside + self.outside
+
+    @property
+    def pass_rate(self) -> Fraction:
+        return pass_rate(self.probes, self.passes)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "operator": self.operator,
             "model": self.model,
             "gpu": self.gpu,
+            "inside": self.inside,
+            "outside": self.outside,
+            "probes": self.probes,
+            "passes": self.passes,
             "tokens": self.tokens,
-            "requests": self.requests,
+            "billing": self.billing,
             "score": self.score,
-            "gate_reason": self.gate_reason,
-            "gates": [v.to_dict() for v in self.verdicts],
+            "coldkey": self.coldkey,
+            "team": self.team,
+            "first_live": list(self.first_live),
         }
 
 
-def wilson_lower_bound(failures: int, trials: int, z: Fraction = WILSON_Z) -> Fraction:
-    if trials <= 0:
-        return Fraction(0)
-    k, n = Fraction(failures), Fraction(trials)
-    z2 = z * z
-    inner = k * (n - k) / n + z2 / 4
-    root = _sqrt_floor(inner)
-    bound = (k + z2 / 2 - z * root) / (n + z2)
-    return bound if bound > 0 else Fraction(0)
+def _count(row: Mapping[str, Any], name: str) -> int:
+    try:
+        found = int(row.get(name, 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise SettlementError(f"{name} must be a count") from exc
+    if found < 0:
+        raise SettlementError(f"{name} cannot be negative")
+    return found
 
 
-def _sqrt_floor(value: Fraction, places: int = 12) -> Fraction:
-    if value <= 0:
-        return Fraction(0)
-    scale = 10**places
-    target = value * scale * scale
-    root = math.isqrt(target.numerator // target.denominator)
-    return Fraction(root, scale)
+def pass_rate(probes: int, passes: int) -> Fraction:
+    if probes < 0 or passes < 0 or passes > probes:
+        raise SettlementError(f"{passes} passes out of {probes} probes is not a rate")
+    return Fraction(1) if probes == 0 else Fraction(passes, probes)
 
 
-def gate(name: str, observed: Observation, threshold: Fraction, z: Fraction = WILSON_Z) -> Verdict:
-    n, k = observed.trials, observed.failures
-    if n <= 0:
-        return Verdict(name, True, n, k, Fraction(0), threshold)
-    z2 = z * z
-    a = Fraction(k) + z2 / 2 - threshold * (Fraction(n) + z2)
-    if a <= 0:
-        failed = False
-    else:
-        b = Fraction(k) * Fraction(n - k) / Fraction(n) + z2 / 4
-        failed = a * a > z2 * b
-    return Verdict(name, not failed, n, k, wilson_lower_bound(k, n, z), threshold)
+def score_of(inside: int, outside: int, probes: int, passes: int) -> int:
+    if inside < 0 or outside < 0:
+        raise SettlementError("served requests are counts and cannot be negative")
+    weighted = Fraction(inside) + OUTSIDE_WEIGHT * Fraction(outside)
+    return int(weighted * pass_rate(probes, passes) * SCALE)
 
 
-def score_of(tokens: int, rate: int) -> int:
+def billing_of(tokens: int, rate: int) -> int:
     if tokens < 0 or rate < 0:
         raise SettlementError("tokens and rate are counts and cannot be negative")
     return (tokens * rate) // TOKENS_PER_RATE_UNIT
 
 
-def settle_pair(
-    operator: str,
-    model: str,
-    *,
-    tokens: int,
-    requests: int,
-    rate: int,
-    observations: Mapping[str, Observation],
-    thresholds: Mapping[str, Fraction],
-    z: Fraction = WILSON_Z,
-    gpu: str = "",
-) -> Settled:
-    verdicts: list[Verdict] = []
-    reason = ""
-    for name in GATES:
-        found = observations.get(name, Observation(0, 0))
-        threshold = thresholds.get(name)
-        if threshold is None:
-            raise SettlementError(f"no threshold published for gate {name!r}")
-        verdict = gate(name, found, threshold, z)
-        verdicts.append(verdict)
-        if not verdict.passed and not reason:
-            reason = name
+def settle_row(row: Mapping[str, Any], *, rate: int) -> Settled:
+    inside, outside = _count(row, "inside"), _count(row, "outside")
+    probes, passes = _count(row, "probes"), _count(row, "passes")
+    tokens = _count(row, "tokens")
     return Settled(
-        operator=operator,
-        model=model,
+        operator=str(row.get("operator", "")),
+        model=str(row.get("model", "")),
+        gpu=str(row.get("gpu", "") or ""),
+        inside=inside,
+        outside=outside,
+        probes=probes,
+        passes=passes,
         tokens=tokens,
-        requests=requests,
-        score=0 if reason else score_of(tokens, rate),
-        gate_reason=reason,
-        verdicts=tuple(verdicts),
-        gpu=gpu,
+        billing=billing_of(tokens, rate),
+        score=score_of(inside, outside, probes, passes),
+        coldkey=str(row.get("coldkey", "") or ""),
+        team=bool(row.get("team", False)),
+        first_live=tuple(str(d) for d in row.get("first_live") or ()),
     )
 
 
-def settle_epoch(
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    rates: Mapping[str, int],
-    thresholds: Mapping[str, Fraction],
-    z: Fraction = WILSON_Z,
-) -> list[Settled]:
+def settle_epoch(rows: Sequence[Mapping[str, Any]], *, rates: Mapping[str, int]) -> list[Settled]:
     settled: list[Settled] = []
     for row in rows:
         model = str(row.get("model", ""))
         if model not in rates:
             raise SettlementError(f"no reference rate published for model {model!r}")
-        observations = {
-            name: Observation(*row.get("gates", {}).get(name, (0, 0))) for name in GATES
-        }
-        settled.append(
-            settle_pair(
-                str(row.get("operator", "")),
-                model,
-                tokens=int(row.get("tokens", 0) or 0),
-                requests=int(row.get("requests", 0) or 0),
-                rate=rates[model],
-                observations=observations,
-                thresholds=thresholds,
-                z=z,
-                gpu=str(row.get("gpu", "") or ""),
-            )
-        )
+        settled.append(settle_row(row, rate=int(rates[model])))
     settled.sort(key=lambda s: (s.operator, s.model, s.gpu))
     return settled
