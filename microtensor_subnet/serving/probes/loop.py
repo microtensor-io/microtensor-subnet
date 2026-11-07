@@ -67,7 +67,7 @@ def withheld_for(server: str, wallet: Any, model: str, count: int = ITEMS_PER_FE
             item_id=str(row["item_id"]),
             family=str(row.get("family", "")),
             task=dict(row.get("task") or {}),
-            label={},
+            label=dict(row.get("label") or {}),
         )
         for row in [*(body.get("items") or []), *(body.get("canaries") or [])]
         if isinstance(row, Mapping) and row.get("item_id")
@@ -83,7 +83,7 @@ def withheld_for(server: str, wallet: Any, model: str, count: int = ITEMS_PER_FE
         epoch=int(body.get("epoch") or 0),
         artifact_sha="",
         model=model,
-        grader="",
+        grader=str(body.get("grader") or ""),
         right={"1.00": hidden},
         items=held,
         canaries=canaries,
@@ -104,8 +104,6 @@ def report(
     input_tokens: int = 0,
     ttft_ms: float = 0.0,
     total_ms: float = 0.0,
-    item_id: str = "",
-    answer: Any = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "operator_hotkey": operator,
@@ -119,9 +117,6 @@ def report(
         "ttft_ms": max(0.0, float(ttft_ms)),
         "total_ms": max(0.0, float(total_ms)),
     }
-    if item_id:
-        payload["item_id"] = item_id
-        payload["answer"] = answer
     return dict(client._signed(server, wallet, method="POST", path=PROBES_PATH, payload=payload))
 
 
@@ -223,28 +218,8 @@ def probe_gpu(
         )
         return Probe(hotkey, model, digest, item.item_id, False, reason, gpu=gpu, kind=kind)
     if not held.grader:
-        recorded = _send(
-            reporter,
-            server,
-            wallet,
-            operator=hotkey,
-            model=model,
-            failed=False,
-            verdict="",
-            item_id=item.item_id,
-            answer=answered.answer,
-            **timings,
-        )
-        graded = dict((recorded or {}).get("graded") or {})
-        if recorded is None or not graded:
-            reason = "the server did not grade the answer"
-            return Probe(hotkey, model, digest, item.item_id, None, reason, gpu=gpu, kind=kind)
-        success = bool(graded.get("ok"))
-        reason = str(graded.get("reason") or "")
-        verdict = verify.PASS if success else ""
-        return Probe(
-            hotkey, model, digest, item.item_id, success, reason, verdict, gpu=gpu, kind=kind
-        )
+        reason = "the server named no grader for this model"
+        return Probe(hotkey, model, digest, item.item_id, None, reason, gpu=gpu, kind=kind)
     try:
         graded_locally = grade.grade(
             held.grader, answered.answer, item.label, held.databases, task=item.task
