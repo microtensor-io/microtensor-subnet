@@ -11,7 +11,7 @@ from microtensor_subnet.serving.settle import Settled
 DEFAULT_RESERVE: Final[Fraction] = Fraction(0)
 DEFAULT_CAP: Final[Fraction] = Fraction(1, 10)
 DEFAULT_REBATE: Final[Fraction] = Fraction(1, 25)
-DEFAULT_REVENUE_SHARE: Final[Fraction] = Fraction(19, 20)
+DEFAULT_REVENUE_SHARE: Final[Fraction] = Fraction(9, 10)
 MAX_FLOOR_SHARE: Final[Fraction] = Fraction(1, 2)
 DEFAULT_BOUNTY_SHARE: Final[Fraction] = Fraction(1, 20)
 MAX_BOUNTY_SHARE: Final[Fraction] = Fraction(1, 2)
@@ -124,8 +124,21 @@ def cap_for(
     raise PoolError("the cap schedule needs a last band without billing_usd_below")
 
 
+def revenue_share_of(serving: Mapping[str, Any]) -> Fraction:
+    raw = serving.get("revenue_share")
+    if raw is None:
+        return DEFAULT_REVENUE_SHARE
+    share = fraction_of(raw)
+    if not 0 <= share <= 1:
+        raise PoolError("the revenue share must be a fraction")
+    return share
+
+
 def dials_for(serving: Mapping[str, Any], billing_usd: Any) -> Dials:
-    return Dials(cap=cap_for(serving.get("cap_schedule"), billing_usd))
+    return Dials(
+        cap=cap_for(serving.get("cap_schedule"), billing_usd),
+        revenue_share=revenue_share_of(serving),
+    )
 
 
 def bounty_share_of(serving: Mapping[str, Any]) -> Fraction:
