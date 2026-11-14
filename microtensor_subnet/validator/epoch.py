@@ -622,6 +622,7 @@ def score_slm(runner: Runner, artifact: Artifact, outcome: ArtifactOutcome) -> P
         min_items=rules.min_items,
         rules=rules,
         envelope_ok=envelope_ok,
+        max_tokens=runner.context.max_tokens,
     )
     return _beats_base(pool_score)
 
@@ -1856,6 +1857,7 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
                 min_items=rules.min_items,
                 rules=rules,
                 envelope_ok=envelope_ok,
+                max_tokens=runner.context.max_tokens,
             )
         )
         if problem:
