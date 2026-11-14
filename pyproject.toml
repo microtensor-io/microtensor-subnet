@@ -11,7 +11,7 @@ dynamic = ["version"]
 description = "Microtensor — a Bittensor subnet for compressing frontier models into hardware-constrained specialists under a verified deployment envelope."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "LicenseRef-Microtensor-Proprietary" }
 
 dependencies = [
     # Capped below 11 because the chain client is not adapted to it. bittensor
