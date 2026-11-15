@@ -36,6 +36,8 @@ DETAIL_KEYS: Final[dict[str, frozenset[str]]] = {
             "envelope",
             "families",
             "passed",
+            "cap_rate",
+            "loop_rate",
             "reason",
         }
     ),

@@ -73,6 +73,10 @@ BOUNDARY_BEFORE: Final[str] = r"(?<![\w.-])"
 LOOSE_BEFORE: Final[str] = r"(?<![\w-])"
 BOUNDARY_AFTER: Final[str] = r"(?![\w-])"
 MAX_ANSWER_WORDS: Final[int] = 8
+LOOP_UNIT = re.compile(r"[^\s,;|]+")
+LOOP_WINDOWS: Final[tuple[int, ...]] = (40, 200)
+LOOP_SHINGLE: Final[int] = 3
+LOOP_SHARE: Final[float] = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +112,18 @@ def mentioned(normalised_text: str, alias: str, *, loose: bool = False) -> bool:
 
 def text_of(output: Any) -> str:
     return output if isinstance(output, str) else ""
+
+
+def repeated_share(units: Sequence[str], size: int = LOOP_SHINGLE) -> float:
+    if len(units) < 2 * size:
+        return 0.0
+    shingles = [tuple(units[i : i + size]) for i in range(len(units) - size + 1)]
+    return 1 - len(set(shingles)) / len(shingles)
+
+
+def looped(output: Any) -> bool:
+    units = LOOP_UNIT.findall(text_of(output))
+    return any(repeated_share(units[-window:]) >= LOOP_SHARE for window in LOOP_WINDOWS)
 
 
 def sections(text: str, headings: Sequence[str] = HEADINGS) -> dict[str, str] | None:

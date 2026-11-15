@@ -15,6 +15,7 @@ from microtensor_subnet.scoring.stats import (
     percentile,
     wilson_lb,
 )
+from microtensor_subnet.validator import compress
 from microtensor_subnet.validator.results import (
     ArtifactOutcome,
     EscalationRun,
@@ -184,9 +185,12 @@ def slm_score(
     rules: Rules | None = None,
     envelope_ok: bool = True,
     edge_groups: int = 0,
+    max_tokens: int = 0,
 ) -> PoolScore:
     chosen = rules or Rules()
     n = len(run.runs)
+    capped = sum(1 for r in run.runs if max_tokens and r.completion_tokens >= max_tokens)
+    loops = sum(1 for r in run.runs if compress.looped(r.output))
     successes = sum(1 for r in run.runs if r.success)
     lower = wilson_lb(successes, n, chosen.wilson_z)
     twin_gap, factor = twin_factor(run, chosen)
@@ -237,6 +241,8 @@ def slm_score(
             "envelope": envelope_ok,
             "families": len(set(families)),
             "passed": successes,
+            "cap_rate": round(capped / n, DIGITS) if n else 0.0,
+            "loop_rate": round(loops / n, DIGITS) if n else 0.0,
         },
     )
 
