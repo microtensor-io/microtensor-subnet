@@ -11,7 +11,7 @@ from microtensor_subnet.serving.settle import Settled
 DEFAULT_RESERVE: Final[Fraction] = Fraction(0)
 DEFAULT_CAP: Final[Fraction] = Fraction(1, 10)
 DEFAULT_REBATE: Final[Fraction] = Fraction(1, 25)
-DEFAULT_REVENUE_SHARE: Final[Fraction] = Fraction(9, 10)
+DEFAULT_REVENUE_SHARE: Final[Fraction] = Fraction(4, 5)
 MAX_FLOOR_SHARE: Final[Fraction] = Fraction(1, 2)
 DEFAULT_BOUNTY_SHARE: Final[Fraction] = Fraction(1, 20)
 MAX_BOUNTY_SHARE: Final[Fraction] = Fraction(1, 2)
