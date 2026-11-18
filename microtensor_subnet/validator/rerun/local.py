@@ -31,7 +31,7 @@ def answers(url: str, token: str) -> bool:
             found = http.get(url + "/health", headers={"Authorization": f"Bearer {token}"})
     except httpx.HTTPError:
         return False
-    return found.status_code == 200
+    return bool(found.status_code == 200)
 
 
 @dataclass(slots=True)
