@@ -642,7 +642,7 @@ class MinerModeRunner:
     spot_failures: dict[str, str] = field(default_factory=dict)
     parts: dict[str, duplicates.Entry] = field(default_factory=dict)
     own: own_checks.OwnChecks | None = None
-    spot_sources: dict[str, str] = field(default_factory=dict)
+    spot_sources: dict[str, dict[str, str]] = field(default_factory=dict)
     disagreements: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     @property
@@ -1041,7 +1041,7 @@ def own_submit(
         own.skip(hotkey, "no sampled call could be rebuilt from its recorded prompt")
         return False
     entry = runner.mirror.get(hotkey) or {}
-    own.submit(
+    return own.submit(
         own_checks.Job(
             hotkey=hotkey,
             sampled=sampled,
@@ -1051,7 +1051,6 @@ def own_submit(
             release=partial(drop_weights, slm_dir),
         )
     )
-    return True
 
 
 def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Replayer) -> None:
@@ -1386,24 +1385,26 @@ def coordinator_reference(runner: MinerModeRunner) -> None:
     add_reference_rows(runner, found)
 
 
-def own_waiting(runner: MinerModeRunner, end: int, give_up: float) -> bool:
-    if runner.config.dry_run:
-        return time.monotonic() < give_up
-    return still_waiting(runner, coordinator_deadline(runner, end), head_block(runner), give_up)
-
-
 def join_own(runner: MinerModeRunner) -> None:
     own = runner.own
     if own is None:
         return
-    end = epoch_end(runner)
+    end = 0
     poll = int(
         runner.config.extra.get("coordinator_poll_seconds") or spotcheck.DEFAULT_POLL_SECONDS
     )
     give_up = time.monotonic() + float(
         runner.config.extra.get("coordinator_wait_seconds") or COORDINATOR_WAIT_SECONDS
     )
-    own.join(lambda: own_waiting(runner, end, give_up), float(max(10, poll)))
+
+    def waiting() -> bool:
+        nonlocal end
+        if runner.config.dry_run:
+            return time.monotonic() < give_up
+        end = end or epoch_end(runner)
+        return still_waiting(runner, coordinator_deadline(runner, end), head_block(runner), give_up)
+
+    own.join(waiting, float(max(10, poll)))
 
 
 def take_reference_timing(runner: MinerModeRunner, timing: spotcheck.ReferenceTiming) -> None:
@@ -1430,17 +1431,18 @@ def chosen_spot(
     spot = found.spot_checks.get(hotkey) if found is not None else None
     timing = found.reference if found is not None else None
     source = own_checks.COORDINATOR if spot is not None else ""
+    figures = own_checks.sources(source, source, source)
     if runner.own is not None:
         flags = found.flags.get(hotkey, []) if found is not None else []
-        spot, source, runner.disagreements[hotkey] = runner.own.combine(hotkey, spot, flags)
-        timing = runner.own.timing_for(hotkey) or timing
+        spot, figures, runner.disagreements[hotkey] = runner.own.combine(hotkey, spot, flags)
+        timing = runner.own.timing_for(figures) or timing
     if spot is None:
         return None
     if timing is not None:
         spot.reference_ttft_p95_ms = timing.ttft_p95_ms
         spot.reference_tpot_p95_ms = timing.tpot_p95_ms
         spot.reference_vram_peak_bytes = timing.vram_peak_bytes
-    runner.spot_sources[hotkey] = source
+    runner.spot_sources[hotkey] = figures
     return spot
 
 
@@ -1528,7 +1530,8 @@ def zero_unchecked(
 
 
 def scoring_reference(runner: MinerModeRunner, held: SlmRun, hotkey: str) -> SlmRun:
-    timing = runner.own.timing_for(hotkey) if runner.own is not None else None
+    figures = runner.spot_sources.get(hotkey) or {}
+    timing = runner.own.timing_for(figures) if runner.own is not None else None
     if timing is None:
         return held
     return dataclasses.replace(
@@ -1978,7 +1981,9 @@ def miner_mode_report(
         row["spot_check"] = spot.to_dict() if spot is not None else None
         row["canary"] = dict(runner.canaries.get(hotkey) or {"checked": 0, "hits": 0})
         row["spot_failure"] = runner.spot_failures.get(hotkey, "")
-        row["spot_check_source"] = runner.spot_sources.get(hotkey, "")
+        figures = runner.spot_sources.get(hotkey) or {}
+        row["spot_check_source"] = figures.get(own_checks.MATCH, "")
+        row["spot_figure_sources"] = dict(figures)
         row["validator_spot_check"] = runner.own.row(hotkey) if runner.own is not None else None
         row["spot_disagreements"] = list(runner.disagreements.get(hotkey) or [])
         kept = runner.records.get(hotkey)

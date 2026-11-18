@@ -32,11 +32,19 @@ log = logging.getLogger("microtensor_subnet.validator.rerun.own")
 DEFAULT_MIN_CALLS: Final[int] = 40
 DEFAULT_REFERENCE_CALLS: Final[int] = 10
 PARALLEL: Final[int] = 1
+QUEUE_LIMIT: Final[int] = 2
 REASON_CHARS: Final[int] = 300
 VALIDATOR: Final[str] = "validator"
 COORDINATOR: Final[str] = "coordinator"
+MATCH: Final[str] = "match"
+SPEED: Final[str] = "speed"
+ROUTER: Final[str] = "router"
 STARTING: Final[str] = "the spot check engine is starting"
 LATE: Final[str] = "not finished before the coordinator deadline"
+FULL: Final[str] = (
+    f"more than {QUEUE_LIMIT} own spot checks were already queued; "
+    "the weights were dropped and the coordinator's row is used"
+)
 SPEED_FIELDS: Final[tuple[str, ...]] = (
     "ttft_p95_ms",
     "tpot_p95_ms",
@@ -62,6 +70,10 @@ def spot_settings(definition: Mapping[str, Any]) -> tuple[int, int]:
         int(spot.get("min_calls") or DEFAULT_MIN_CALLS),
         int(spot.get("reference_calls") or DEFAULT_REFERENCE_CALLS),
     )
+
+
+def sources(match: str, speed: str, router: str) -> dict[str, str]:
+    return {MATCH: match, SPEED: speed, ROUTER: router}
 
 
 def trust(timing: ReferenceTiming) -> tuple[bool, str]:
@@ -218,10 +230,16 @@ class OwnChecks:
         with self.lock:
             self.results[hotkey] = OwnResult(failure=why[:REASON_CHARS])
 
-    def submit(self, job: Job) -> None:
+    def submit(self, job: Job) -> bool:
         with self.lock:
-            self.waiting.add(job.hotkey)
+            full = len(self.waiting) > QUEUE_LIMIT
+            if not full:
+                self.waiting.add(job.hotkey)
+        if full:
+            self.skip(job.hotkey, FULL)
+            return False
         self.jobs.put(job)
+        return True
 
     def launch(self) -> None:
         threading.Thread(target=self.work, name="mt-spot-check", daemon=True).start()
@@ -241,7 +259,8 @@ class OwnChecks:
 
     def set_up(self) -> None:
         self.engine = engine_image(self.context.definition)
-        pod = LocalPod(self.docker, self.engine, self.gpus, self.config.cache_dir)
+        cards = self.gpus[: profiles.tensor_parallel(self.profile)]
+        pod = LocalPod(self.docker, self.engine, cards, self.config.cache_dir)
         self.pod = pod
         self.client = pod.up()
         if self.stopped.is_set():
@@ -397,20 +416,21 @@ class OwnChecks:
 
     def combine(
         self, hotkey: str, coordinated: SpotCheck | None, flags: Sequence[Flag]
-    ) -> tuple[SpotCheck | None, str, list[dict[str, Any]]]:
+    ) -> tuple[SpotCheck | None, dict[str, str], list[dict[str, Any]]]:
         own = self.used(hotkey)
         if own is None or own.spot is None:
-            return coordinated, COORDINATOR if coordinated is not None else "", []
+            theirs = COORDINATOR if coordinated is not None else ""
+            return coordinated, sources(theirs, theirs, theirs), []
         spot = dataclasses.replace(own.spot, timing=dict(own.spot.timing))
-        if coordinated is not None:
-            names = ROUTER_FIELDS if own.measured else ROUTER_FIELDS + SPEED_FIELDS
-            for name in names:
-                setattr(spot, name, getattr(coordinated, name))
-        return spot, VALIDATOR, disagreements(own, coordinated, flags)
+        if coordinated is None:
+            return spot, sources(VALIDATOR, VALIDATOR if own.measured else "", ""), []
+        for name in ROUTER_FIELDS + SPEED_FIELDS:
+            setattr(spot, name, getattr(coordinated, name))
+        found = sources(VALIDATOR, COORDINATOR, COORDINATOR)
+        return spot, found, disagreements(own, coordinated, flags)
 
-    def timing_for(self, hotkey: str) -> ReferenceTiming | None:
-        own = self.used(hotkey)
-        return self.reference if own is not None and own.measured else None
+    def timing_for(self, found: Mapping[str, str]) -> ReferenceTiming | None:
+        return self.reference if found.get(SPEED) == VALIDATOR else None
 
     def fraud(self, epoch_index: int) -> dict[str, str]:
         found: dict[str, str] = {}
