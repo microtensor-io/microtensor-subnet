@@ -30,6 +30,7 @@ DRAFTS_DONE_KEY: Final[str] = "drafts_complete"
 ROWS_KEY: Final[str] = "rows"
 ROWS_DONE_KEY: Final[str] = "rows_complete"
 NO_TOKENS: Final[str] = hashlib.sha256(b"[]").hexdigest()
+NO_SPOT_CHECK: Final[str] = "no spot check result"
 
 
 class SpotCheckError(RuntimeError):
@@ -203,6 +204,10 @@ class Coordinated:
     def covers(self, hotkey: str) -> bool:
         return hotkey in self.spot_checks or hotkey in self.failures
 
+    @property
+    def reported(self) -> bool:
+        return bool(self.spot_checks)
+
 
 def report_message(body: Mapping[str, Any]) -> bytes:
     unsigned = {k: v for k, v in body.items() if k != SIGNATURE}
@@ -351,7 +356,7 @@ def receipt_leaves(client: Any, arena_id: str, epoch_index: int, key: str) -> di
         return {}
 
 
-def fetch(
+def read(
     client: Any,
     arena_id: str,
     epoch_index: int,
@@ -361,8 +366,9 @@ def fetch(
     try:
         document = client.document(arena_id, epoch_index, SPOTCHECK_KIND)
     except Exception as exc:
-        log.debug("coordinator document for epoch %d not read: %s", epoch_index, exc)
-        return None
+        raise SpotCheckError(
+            f"the coordinator document for epoch {epoch_index} was not read: {exc}"
+        ) from exc
     if not document:
         return None
     try:
@@ -376,6 +382,20 @@ def fetch(
         return merge(epoch_index, _listed(body.get("reports")), held)
     except Exception as exc:
         log.warning("the coordinator document for epoch %d was not read: %s", epoch_index, exc)
+        return None
+
+
+def fetch(
+    client: Any,
+    arena_id: str,
+    epoch_index: int,
+    key: str,
+    leaves: Mapping[str, str] | None = None,
+) -> Coordinated | None:
+    try:
+        return read(client, arena_id, epoch_index, key, leaves)
+    except SpotCheckError as exc:
+        log.debug("%s", exc)
         return None
 
 

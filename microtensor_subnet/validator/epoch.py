@@ -1624,13 +1624,16 @@ def apply_spot_check(
             item.latency_ms = timing[0] + timing[1] * max(0, item.completion_tokens - 1)
 
 
-def coordinator_deadline(runner: MinerModeRunner) -> int:
+def epoch_end(runner: MinerModeRunner) -> int:
     try:
         found = runner.client.epoch(runner.context.arena_id, runner.context.epoch_index) or {}
     except Exception as exc:
         log.warning("the epoch window was not read: %s", exc)
         return 0
-    end = int((found.get("window") or {}).get("end_block") or 0)
+    return int((found.get("window") or {}).get("end_block") or 0)
+
+
+def coordinator_deadline(runner: MinerModeRunner, end: int) -> int:
     margin = int(
         runner.config.extra.get("coordinator_margin_blocks") or spotcheck.DEFAULT_MARGIN_BLOCKS
     )
@@ -1652,10 +1655,25 @@ def fetch_coordinated(runner: MinerModeRunner) -> spotcheck.Coordinated | None:
     )
 
 
+def read_coordinated(runner: MinerModeRunner) -> spotcheck.Coordinated | None:
+    context = runner.context
+    return spotcheck.read(
+        runner.client, context.arena_id, context.epoch_index, runner.server_key, runner.leaves
+    )
+
+
+def still_waiting(runner: MinerModeRunner, until: int, head: int, give_up: float) -> bool:
+    if runner.config.dry_run:
+        return False
+    if not until:
+        return time.monotonic() < give_up
+    return head < until
+
+
 def poll_coordinator(
     runner: MinerModeRunner, ready: Callable[[spotcheck.Coordinated], bool], what: str
 ) -> spotcheck.Coordinated | None:
-    deadline = coordinator_deadline(runner)
+    end = 0
     poll = int(
         runner.config.extra.get("coordinator_poll_seconds") or spotcheck.DEFAULT_POLL_SECONDS
     )
@@ -1663,25 +1681,40 @@ def poll_coordinator(
         runner.config.extra.get("coordinator_wait_seconds") or COORDINATOR_WAIT_SECONDS
     )
     while True:
-        found = fetch_coordinated(runner)
-        if found is not None and ready(found):
-            return found
+        end = end or epoch_end(runner)
+        deadline = coordinator_deadline(runner, end)
         head = head_block(runner)
-        if runner.config.dry_run or time.monotonic() >= give_up or (deadline and head >= deadline):
-            return found
-        log.info("block %d: waiting for the coordinator's %s until block %d", head, what, deadline)
+        try:
+            found = read_coordinated(runner)
+        except spotcheck.SpotCheckError as exc:
+            if not still_waiting(runner, end, head, give_up):
+                log.warning("block %d: %s; taken as no report", head, exc)
+                return None
+            log.warning("block %d: %s; read again", head, exc)
+        else:
+            if found is not None and ready(found):
+                return found
+            if not still_waiting(runner, deadline, head, give_up):
+                return found
+            log.info(
+                "block %d: waiting for the coordinator's %s until block %d", head, what, deadline
+            )
         time.sleep(max(10, poll))
 
 
 def wait_for_coordinator(runner: MinerModeRunner) -> spotcheck.Coordinated | None:
-    wanted = {h for h, r in runner.records.items() if not r.failure and h in runner.outcomes}
-    if not wanted:
+    if not runner.leaves:
         return fetch_coordinated(runner)
+    wanted = {h for h, r in runner.records.items() if not r.failure and h in runner.outcomes}
     return poll_coordinator(
         runner,
-        lambda found: found.complete or all(found.covers(h) for h in wanted),
+        lambda found: found.reported and (found.complete or all(found.covers(h) for h in wanted)),
         f"spot checks of {len(wanted)} miners",
     )
+
+
+def coordinator_missing(runner: MinerModeRunner) -> bool:
+    return bool(runner.leaves) and (runner.coordinated is None or not runner.coordinated.reported)
 
 
 def reference_row(runner: MinerModeRunner, row: Mapping[str, Any]) -> items.RedoRow | None:
@@ -1753,8 +1786,12 @@ def coordinator_reference(runner: MinerModeRunner) -> None:
 def coordinator_phase(runner: MinerModeRunner) -> None:
     found = wait_for_coordinator(runner)
     runner.coordinated = found
+    if coordinator_missing(runner):
+        log.warning(
+            "no coordinator report came by the spot check deadline; "
+            "the last settled weights are kept"
+        )
     if found is None:
-        log.warning("no coordinator spot checks were published; scored without them")
         return
     runner.spot_failures = {h: why for h, why in found.failures.items() if h in runner.records}
     timing = found.reference
@@ -1820,6 +1857,17 @@ def zero_score(held: PoolScore | None, pool: str, reason: str) -> PoolScore:
     return PoolScore(pool, 0.0, 0.0, 0.0, n, False, {"reason": reason})
 
 
+def zero_unchecked(
+    runner: MinerModeRunner, record: MinerRecord, found: dict[str, PoolScore]
+) -> None:
+    if record.hotkey in runner.spot_checks:
+        return
+    why = runner.spot_failures.get(record.hotkey) or "the coordinator sent no row"
+    for pool in pools.SPOT_CHECKED:
+        if pool in found:
+            found[pool] = zero_score(found[pool], pool, f"{spotcheck.NO_SPOT_CHECK}: {why}")
+
+
 def coordinator_latency(run: RouterRun, spot: spotcheck.SpotCheck | None) -> None:
     measured = spot.router_latency_p95_ms if spot is not None else None
     run.latency_p95_ms = float(measured) if measured is not None else 0.0
@@ -1878,6 +1926,7 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
     if outcome.router is not None:
         coordinator_latency(outcome.router, runner.spot_checks.get(record.hotkey))
         found[ROUTER] = router_pool_score(context, outcome.router, runner.reference_router)
+    zero_unchecked(runner, record, found)
     for pool, reason in record.over_limits.items():
         found[pool] = zero_score(found.get(pool), pool, reason)
     for pool, earlier in record.duplicates.items():
@@ -2184,16 +2233,22 @@ def kept_rounds(state: Path) -> set[str]:
 
 
 def remember_weights(
-    state: Path, weights: Mapping[str, float], block: int, rounds: Sequence[str] = ()
+    state: Path,
+    weights: Mapping[str, float],
+    block: int,
+    rounds: Sequence[str] = (),
+    *,
+    settled: bool = False,
 ) -> None:
     state.mkdir(parents=True, exist_ok=True)
     target = state / WEIGHTS_FILE
     known = sorted(kept_rounds(state) | {str(name) for name in rounds})
+    body: dict[str, Any] = {"block": int(block), "weights": dict(weights), "rounds": known}
+    held = dict(weights) if settled else settled_weights(state)
+    if held:
+        body["settled"] = held
     partial = target.with_name(target.name + ".part")
-    partial.write_text(
-        json.dumps({"block": int(block), "weights": dict(weights), "rounds": known}),
-        encoding="utf-8",
-    )
+    partial.write_text(json.dumps(body), encoding="utf-8")
     partial.replace(target)
 
 
@@ -2206,6 +2261,15 @@ def kept_weights(state: Path) -> tuple[dict[str, float], int] | None:
         found = json.loads((state / WEIGHTS_FILE).read_text(encoding="utf-8"))
         weights = {str(k): float(v) for k, v in dict(found["weights"]).items()}
         return (weights, int(found["block"])) if weights else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def settled_weights(state: Path) -> dict[str, float] | None:
+    try:
+        found = json.loads((state / WEIGHTS_FILE).read_text(encoding="utf-8"))
+        weights = {str(k): float(v) for k, v in dict(found["settled"]).items()}
+        return weights or None
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -2223,7 +2287,12 @@ def weights_due(chain: Any, block: int, since: int) -> bool:
 
 
 def _submit(
-    chain: Any, state: Path, weights: Mapping[str, float], rounds: Sequence[str] = ()
+    chain: Any,
+    state: Path,
+    weights: Mapping[str, float],
+    rounds: Sequence[str] = (),
+    *,
+    settled: bool = False,
 ) -> tuple[bool, str]:
     sent, reason, block = False, "none of the weights is on the metagraph", 0
     try:
@@ -2234,15 +2303,40 @@ def _submit(
             block = int(chain.block())
     except ChainError as exc:
         reason = reason if sent else str(exc)
-    remember_weights(state, weights, block, rounds)
+    remember_weights(state, weights, block, rounds, settled=settled)
     return sent, reason
 
 
 def submit_weights(
-    chain: Any, state: Path, weights: Mapping[str, float], rounds: Sequence[str] = ()
+    chain: Any,
+    state: Path,
+    weights: Mapping[str, float],
+    rounds: Sequence[str] = (),
+    *,
+    settled: bool = False,
 ) -> tuple[bool, str]:
     with WEIGHTS_LOCK:
-        return _submit(chain, state, weights, rounds)
+        return _submit(chain, state, weights, rounds, settled=settled)
+
+
+def keep_settled(state: Path, burn_to: str) -> None:
+    current = kept_weights(state)
+    if settled_weights(state) is None and current is not None and current[0] != {burn_to: 1.0}:
+        remember_weights(state, current[0], current[1], settled=True)
+
+
+def hold_settled(chain: Any, state: Path, rounds: Sequence[str]) -> dict[str, float]:
+    with WEIGHTS_LOCK:
+        held = settled_weights(state)
+        if held is None:
+            log.error("no settled weights are kept; the weights on chain stay as they are")
+            return {}
+        sent, reason = _submit(chain, state, held, rounds)
+    if sent:
+        log.info("the last settled weights were sent again")
+    else:
+        log.error("the last settled weights were not sent; they go again shortly: %s", reason)
+    return held
 
 
 def burn_for_round(chain: Any, state: Path, name: str) -> bool:
@@ -2253,6 +2347,7 @@ def burn_for_round(chain: Any, state: Path, name: str) -> bool:
         if not burn_to:
             log.error("round %s is live but the burn address is unknown; weights stay", name)
             return False
+        keep_settled(state, burn_to)
         sent, reason = _submit(chain, state, {burn_to: 1.0}, (name,))
     if sent:
         log.info("round %s is live: emissions burn until it settles", name)
@@ -2285,12 +2380,22 @@ def vector_for(weights: Mapping[str, float], snapshot: Any) -> Any:
     )
 
 
+def held_weights(config: EpochConfig, chain: Any, runner: MinerModeRunner) -> dict[str, float]:
+    state = config.home / "state"
+    if config.dry_run:
+        return settled_weights(state) or {}
+    rounds = (round_name(runner.context.arena_id, runner.context.epoch_index),)
+    return hold_settled(chain, state, rounds)
+
+
 def miner_mode_weights(
     config: EpochConfig,
     chain: Any,
     runner: MinerModeRunner,
     scores: Mapping[str, list[PoolScore]],
 ) -> tuple[dict[str, float], dict[str, float]]:
+    if coordinator_missing(runner):
+        return held_weights(config, chain, runner), {}
     context = runner.context
     standings = score.standings_for(
         runner.outcomes,
@@ -2323,6 +2428,7 @@ def miner_mode_weights(
             config.home / "state",
             weights,
             (round_name(context.arena_id, context.epoch_index),),
+            settled=True,
         )
         if not sent:
             log.error(
@@ -2349,6 +2455,7 @@ def miner_mode_report(
     body["receipt_root"] = runner.receipt_root
     body["validator_profile"] = runner.profile
     body["serving"] = runner.serving
+    body["coordinator_reported"] = not coordinator_missing(runner)
     if runner.reference_timing is not None:
         body["reference_spot_check"] = runner.reference_timing.to_dict()
     for row in body.get("miners") or []:

@@ -11,6 +11,7 @@ ROUTER: Final[str] = "router"
 ESCALATION: Final[str] = "escalation"
 SYSTEM: Final[str] = "system"
 POOLS: Final[tuple[str, ...]] = (SLM, HARNESS, ROUTER, ESCALATION, SYSTEM)
+SPOT_CHECKED: Final[tuple[str, ...]] = (SLM, SYSTEM)
 
 POOL_SHARES: Final[dict[str, float]] = dict.fromkeys(POOLS, 0.2)
 RANK_PAYOUT: Final[tuple[float, ...]] = (0.40, 0.25, 0.15, 0.12, 0.08)
