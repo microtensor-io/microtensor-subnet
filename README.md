@@ -19,7 +19,7 @@
 
 ---
 
-> **Abstract.** Most production language model traffic is narrow and repetitive, yet it is served by frontier models at frontier cost. Task specific small models can match frontier quality on a fixed distribution at a small fraction of the cost, but the evidence needed to trust them does not exist: public benchmarks leak into training data, and private evaluations are run by the party being evaluated. Microtensor is a Bittensor subnet that treats **evaluation as the primary artifact**. For each task, an *arena* fixes one base model, a grader and a pool of hidden items that is replaced every epoch. Miners fine tune the base and submit a complete system of model, harness, router and escalation path. They run that system on their own GPUs inside pinned images and publish a signed transcript of every call. Validators replay each transcript on CPU, re-execute sampled model calls on identical hardware with an exact token match, and score every part against the base model using one sided lower confidence bounds. The output is a specialist whose published quality is a verified measurement rather than a claim, served through one API.
+> **Abstract.** Most production language model traffic is narrow and repetitive, yet it is served by frontier models at frontier cost. Task specific small models can match frontier quality on a fixed distribution at a small fraction of the cost, but the evidence needed to trust them does not exist: public benchmarks leak into training data, and private evaluations are run by the party being evaluated. Microtensor is a Bittensor subnet that treats **evaluation as the primary artifact**. For each task, an *arena* fixes one base model, a grader and a pool of hidden items that is replaced every epoch. Miners fine tune the base and submit a complete system of model, harness, router and escalation path. They run that system on their own GPUs inside pinned images and publish a signed transcript of every call. Validators replay each transcript on CPU. Sampled model calls are rerun on identical hardware with an exact token match, by the owner's coordinator and by any validator with that hardware. Two pools score the result with one sided lower confidence bounds: the specialist model against the base model, and the whole system against a frontier redo. The output is a specialist whose published quality is a verified measurement rather than a claim, served through one API.
 
 ## Contents
 
@@ -93,19 +93,19 @@ How this compares with existing practice:
 
 An **arena** is one task. Its signed definition fixes the task and grader, the base model and its licence, the tools available, the resource envelope a system must run within, the item counts per pool and the epoch timing. An arena is frozen while live; a stronger base model means a new arena version.
 
-A **submission** is a system of up to four parts, and each part is scored in its own pool. A missing part is replaced by the arena's reference, so a miner can compete on a single part.
+A **submission** is a system of up to four parts, scored in two pools. The specialist model is scored alone in the specialist model pool. The harness, router and escalation have no pools of their own; they are scored with the model in the system pool, which measures the whole pipeline. A missing part is replaced by the arena's reference, so a miner can enter with a model alone.
 
 <p align="center">
-  <img src="docs/assets/fig2-system.svg" width="100%" alt="Figure 2: the four parts of a submission and the pools that score them">
+  <img src="docs/assets/fig2-system.svg" width="100%" alt="Figure 2: the four parts of a submission and the two pools that score them">
 </p>
 
-| Part | Role | Scored on |
+| Part | Role | Pool |
 |---|---|---|
-| **Specialist model** | Fine tuned from the arena base; writes the draft answer | Pass rate on hidden items, paired against the base, with efficiency and anti memorisation terms |
-| **Harness** | Prompts, tools, checks and retries around the model, at most three model calls per item | Gain over the arena's reference harnesses on the same model and items |
-| **Router** | Predicts the probability that a draft passes | Calibration (Brier score) and separation (AUROC) across draft sources and quality floors |
-| **Escalation** | Repairs a doubtful draft through a frontier model on the relay | Quality after repair against the cost of a full frontier redo, capped at 1.5× that cost |
-| **System** | The whole pipeline | Cost and latency against a frontier redo at quality floors of 0.80, 0.90, 0.95 and 0.99 |
+| **Specialist model** | Fine tuned from the arena base; writes the draft answer | Specialist model pool, 60%: pass rate on hidden items, paired against the base, with efficiency and anti memorisation terms |
+| **Harness** | Prompts, tools, checks and retries around the model, at most three model calls per item | System pool only |
+| **Router** | Predicts the probability that a draft passes | System pool only |
+| **Escalation** | Repairs a doubtful draft through a frontier model on the relay | System pool only |
+| **System** | The whole pipeline | System pool, 40%: cost and latency against a frontier redo at quality floors of 0.80, 0.90, 0.95 and 0.99 |
 
 ## 4. Epoch protocol
 
@@ -117,14 +117,14 @@ An epoch is a measurement under fixed conditions, separated into phases by two f
 
 1. **Commit.** The miner commits its artifact revision, weights digest and declared hardware profile on chain, with a submission fee set per arena.
 2. **Freeze 1.** Commitments close. The owner mirrors every committed artifact and weight file by sha256; a miner whose files are missing or do not match is excluded.
-3. **Evaluation window.** Task inputs and per item seeds are released, without labels. Each miner pulls its own frozen files from the mirror and runs every pool in the official images on its own RTX 4090, which record every model, tool and relay call into a signed transcript. A miner may upload at most 3 times per epoch; a reupload replaces the earlier transcript.
+3. **Evaluation window.** Task inputs and per item seeds are released, without labels. Each miner pulls its own frozen files from the mirror and runs every test in the official images on its own RTX 4090, which record every model, tool and relay call into a signed transcript. A miner may upload at most 3 times per epoch; a reupload replaces the earlier transcript.
 4. **Freeze 2.** Uploads close. Transcript receipts are sealed under a Merkle root posted on chain, so no transcript can change afterwards.
-5. **Grading.** Labels and probe questions are released. Validators replay and grade every miner, apply the coordinator's spot checks, zero any duplicated parts, then sign one report each.
+5. **Grading.** Labels and probe questions are released. Validators replay and grade every miner. They apply the spot checks, the coordinator's and their own when they hold a GPU of the miner's profile, and zero any miner with no spot check result in the specialist model and system pools. They zero any duplicated parts, then sign one report each. If no coordinator report arrives, validators keep the last settled weights and the server settles the epoch void.
 6. **Weights.** Validators set weights with commit reveal; the published figure is the stake weighted median of the reports that agree on bundle, seed, roster and snapshot.
 
 ## 5. Verification
 
-The miner performs the expensive computation; validators verify it cheaply. No validator needs to serve every miner's model, and the coordinator is the only part of the verification that uses a GPU.
+The miner performs the expensive computation; validators verify it cheaply. No validator needs to serve every miner's model. The spot check is the only part of the verification that uses a GPU: the coordinator runs it for every miner, and a validator with a GPU of the miner's profile can run it too.
 
 <p align="center">
   <img src="docs/assets/fig4-verification.svg" width="100%" alt="Figure 4: how validators verify a miner's evaluation">
@@ -132,7 +132,7 @@ The miner performs the expensive computation; validators verify it cheaply. No v
 
 **Replay (CPU, every miner, every item).** The validator runs the miner's frozen harness code in a sandbox with no network, answers each model call from the transcript and requires every request to match the recording exactly and in order. It recomputes every tool response from the bundle, checks every relay receipt signature and measures the harness's added wall time on its own clock. Any mismatch fails the miner for the epoch.
 
-**Spot check (GPU, sampled).** A coordinator run by the subnet owner loads the committed weights and re-runs a sample of model calls set by the arena (200 by default), requiring an exact token match. Validators read its signed reports from the server. The sample is drawn from the block hash and the coordinator's hotkey after Freeze 2, weighted toward twin items. Faulted calls are not checked. A call only becomes evidence when a second run after an engine restart agrees with the first and both differ from the miner. A miner that falsified 5% of its calls escapes a 200 call check with probability $0.95^{200} \approx 3.5 \times 10^{-5}$. On the profile card, the coordinator also times first token latency, time per output token and peak memory against the base model on the same card, so nothing timed on the miner's machine is used. On any other card it checks tokens only. A miner's own timings are never used: without a measurement from the profile card, speed limits pass, speed earns no efficiency gain, and memory is computed from the model.
+**Spot check (GPU, sampled).** A coordinator run by the subnet owner loads the committed weights and reruns a sample of model calls set by the arena (200 by default), requiring an exact token match. A validator with a GPU of the miner's profile can run the same check on the same calls with the same code. Validators read the coordinator's signed reports from the server. The sample is drawn from the transcript hash and the hash of the block 10 after the upload, so the miner cannot predict it and every checker draws the same calls. Faulted calls are not checked. A call only becomes evidence when a second run after an engine restart agrees with the first and both differ from the miner. A miner that falsified 5% of its calls escapes a 200 call check with probability $0.95^{200} \approx 3.5 \times 10^{-5}$. On the profile card, the coordinator also times first token latency, time per output token and peak memory against the base model on the same card, so nothing timed on the miner's machine is used. On any other card it checks tokens only. A miner's own timings are never used: without a measurement from the profile card, speed limits pass, speed earns no efficiency gain, and memory is computed from the model. A miner with no spot check result scores zero in the specialist model and system pools for that epoch. If no coordinator report arrives at all, validators keep the last settled weights.
 
 **Determinism.** Exact matching is possible because a profile is one GPU architecture, one driver line and one image digest, decoding is greedy, and the inference engine runs one request at a time on P1 and in batch invariant mode on P2 and P3. Different architectures disagree under bf16, so a profile never mixes them, and a new card joins a profile only after a pair test.
 
@@ -144,9 +144,9 @@ The miner performs the expensive computation; validators verify it cheaply. No v
 | K | 2 × T4 (sm75), small models only | fp16 | single sequence |
 | C | x86 CPU, GGUF | GGUF | single sequence |
 
-**Duplicates (CPU, every validator).** Each submission is compared with all earlier ones, part by part, and the earliest commit on chain wins. The model is compared by its weights hash, by a fixed sketch of its change from the arena's base model, and by its outputs on common items. Harness and repair code are compared after removing comments, whitespace and names, ignoring anything in the pinned list of miner template commits. Routers are compared by weights hash and change sketch. A duplicated part scores zero in its own pool and in the system pool; the miner's other parts are still scored.
+**Duplicates (CPU, every validator).** Each submission is compared with all earlier ones, part by part, and the earliest commit on chain wins. The model is compared by its weights hash, by a fixed sketch of its change from the arena's base model, and by its outputs on common items. Routers are compared by weights hash and change sketch. Harness and repair code are not compared, so miners may share them. A duplicated model scores zero in the specialist model and system pools, and a duplicated router in the system pool. When only the router is a duplicate, the model is still scored in its own pool.
 
-**Disputes.** A mismatch that both coordinator runs agree on is published as evidence in its signed report. Validators check the signatures and the evidence, then zero the miner for a number of epochs set by the arena. The server never bans anyone. A miner can appeal within one epoch; the coordinator reruns the call and a match lifts the flag.
+**Disputes.** A mismatch that both coordinator runs agree on is published as evidence in its signed report. Validators check the signatures and the evidence, then zero the miner for a number of epochs set by the arena. The server never bans anyone. A miner can appeal within one epoch; the coordinator reruns the call and a match lifts the flag. A mismatch a validator finds in its own spot check zeroes the miner only in that validator's report, for that epoch, with no ban.
 
 ## 6. Scoring
 
@@ -172,7 +172,7 @@ $$
 S_{\mathrm{SLM}} = L \cdot \tau \cdot \left(1 + r\,E + b\right)
 $$
 
-where $\tau$ penalises a gap between original and twin items (memorisation), $E \in [0, 1]$ is the efficiency gain over the base model measured by the coordinator (first token latency 0.4, memory 0.3, parameters 0.2, time per token 0.1), $r$ is the arena's efficiency range (0.25 by default) and $b$ is an edge bonus for also passing a smaller device class. An entry is eligible only if it passes the format, provenance and envelope gates, covers the minimum item count, and its paired lower bound over the base model is above zero.
+where $\tau$ penalises a gap between original and twin items (memorisation), $E \in [0, 1]$ is the efficiency gain over the base model measured on the profile card by the spot check (first token latency 0.4, memory 0.3, parameters 0.2, time per token 0.1), $r$ is the arena's efficiency range (0.25 by default) and $b$ is an edge bonus for also passing a smaller device class. An entry is eligible only if it passes the format, provenance and envelope gates, covers the minimum item count, and its paired lower bound over the base model is above zero.
 
 **System pool.** At each quality floor $f$, a system earns credit only when its lower bound reaches the floor:
 
@@ -181,15 +181,15 @@ v_f = \begin{cases} \min\!\left(1, \dfrac{\max\left(0,\; 0.7 \ln \frac{c_{\mathr
 \qquad S_{\mathrm{system}} = \frac{1}{|F|}\sum_{f \in F} v_f
 $$
 
-with $c$ and $t$ the cost and p95 latency of the system, and $c_{\mathrm{ref}}, t_{\mathrm{ref}}$ those of a frontier redo on the same items.
+with $c$ and $t$ the cost and p95 latency of the system, and $c_{\mathrm{ref}}, t_{\mathrm{ref}}$ those of a frontier redo on the same items. The system runs the miner's harness, router and escalation around its model, or the reference parts it did not submit, so those parts earn through this score.
 
 ## 7. Incentives
 
 <p align="center">
-  <img src="docs/assets/fig5-incentives.svg" width="100%" alt="Figure 5: five pools of 20 percent, each paying its top five">
+  <img src="docs/assets/fig5-incentives.svg" width="100%" alt="Figure 5: two pools, 60 and 40 percent, each paying its top five">
 </p>
 
-Miner emissions are split equally across the five pools. Within a pool, the top five eligible entries receive 40, 25, 15, 12 and 8 percent. A pool with no eligible entry is burned, so emissions never reward work that fails the bar. **Inference miners** are a separate role: they serve certified systems to customers through the gateway, post collateral, are admitted after probes on withheld items, and are paid on metered usage. See [docs/inference_miner.md](docs/inference_miner.md).
+Miner emissions are split across two pools, on testnet and mainnet: 60% to the specialist model pool and 40% to the system pool. The harness, router and escalation earn through the system pool. Within a pool, the top five eligible entries receive 40, 25, 15, 12 and 8 percent, renormalised when fewer are eligible. A pool with no eligible entry is burned to the subnet owner hotkey, so emissions never reward work that fails the bar. A miner with no spot check result is not eligible in either pool for that epoch. Epochs settled under the earlier five pools, such as `ctx_compress` epoch 0, are never recomputed. **Inference miners** are a separate role: they serve certified systems to customers through the gateway, post collateral, are admitted after probes on withheld items, and are paid 80% of the metered billing for the requests they serve, with no share of miner emission. Compute rigs take no share of miner emission either. See [docs/inference_miner.md](docs/inference_miner.md).
 
 ## 8. Threat model
 
@@ -205,8 +205,9 @@ Every known attack maps to a check that any validator can run on its own.
 | Run different harness code than committed | Replay runs the committed code; requests stop matching |
 | Tailor answers to the grader | Labels and probe questions release only after Freeze 2 |
 | Memorise or train on released inputs | Twin items reduce the score; canary items from earlier epochs are tested in the next |
-| Report false speed or memory | A miner's own timings are never used; the coordinator measures on the profile card and memory is otherwise computed from the model |
-| Copy another miner | Each part is compared with every earlier commit by hash, by change from the base and by behaviour; a copy scores zero in that part's pool and the system pool |
+| Report false speed or memory | A miner's own timings are never used; the spot check measures on the profile card and memory is otherwise computed from the model |
+| Copy another miner | The model and router are compared with every earlier commit by hash, by change from the base and by behaviour; a copied model scores zero in the specialist model and system pools, a copied router in the system pool |
+| Avoid the spot check, by stalling or crashing the checker | No spot check result scores zero in the specialist model and system pools for that epoch |
 | Edit a transcript after the deadline | Receipts sealed under the on chain Merkle root |
 | A false accusation | A call becomes evidence only when two runs after an engine restart agree and differ from the miner; the evidence is public and the miner can appeal |
 
@@ -215,8 +216,8 @@ Every known attack maps to a check that any validator can run on its own.
 | Role | Hardware | What you do | Guide |
 |---|---|---|---|
 | **System miner** | One RTX 4090 with driver 580 or newer, 8 CPU cores, 32 GB RAM and 100 GB of disk (profile P1) | Fine tune the arena base, build the harness, router and escalation, commit, run your evaluation each epoch | [docs/miner.md](docs/miner.md) · [miner template](https://github.com/microtensor-io/microtensor-miner-template) |
-| **Validator** | One CPU box (8 cores, 32 GB RAM, 200 GB NVMe) | Replay, grade and set weights; spot checks come from the coordinator | [docs/validator_setup.md](docs/validator_setup.md) |
-| **Inference miner** | GPUs that hold a certified system | Serve customer requests through the gateway; paid on metered usage | [docs/inference_miner.md](docs/inference_miner.md) |
+| **Validator** | One CPU box (8 cores, 32 GB RAM, 200 GB NVMe); optionally a GPU of an arena's profile, such as an RTX 4090 for P1 | Replay, grade and set weights; spot checks come from the coordinator, and a validator with a GPU can run its own | [docs/validator_setup.md](docs/validator_setup.md) |
+| **Inference miner** | GPUs that hold a certified system | Serve customer requests through the gateway; paid 80% of the metered billing | [docs/inference_miner.md](docs/inference_miner.md) |
 
 ```bash
 git clone https://github.com/microtensor-io/microtensor-subnet.git
@@ -245,8 +246,8 @@ microtensor_subnet/
 ├── chain/        commitments, epochs, metagraph, weights
 ├── core/         items, hashing, hardware profiles, transcripts, reports
 ├── artifact/     manifest contract and checks
-├── validator/    epoch pipeline: replay, grading, coordinator spot checks, duplicates, reports
-├── scoring/      lower bounds, pools, payouts
+├── validator/    epoch pipeline: replay, grading, spot checks, duplicates, reports
+├── scoring/      lower bounds, the two pools, payouts
 ├── serving/      inference miner host, probes, verification, settlement
 ├── rigs/         compute mining protocol: attestation, sessions, checks
 └── cli/          the `mt` command: submit, check-model, miner, epoch, operator

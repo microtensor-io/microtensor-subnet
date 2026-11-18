@@ -53,7 +53,7 @@
 
   <!-- spot check -->
   <rect x="604" y="288" width="290" height="150" rx="14" fill="#151a33" stroke="#3b4399" stroke-width="1.5"/>
-  <text x="624" y="316" class="m k" fill="#8b95ff">CHECKER · SAME GPU PROFILE</text>
+  <text x="624" y="316" class="m k" fill="#8b95ff">COORDINATOR OR GPU VALIDATOR</text>
   <text x="624" y="346" class="s h">Spot check: 200+ sampled calls</text>
   <text x="624" y="372" class="s d">exact token match against the</text>
   <text x="624" y="392" class="s d">committed weights; time TTFT, TPOT</text>
@@ -74,8 +74,8 @@
   <!-- fraud path -->
   <path d="M749 438 V478" stroke="#f87171" stroke-width="2" marker-end="url(#r)"/>
   <rect x="380" y="482" width="780" height="70" rx="14" fill="#2c1414" stroke="#5a2323" stroke-width="1.5"/>
-  <text x="402" y="512" class="s" font-size="15.5" font-weight="600" fill="#fca5a5">Mismatch → public fraud evidence</text>
-  <text x="402" y="536" class="s" font-size="13.5" fill="#d4a3a3">Other validators re-run the cited calls; a confirmed miner scores zero and is banned for N epochs.</text>
+  <text x="402" y="512" class="s" font-size="15.5" font-weight="600" fill="#fca5a5">Mismatch: public fraud evidence</text>
+  <text x="402" y="536" class="s" font-size="13.5" fill="#d4a3a3">Coordinator evidence is public and zeroes the miner for N epochs; no spot check result scores zero.</text>
   <text x="62" y="512" class="s" font-size="13.5" fill="#6f7685">Replay proves the code, tools and</text>
   <text x="62" y="530" class="s" font-size="13.5" fill="#6f7685">relay calls; spot checks prove the</text>
   <text x="62" y="548" class="s" font-size="13.5" fill="#6f7685">model outputs came from the weights.</text>
