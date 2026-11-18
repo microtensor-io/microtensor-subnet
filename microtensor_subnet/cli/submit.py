@@ -25,6 +25,8 @@ from microtensor_subnet.chain.commitment import (
     CommitmentError,
     SealedCommitment,
     SubmissionCommitment,
+    check_arena_id,
+    check_fits,
     reveal_message,
 )
 from microtensor_subnet.chain.wallet import coldkey_address, hotkey_address, sign_bytes
@@ -161,6 +163,10 @@ def runner_digest(server: str, arena_id: str) -> str:
 
 
 def _manifest(args: argparse.Namespace) -> int:
+    try:
+        check_arena_id(args.arena)
+    except CommitmentError as exc:
+        return fail(str(exc))
     components = [c.strip() for c in str(args.components).split(",") if c.strip()]
     image_digest = str(args.image_digest or "")
     if args.profile and not image_digest:
@@ -222,7 +228,7 @@ def _validate(args: argparse.Namespace) -> int:
 
 def _pay(args: argparse.Namespace) -> int:
     try:
-        arena = _arena(args.server, args.arena)
+        arena = _arena(args.server, check_arena_id(args.arena))
     except ValueError as exc:
         return fail(str(exc))
     definition = dict(arena.get("definition") or {})
@@ -246,8 +252,9 @@ def _pay(args: argparse.Namespace) -> int:
             return fail("not sent")
     client = open_client(config, wallet)
     try:
+        check_fits(args.arena, int(client.block()))
         receipt = client.transfer(pay_to, fee_tao)
-    except ChainError as exc:
+    except (ChainError, CommitmentError) as exc:
         return fail(str(exc))
     print(f"sent       {receipt.extrinsic_hash}")
     print(f"fee block  {receipt.block}")

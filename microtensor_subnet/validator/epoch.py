@@ -1765,10 +1765,12 @@ def remember_weights(
     rounds: Sequence[str] = (),
     *,
     settled: bool = False,
+    forget: bool = False,
 ) -> None:
     state.mkdir(parents=True, exist_ok=True)
     target = state / WEIGHTS_FILE
-    known = sorted(kept_rounds(state) | {str(name) for name in rounds})
+    named = {str(name) for name in rounds}
+    known = sorted(named if forget else kept_rounds(state) | named)
     body: dict[str, Any] = {"block": int(block), "weights": dict(weights), "rounds": known}
     held = dict(weights) if settled else settled_weights(state)
     if held:
@@ -1819,6 +1821,7 @@ def _submit(
     rounds: Sequence[str] = (),
     *,
     settled: bool = False,
+    forget: bool = False,
 ) -> tuple[bool, str]:
     sent, reason, block = False, "none of the weights is on the metagraph", 0
     try:
@@ -1829,7 +1832,7 @@ def _submit(
             block = int(chain.block())
     except ChainError as exc:
         reason = reason if sent else str(exc)
-    remember_weights(state, weights, block, rounds, settled=settled)
+    remember_weights(state, weights, block, rounds, settled=settled, forget=forget)
     return sent, reason
 
 
@@ -1851,18 +1854,38 @@ def keep_settled(state: Path, burn_to: str) -> None:
         remember_weights(state, current[0], current[1], settled=True)
 
 
-def hold_settled(chain: Any, state: Path, rounds: Sequence[str]) -> dict[str, float]:
+def hold_settled(
+    chain: Any, state: Path, rounds: Sequence[str], *, forget: bool = False
+) -> dict[str, float]:
     with WEIGHTS_LOCK:
         held = settled_weights(state)
         if held is None:
             log.error("no settled weights are kept; the weights on chain stay as they are")
             return {}
-        sent, reason = _submit(chain, state, held, rounds)
+        sent, reason = _submit(chain, state, held, rounds, forget=forget)
     if sent:
         log.info("the last settled weights were sent again")
     else:
         log.error("the last settled weights were not sent; they go again shortly: %s", reason)
     return held
+
+
+def burning(chain: Any, state: Path) -> bool:
+    kept = kept_weights(state)
+    if kept is None or kept[0] == settled_weights(state):
+        return False
+    burn_to = _owner(chain)
+    if not burn_to:
+        log.error("the subnet owner hotkey is unknown; the weights on chain stay as they are")
+        return False
+    return kept[0] == {burn_to: 1.0}
+
+
+def end_round_burn(chain: Any, state: Path) -> dict[str, float]:
+    if not burning(chain, state):
+        return {}
+    log.info("no live arena has an unsettled round: the round burn ends")
+    return hold_settled(chain, state, (), forget=True)
 
 
 def burn_for_round(chain: Any, state: Path, name: str) -> bool:
