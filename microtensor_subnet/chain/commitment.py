@@ -210,16 +210,65 @@ NO_PROFILE_REASON: Final[str] = "commitment carries no hardware profile"
 ARTIFACT_REPO_PREFIX: Final[str] = "microtensor_"
 SLM_REPO_PREFIX: Final[str] = "mt_slm_"
 
-_ARENA = re.compile(r"^[a-z0-9][a-z0-9_]{0,15}$")
+ARENA_ID_CHARS: Final[int] = 24
+HF_USER_CHARS: Final[int] = 40
+WORST_FEE_INDEX: Final[int] = 65_535
+
+_ARENA = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
 _HF_USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SALT = re.compile(r"^[0-9a-f]{16,64}$")
 
 
+def check_arena_id(arena_id: str) -> str:
+    if not _ARENA.fullmatch(arena_id):
+        raise CommitmentError(
+            f"arena id {arena_id!r} is not valid: 1 to {ARENA_ID_CHARS} lowercase letters, "
+            "digits, underscores or hyphens, starting with a letter or digit"
+        )
+    return arena_id
+
+
 def _check_profile(profile: str) -> None:
     if profile and not is_profile(profile):
         raise CommitmentError(f"unknown hardware profile {profile!r}; known: {', '.join(PROFILES)}")
+
+
+def _check_fee(fee_block: int, fee_index: int) -> None:
+    if fee_block < 0 or fee_index < 0:
+        raise CommitmentError("the fee reference must name a block and an extrinsic index")
+
+
+def _fits(payload: str) -> str:
+    size = len(payload.encode("utf-8"))
+    if size > MAX_COMMITMENT_BYTES:
+        raise CommitmentError(
+            f"commitment is {size} bytes, over the {MAX_COMMITMENT_BYTES} byte chain limit"
+        )
+    return payload
+
+
+def longest_commitment(arena_id: str, fee_block: int) -> int:
+    fields = (
+        PROFILE_SUBMISSION_TAG,
+        check_arena_id(arena_id),
+        "a" * HF_USER_CHARS,
+        "0" * 40,
+        max(PROFILES, key=len),
+        str(fee_block),
+        str(WORST_FEE_INDEX),
+    )
+    return len(FIELD_SEPARATOR.join(fields).encode("utf-8"))
+
+
+def check_fits(arena_id: str, fee_block: int) -> None:
+    size = longest_commitment(arena_id, fee_block)
+    if size > MAX_COMMITMENT_BYTES:
+        raise CommitmentError(
+            f"a commitment to {arena_id} paid at block {fee_block} can reach {size} bytes, "
+            f"over the {MAX_COMMITMENT_BYTES} byte chain limit; nothing was paid"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,14 +281,12 @@ class SubmissionCommitment:
     profile: str = ""
 
     def __post_init__(self) -> None:
-        if not _ARENA.match(self.arena_id):
-            raise CommitmentError(f"arena id {self.arena_id!r} is not a valid identifier")
+        check_arena_id(self.arena_id)
         if not _HF_USER.match(self.hf_user):
             raise CommitmentError(f"hugging face user {self.hf_user!r} is not a valid name")
         if not _GIT_SHA.match(self.artifact_sha):
             raise CommitmentError("the artifact revision must be a 40 hex git commit sha")
-        if self.fee_block < 0 or self.fee_index < 0:
-            raise CommitmentError("the fee reference must name a block and an extrinsic index")
+        _check_fee(self.fee_block, self.fee_index)
         _check_profile(self.profile)
 
     @property
@@ -264,13 +311,7 @@ class SubmissionCommitment:
             fields = [PROFILE_SUBMISSION_TAG, *fields, self.profile]
         else:
             fields = [SUBMISSION_TAG, *fields]
-        payload = FIELD_SEPARATOR.join((*fields, str(self.fee_block), str(self.fee_index)))
-        size = len(payload.encode("utf-8"))
-        if size > MAX_COMMITMENT_BYTES:
-            raise CommitmentError(
-                f"commitment is {size} bytes, over the {MAX_COMMITMENT_BYTES} byte chain limit"
-            )
-        return payload
+        return _fits(FIELD_SEPARATOR.join((*fields, str(self.fee_block), str(self.fee_index))))
 
     @classmethod
     def decode(cls, raw: str) -> SubmissionCommitment | None:
@@ -328,12 +369,10 @@ class SealedCommitment:
     profile: str = ""
 
     def __post_init__(self) -> None:
-        if not _ARENA.match(self.arena_id):
-            raise CommitmentError(f"arena id {self.arena_id!r} is not a valid identifier")
+        check_arena_id(self.arena_id)
         if not _DIGEST.match(self.digest):
             raise CommitmentError("the sealed digest must be 64 hex characters")
-        if self.fee_block < 0 or self.fee_index < 0:
-            raise CommitmentError("the fee reference must name a block and an extrinsic index")
+        _check_fee(self.fee_block, self.fee_index)
         _check_profile(self.profile)
 
     @property
@@ -374,7 +413,7 @@ class SealedCommitment:
             fields = [PROFILE_SEALED_TAG, *fields, self.profile]
         else:
             fields = [SEALED_TAG, *fields]
-        return FIELD_SEPARATOR.join((*fields, str(self.fee_block), str(self.fee_index)))
+        return _fits(FIELD_SEPARATOR.join((*fields, str(self.fee_block), str(self.fee_index))))
 
     @classmethod
     def decode(cls, raw: str) -> SealedCommitment | None:

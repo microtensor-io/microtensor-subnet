@@ -73,6 +73,7 @@ RECORDS_DIR: Final[str] = "records"
 ROUTERS_DIR: Final[str] = "routers"
 REPORT_FILE: Final[str] = "report.json"
 WEIGHTS_FILE: Final[str] = "weights.json"
+BURN_ROUNDS: Final[str] = "burn_rounds"
 WEIGHTS_GAP_BLOCKS: Final[int] = 100
 WEIGHTS_REFRESH_BLOCKS: Final[int] = 300
 WEIGHTS_LOCK: Final[threading.Lock] = threading.Lock()
@@ -1750,12 +1751,21 @@ def post_miner_mode_result(runner: MinerModeRunner, record: MinerRecord) -> bool
     return True
 
 
-def kept_rounds(state: Path) -> set[str]:
+def _kept_names(state: Path, key: str) -> set[str]:
     try:
         found = json.loads((state / WEIGHTS_FILE).read_text(encoding="utf-8"))
-        return {str(name) for name in found.get("rounds") or []}
-    except (OSError, ValueError, AttributeError, TypeError):
+        names = found.get(key) or []
+    except (OSError, ValueError, AttributeError):
         return set()
+    return {str(name) for name in names} if isinstance(names, list) else set()
+
+
+def kept_rounds(state: Path) -> set[str]:
+    return _kept_names(state, "rounds")
+
+
+def burn_rounds(state: Path) -> set[str]:
+    return _kept_names(state, BURN_ROUNDS)
 
 
 def remember_weights(
@@ -1765,14 +1775,20 @@ def remember_weights(
     rounds: Sequence[str] = (),
     *,
     settled: bool = False,
+    forget: Sequence[str] = (),
+    burned: Sequence[str] | None = None,
 ) -> None:
     state.mkdir(parents=True, exist_ok=True)
     target = state / WEIGHTS_FILE
-    known = sorted(kept_rounds(state) | {str(name) for name in rounds})
+    named = kept_rounds(state) | {str(name) for name in rounds}
+    known = sorted(named - {str(name) for name in forget})
+    started = burn_rounds(state) if burned is None and not settled else set(burned or ())
     body: dict[str, Any] = {"block": int(block), "weights": dict(weights), "rounds": known}
     held = dict(weights) if settled else settled_weights(state)
     if held:
         body["settled"] = held
+    if started:
+        body[BURN_ROUNDS] = sorted(started)
     partial = target.with_name(target.name + ".part")
     partial.write_text(json.dumps(body), encoding="utf-8")
     partial.replace(target)
@@ -1819,6 +1835,8 @@ def _submit(
     rounds: Sequence[str] = (),
     *,
     settled: bool = False,
+    forget: Sequence[str] = (),
+    burned: Sequence[str] | None = None,
 ) -> tuple[bool, str]:
     sent, reason, block = False, "none of the weights is on the metagraph", 0
     try:
@@ -1829,7 +1847,7 @@ def _submit(
             block = int(chain.block())
     except ChainError as exc:
         reason = reason if sent else str(exc)
-    remember_weights(state, weights, block, rounds, settled=settled)
+    remember_weights(state, weights, block, rounds, settled=settled, forget=forget, burned=burned)
     return sent, reason
 
 
@@ -1851,18 +1869,50 @@ def keep_settled(state: Path, burn_to: str) -> None:
         remember_weights(state, current[0], current[1], settled=True)
 
 
-def hold_settled(chain: Any, state: Path, rounds: Sequence[str]) -> dict[str, float]:
+def hold_settled(
+    chain: Any, state: Path, rounds: Sequence[str], *, forget: Sequence[str] = ()
+) -> dict[str, float]:
     with WEIGHTS_LOCK:
         held = settled_weights(state)
         if held is None:
             log.error("no settled weights are kept; the weights on chain stay as they are")
             return {}
-        sent, reason = _submit(chain, state, held, rounds)
+        sent, reason = _submit(chain, state, held, rounds, forget=forget, burned=())
     if sent:
         log.info("the last settled weights were sent again")
     else:
         log.error("the last settled weights were not sent; they go again shortly: %s", reason)
     return held
+
+
+def round_withdrawn(server: ServerClient, name: str) -> bool:
+    arena_id, _, index = name.rpartition(":")
+    try:
+        found = server.epoch(arena_id, int(index)) if arena_id else None
+    except (ServerError, ValueError, TypeError) as exc:
+        log.error("round %s could not be read; the burn stays: %s", name, exc)
+        return False
+    if not isinstance(found, dict) or not isinstance(found.get("window"), dict):
+        log.warning("the server shows no epoch for round %s; the burn stays", name)
+        return False
+    return "batch" in found and found["batch"] is None
+
+
+def end_round_burn(chain: Any, server: ServerClient, state: Path) -> dict[str, float]:
+    names = sorted(burn_rounds(state))
+    kept = kept_weights(state)
+    if not names or kept is None:
+        return {}
+    burn_to = _owner(chain)
+    if not burn_to:
+        log.error("the subnet owner hotkey is unknown; the round burn stays")
+        return {}
+    if kept[0] != {burn_to: 1.0}:
+        return {}
+    if not all(round_withdrawn(server, name) for name in names):
+        return {}
+    log.info("round %s was withdrawn without settling: the round burn ends", ", ".join(names))
+    return hold_settled(chain, state, (), forget=names)
 
 
 def burn_for_round(chain: Any, state: Path, name: str) -> bool:
@@ -1873,8 +1923,11 @@ def burn_for_round(chain: Any, state: Path, name: str) -> bool:
         if not burn_to:
             log.error("round %s is live but the burn address is unknown; weights stay", name)
             return False
+        burn = {burn_to: 1.0}
+        kept = kept_weights(state)
+        started = burn_rounds(state) if kept is not None and kept[0] == burn else set()
         keep_settled(state, burn_to)
-        sent, reason = _submit(chain, state, {burn_to: 1.0}, (name,))
+        sent, reason = _submit(chain, state, burn, (name,), burned=sorted(started | {name}))
     if sent:
         log.info("round %s is live: emissions burn until it settles", name)
     else:

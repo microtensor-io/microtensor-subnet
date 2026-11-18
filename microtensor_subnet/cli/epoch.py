@@ -54,6 +54,7 @@ from microtensor_subnet.validator.config import PROFILE_ENV, EpochConfig
 from microtensor_subnet.validator.epoch import (
     EpochError,
     burn_for_round,
+    end_round_burn,
     kept_rounds,
     miner_mode_definition,
     refresh_weights,
@@ -658,6 +659,23 @@ def _burn_if_new_round(
     burn_for_round(client, state, name)
 
 
+def _poll(
+    args: argparse.Namespace,
+    config: Any,
+    client: Any,
+    server: ServerClient,
+    wallet: Any,
+    state: Path,
+    block: int,
+) -> None:
+    arena_ids = server.live_arenas(config.network)
+    if not arena_ids:
+        log.info("block %d: the server lists no live arena on %s", block, config.network)
+    for arena_id in arena_ids:
+        _poll_arena(args, config, client, server, wallet, state, arena_id, block)
+    end_round_burn(client, server, state)
+
+
 def _keep_weights(client: Any, state: Path) -> None:
     try:
         refresh_weights(client, state)
@@ -688,12 +706,7 @@ def _loop(args: argparse.Namespace) -> int:
         ).start()
     while True:
         try:
-            block = client.block()
-            arena_ids = server.live_arenas(config.network)
-            if not arena_ids:
-                log.info("block %d: the server lists no live arena on %s", block, config.network)
-            for arena_id in arena_ids:
-                _poll_arena(args, config, client, server, wallet, state, arena_id, block)
+            _poll(args, config, client, server, wallet, state, client.block())
         except (EpochError, ReleaseError, ChainError, ServerError) as exc:
             log.error("epoch loop: %s", exc)
         if args.once:
