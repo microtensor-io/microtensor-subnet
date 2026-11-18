@@ -89,6 +89,7 @@ ignore = [
 "microtensor_subnet/serving/probe.py" = ["S310"]
 "microtensor_subnet/serving/supervise.py" = ["S310", "S603"]
 "microtensor_subnet/serving/audit.py" = ["S310"]
+"microtensor_subnet/validator/rerun/podworker.py" = ["S310", "A002"]
 "microtensor_subnet/harness/chat_template.py" = ["S701"]
 "scripts/train_specialist.py" = ["S311"]
 "tests/*" = ["S", "PLR2004"]

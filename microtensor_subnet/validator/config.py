@@ -64,6 +64,7 @@ class EpochConfig:
     server_url: str = PUBLIC_SERVER_URL
     relay_url: str = PUBLIC_SERVER_URL
     gpus: tuple[str, ...] = ()
+    spot_check_gpus: tuple[str, ...] = ()
     concurrency: int = CONCURRENCY
     vllm_image: str = VLLM_IMAGE
     llama_image: str = LLAMA_IMAGE

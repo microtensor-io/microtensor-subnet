@@ -233,6 +233,11 @@ class ServerClient:
         rows = found.get("validators") if isinstance(found, dict) else found
         return [dict(r) for r in rows or [] if isinstance(r, dict)]
 
+    def uploads(self, arena_id: str, index: int) -> list[dict[str, Any]]:
+        found = self._request("GET", f"/v2/arenas/{arena_id}/epochs/{index}/transcripts")
+        rows = found.get("transcripts") if isinstance(found, dict) else None
+        return [dict(r) for r in rows or [] if isinstance(r, dict) and r.get("hotkey")]
+
     def bans(self, arena_id: str) -> list[dict[str, Any]]:
         found = self._request("GET", f"/v2/arenas/{arena_id}/bans")
         rows = found.get("bans") if isinstance(found, dict) else found

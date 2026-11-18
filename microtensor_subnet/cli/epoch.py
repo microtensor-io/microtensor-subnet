@@ -566,11 +566,20 @@ def _add_profile(parser: argparse.ArgumentParser) -> None:
 
 def _add_gpu_sharing(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--spot-check-gpus",
+        default=os.environ.get("MT_SPOT_CHECK_GPUS", ""),
+        help="comma separated GPU indices that rerun the sampled calls; empty uses the coordinator",
+    )
+    parser.add_argument(
         "--slm-memory-share",
         type=float,
         default=float(os.environ.get("MT_SLM_MEMORY_SHARE", "0") or 0),
         help="vLLM memory share for the model under test; 0 sets it automatically",
     )
+
+
+def _indices(value: Any) -> tuple[str, ...]:
+    return tuple(g.strip() for g in str(value or "").split(",") if g.strip())
 
 
 def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
@@ -581,6 +590,7 @@ def _settings(args: argparse.Namespace, config: Any) -> EpochConfig:
         server_url=args.server,
         relay_url=args.relay or args.server,
         gpus=tuple(g.strip() for g in str(args.gpus).split(",") if g.strip()),
+        spot_check_gpus=_indices(getattr(args, "spot_check_gpus", "")),
         concurrency=args.concurrency,
         sandbox_runtime=args.sandbox_runtime,
         dry_run=args.dry_run,

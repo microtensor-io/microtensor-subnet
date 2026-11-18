@@ -173,6 +173,7 @@ class Flag:
     kind: str
     item_id: str
     call_seq: int
+    condition: str = ""
 
     @property
     def key(self) -> tuple[str, str, str, int]:
@@ -283,6 +284,7 @@ def _take_miner(
             str(entry.get("kind", "")),
             str(entry.get("item_id", "")),
             _int(entry, "call_seq"),
+            str(entry.get("condition") or ""),
         )
         if flag.key not in seen:
             seen.add(flag.key)

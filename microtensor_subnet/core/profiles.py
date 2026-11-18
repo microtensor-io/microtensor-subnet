@@ -166,14 +166,19 @@ def detect(env: Mapping[str, str] | None = None, run: Any = subprocess.run) -> D
     return Detection(CPU_PROFILE, tuple(caps), "nvidia-smi" if caps else "no gpu")
 
 
-def card_problem(profile: str, gpus: Sequence[str], run: Any = subprocess.run) -> str:
+def card_problem(
+    profile: str,
+    gpus: Sequence[str],
+    run: Any = subprocess.run,
+    names: Mapping[str, str] | None = None,
+) -> str:
     published = PUBLISHED_CARDS.get(profile)
     if published is None:
         found = detect({}, run)
         if found.profile == profile:
             return ""
         return f"this host is profile {found.profile} ({found.source}), not {profile}"
-    names = card_names(run)
+    names = card_names(run) if names is None else names
     if not names:
         return f"nvidia-smi lists no GPU; profile {profile} needs {' or '.join(published)}"
     for gpu in gpus[: tensor_parallel(profile)]:

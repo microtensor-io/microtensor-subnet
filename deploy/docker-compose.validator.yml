@@ -16,6 +16,7 @@ services:
       MT_SERVER_URL: "${MT_SERVER_URL:-https://api.microtensor.cloud}"
       MT_RELAY_URL: "${MT_RELAY_URL:-https://api.microtensor.cloud}"
       MT_GPUS: "${MT_GPUS:-0}"
+      MT_SPOT_CHECK_GPUS: "${MT_SPOT_CHECK_GPUS:-}"
       MT_SLM_MEMORY_SHARE: "${MT_SLM_MEMORY_SHARE:-0}"
       HF_HOME: /var/lib/microtensor/cache/hf
       HF_HUB_DISABLE_XET: "${HF_HUB_DISABLE_XET:-}"
