@@ -69,7 +69,7 @@
     <text x="220" y="333" class="s c1">Commit revision</text>
     <text x="220" y="354" class="s c2">weights digest, GPU profile</text>
     <rect x="400" y="306" width="312" height="64" rx="10" fill="#10261e" stroke="#2c6b52"/>
-    <text x="414" y="333" class="s c1">Run every pool in the pinned image</text>
+    <text x="414" y="333" class="s c1">Run every test in the pinned image</text>
     <text x="414" y="354" class="s c2">record every call, upload a signed transcript</text>
   </g>
 

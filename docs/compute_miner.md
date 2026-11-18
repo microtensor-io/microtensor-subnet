@@ -1,7 +1,7 @@
 # Compute mining on Microtensor
 
 You put a GPU machine into the pool. It is verified, characterised and then
-earns for being available and for the work placed on it. You run no models
+earns for the work placed on it. You run no models
 yourself and you train nothing.
 
 If you want to train models read [system_miner.md](system_miner.md). If you want
@@ -133,30 +133,28 @@ not accepted for work. The current table with its memory windows is served at
 
 ## 7 · Work and pay
 
-After the first pass the rig earns emission in full and takes low value work
-while reliability builds. A day of clean checks opens the full priority ladder:
+After the first pass the rig takes low value work while reliability builds. A day of clean checks opens the full priority ladder:
 rental, inference, model shaping, then mining.
 
 Earnings are ninety percent of what each job paid, settled every twenty four
-hours. The compute pool takes ten percent of subnet emission, divided by
-verified availability weighted by card class, with the larger share reserved for
-machines actually running work rather than sitting idle. A machine that is
-offline earns nothing for that period.
+hours. The compute pool takes no share of subnet miner emission, which all goes
+to the arenas' specialist model and system pools, so a rig earns only from the
+work placed on it. A machine that is offline earns nothing for that period.
 
 ### Declining rental
 
 Rental means a stranger's code runs on your hardware, inside a container with
 its own user namespace. If you would rather not, turn rental off for the rig on
-the portal. It costs you the highest value work in the ladder and a fraction of
-the emission floor, and nothing else changes.
+the portal. It costs you the highest value work in the ladder, and nothing else
+changes.
 
 ---
 
 ## 8 · Keeping it healthy
 
 - **Keep it online.** A websocket ping every twenty seconds is the liveness
-  signal. A drop longer than a minute marks the rig offline and its emission
-  stops on that tick until a deep pass passes again.
+  signal. A drop longer than a minute marks the rig offline, and it gets
+  no work from that tick until a deep pass passes again.
 - **Keep the driver current.** A cutoff is announced with a grace period, and a
   rig mid rental is exempt until the tenant leaves.
 - **Let the agent update itself.** It applies only image digests signed by a

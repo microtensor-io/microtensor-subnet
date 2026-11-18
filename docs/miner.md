@@ -1,10 +1,10 @@
 # Running your own evaluation
 
-Miners evaluate their own submissions and validators verify them. You commit a model and an artifact before Freeze 1, declare the hardware profile you will run on, and during the evaluation window you run one batch job on your own GPU. That job records every model, tool and relay call into a transcript, signs it with your hotkey and uploads it before Freeze 2. Validators replay the transcript on CPU and grade it after the labels release. A coordinator run by the subnet owner spot checks sampled model calls on a GPU, and validators read its signed reports from the server. The coordinator is the only thing in the evaluation that uses a GPU besides your own job; validators run on CPU. Nothing timed on your machine is used for scoring.
+Miners evaluate their own submissions and validators verify them. You commit a model and an artifact before Freeze 1, declare the hardware profile you will run on, and during the evaluation window you run one batch job on your own GPU. That job records every model, tool and relay call into a transcript, signs it with your hotkey and uploads it before Freeze 2. Validators replay the transcript on CPU and grade it after the labels release. A coordinator run by the subnet owner spot checks sampled model calls on a GPU, and validators read its signed reports from the server. A validator with a GPU of your profile can run the same spot check itself, on the same calls with the same exact token match. Validators otherwise run on CPU. A transcript with no spot check result scores zero in the SLM and system pools for the epoch. Nothing timed on your machine is used for scoring.
 
 ## Hardware profiles
 
-A profile is one GPU architecture, one driver line and one image digest. Exact token matching only works within a profile, so declare the one you will really run on.
+A profile is one GPU architecture, one driver line and one image digest. Exact token matching only works within a profile, so declare the one you will really run on. An arena lists only the profiles the coordinator spot checks, because a miner no checker can rerun has no spot check result and scores zero.
 
 | Profile | GPUs | Precision | Batching |
 |---|---|---|---|
@@ -23,7 +23,7 @@ The arena lists the profiles it accepts in its definition. On P1 the runner read
 - 8 CPU cores, 32 GB of RAM and 100 GB of free disk under `/var/lib/microtensor`, for the images, your weights and the work folder.
 - A steady connection to `api.microtensor.cloud`. The job waits out short outages, and you can resume it after a long one.
 
-The job takes about 6 to 11 hours on an RTX 4090. The server publishes 920 items for `ctx_compress`, and each item runs one request at a time under every condition it belongs to.
+The job size follows the arena's item counts. For `ctx_compress` the server publishes 25 SLM items, each also run as its twin, and 25 system items, each run at every quality floor, so a job is about 150 rows. Expect one to two hours on an RTX 4090.
 
 ## Before you commit
 
@@ -49,7 +49,7 @@ mt submit commit --arena ctx_compress --hf-user <user> --artifact-sha <sha> --pr
 
 ## The evaluation window
 
-A sealed commitment is revealed with `mt submit reveal --arena <arena>` at any time from the commit until Freeze 2. A reveal sent before Freeze 1 shows as unsealed at once and is carried onto the roster when it is built; keep both repositories private until Freeze 1, then make them public. `reveal_blocks` after Freeze 1 the server mirrors every revealed submission by content hash and retries a `missing` repository every ten minutes until Freeze 2. Check your entry at `GET /v2/arenas/<arena>/epochs/<n>/mirror` under `body.miners.<hotkey>`; only `mirrored` miners can run. Three blocks after the mirror pass the inputs bundle (items, seeds, databases, reference harnesses, escalation drafts) is published, with no labels. When the bundle carries no escalation drafts, the coordinator publishes them during the window. A run with the escalation part refuses to start until they are complete, so you do not spend hours on a transcript with no repair rows. On testnet a bundle may carry no reference harness; the runner then builds it from the miner template at the commit pinned in `microtensor_subnet/validator/items.py`, and validators build the same one, so both sides produce identical prompts. A commitment never revealed is `missed` at Freeze 2.
+A sealed commitment is revealed with `mt submit reveal --arena <arena>` at any time from the commit until Freeze 2. A reveal sent before Freeze 1 shows as unsealed at once and is carried onto the roster when it is built; keep both repositories private until Freeze 1, then make them public. `reveal_blocks` after Freeze 1 the server mirrors every revealed submission by content hash and retries a `missing` repository every ten minutes until Freeze 2. Check your entry at `GET /v2/arenas/<arena>/epochs/<n>/mirror` under `body.miners.<hotkey>`; only `mirrored` miners can run. Three blocks after the mirror pass the inputs bundle (items, seeds, databases, reference harnesses) is published, with no labels. On testnet a bundle may carry no reference harness; the runner then builds it from the miner template at the commit pinned in `microtensor_subnet/validator/items.py`, and validators build the same one, so both sides produce identical prompts. A commitment never revealed is `missed` at Freeze 2.
 
 The job runs as uid 10001 and writes to `/var/lib/microtensor` on the host. Create that folder first, because Docker otherwise creates it owned by root and the job cannot write to it:
 
@@ -91,8 +91,8 @@ The runner:
 2. Pulls your own artifact and model from the mirror, verifies every digest, and runs the same pre-flight check as `mt check-model`.
 3. Starts the pinned engine (`evaluation.images.engine`, by digest) with `--seed 0`, the profile's dtype, prefix caching off and logprobs on. On P1 it runs one request at a time, with no batch invariance. On P2 and P3 it sets `VLLM_BATCH_INVARIANT=1`.
 4. Starts the recording gateway and your `main.py` in the pinned sandbox image with a frozen clock, no network except the gateway, and the item seed passed as `seed` in every request.
-5. Runs every pool in a fixed order: SLM originals then twins, harness under your harness then `B0`, `B1`, `B2`..., escalation repairs from the published drafts, system items at each quality floor. Tool calls are served locally and deterministically; relay calls go through the owner relay with your miner relay token. Each item gets one relay ticket, shared by all its quality floors, with an equal share of your epoch allowance as its cap. A relay that answers 429 or 5xx, or doesn't answer, is retried with backoff for about 30 minutes, so a server deploy doesn't end the job. If the relay refuses a planned ticket the run stops with an error and uploads nothing, because a transcript with missing rows would lose those pools.
-6. Writes the transcript, signs it, uploads it and prints the receipt. `--dry-run` skips the upload, writes `transcript.dry.json` instead and asks for no relay token or tickets, so it spends nothing; its repair and system items run with frontier calls refused. The transcript stores each request and router request with a sha256 in place of the full text, and no logprobs, so it fits the server's limits of 32 MiB compressed and 128 MiB of JSON.
+5. Runs every test in a fixed order: SLM originals then twins, then system items at each quality floor. A system item runs your whole pipeline, your harness, router and escalation around your model, or the reference parts you did not submit. Tool calls are served locally and deterministically; relay calls go through the owner relay with your miner relay token. Each item gets one relay ticket, shared by all its quality floors, with an equal share of your epoch allowance as its cap. A relay that answers 429 or 5xx, or doesn't answer, is retried with backoff for about 30 minutes, so a server deploy doesn't end the job. If the relay refuses a planned ticket the run stops with an error and uploads nothing, because a transcript with missing rows would lose those pools.
+6. Writes the transcript, signs it, uploads it and prints the receipt. `--dry-run` skips the upload, writes `transcript.dry.json` instead and asks for no relay token or tickets, so it spends nothing; its system items run with frontier calls refused. The transcript stores each request and router request with a sha256 in place of the full text, and no logprobs, so it fits the server's limits of 32 MiB compressed and 128 MiB of JSON.
 
 The transcript keeps the item seed as published. The engine accepts signed 64 bit seeds, so the runner and the coordinator both send it the seed's low 63 bits.
 
@@ -163,22 +163,21 @@ It starts the same gateway in replay mode and your artifact in the replayer imag
 | Weight files | not enforced | with a `model.safetensors.index.json`, only the shards it names are read, because the engine loads only those; a weight file it doesn't name fails the SLM gate |
 | Max input and output tokens | engine `--max-model-len`, gateway `max_tokens` | your `config.json`, then counted per call during replay |
 | Model calls per item | gateway answers 429 past the arena's limit | counted from the transcript |
-| Harness added wall time | not enforced | measured on the validator clock during replay |
-| Harness and repair code size | `mt submit validate` | summed from the mirrored files; over the limit scores zero in the harness, escalation and system pools |
-| Router parameters | `mt submit validate` | safetensors headers on the mirrored router; over the limit scores zero in the router pool |
-| TTFT, TPOT, memory | not enforced | coordinator on the profile card against the reference on the same card |
+| Harness and repair code size | `mt submit validate` | summed from the mirrored files; over the limit scores zero in the system pool |
+| Router parameters | `mt submit validate` | safetensors headers on the mirrored router; over the limit scores zero in the system pool |
+| TTFT, TPOT, memory | not enforced | the coordinator, or a validator spot checking on the profile card, against the reference on the same card |
 | Relay spend | ticket cap from your epoch allowance | signed receipts summed |
 | Tool faults | injected from the epoch seed | recomputed and compared |
 
 Your own timings are never used. Without a measurement from the profile card, speed limits pass, speed earns no efficiency gain, and memory is computed from the model.
 
-The escalation pool compares your repairs with the reference repairs on the same items. When no reference repair is published, the reference score is 0, the score of a full frontier redo, and the 5th percentile of your score over 200 family resamples must be above 0.
+Repairs have no pool of their own. They count inside the system pool, where a repair that passes for less than a frontier redo lowers your system's cost at each floor.
 
-If a call differs from your transcript, the coordinator restarts its engine and reruns it. When both runs agree with each other and differ from yours, the call goes in its signed report as public evidence. Validators then zero your hotkey for the number of epochs the arena sets. Calls that faulted are not checked.
+If a call differs from your transcript, the checker restarts its engine and reruns it, whether that is the coordinator or a validator running its own spot check. When both runs agree with each other and differ from yours, the call is evidence. The coordinator publishes it in its signed report, and validators then zero your hotkey for the number of epochs the arena sets. A validator that checked you itself applies its evidence only in its own report, for that epoch, and starts no ban. Calls that faulted are not checked.
 
-When the coordinator could not check you, for example because its GPU failed, its report says `unchecked` with the reason. That does not zero you. It means no spot check result this epoch, and the validators' reports show it.
+When the coordinator could not check you, for example because its GPU failed, its report says `unchecked` with the reason. If no validator checked you either, you have no spot check result for the epoch and score zero in the SLM and system pools for it. That is not a ban: the next epoch starts clean and there is nothing to appeal. If no coordinator report arrives at all, validators keep the last settled weights for that epoch.
 
-You can appeal within one epoch. List your flagged calls, then appeal one, and the coordinator reruns it. A match lifts the flag.
+You can appeal a coordinator flag within one epoch. List your flagged calls, then appeal one, and the coordinator reruns it. A match lifts the flag.
 
 ```bash
 mt miner appeal --arena <arena> --epoch <epoch>
@@ -196,12 +195,14 @@ Every validator compares each submission's models with all earlier ones before s
 | Model | Hash of the weights | Same hash as an earlier submission | SLM and system pools |
 | Model | A fixed sketch of your weights minus the arena's base model | Similarity of at least 0.9 with an earlier sketch | SLM and system pools |
 | Model | Your SLM outputs on the same items, token for token, against an earlier miner whose spot check sampled SLM calls and found no mismatch | At least 95% identical over at least 20 common items | SLM and system pools |
-| Router | Hash of the weights, and the same sketch when the arena names a router base | Same hash, or similarity of at least 0.9 | Router and system pools |
+| Router | Hash of the weights, and the same sketch when the arena names a router base | Same hash, or similarity of at least 0.9 | System pool |
 
-Your other parts are still scored. Harness and repair code is never compared: two miners may use the same code, and only the model and the router have to be your own. Quantised models have no sketch, so only their hash and outputs are compared.
+When only your router is a duplicate, your model is still scored in the SLM pool. Harness and repair code is never compared: two miners may use the same code, and only the model and the router have to be your own. Quantised models have no sketch, so only their hash and outputs are compared.
 
 ## After the epoch settles
 
 The arena closes when its epoch settles. The miners ranked in that epoch keep earning from the result for as long as the arena stays closed. A new round does not follow by itself: it starts when the arena is opened again, and its commit window begins at that block.
 
 When a new round goes live, of this arena or of another one, the weights from the earlier result are replaced by a burn, and they stay burned until the new round settles and has its own ranking.
+
+If no coordinator report arrives for an epoch, the server settles it void: no new ranking, no payout from it and no certificates. Validators put the last settled ranking back on chain instead of a burn, and the arena keeps paying the previous settlement as it does while closed.

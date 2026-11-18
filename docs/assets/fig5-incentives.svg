@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-label="Figure 5: five pools of 20 percent, each paying its top five">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-label="Figure 5: two pools, 60 and 40 percent, each paying its top five">
   <defs>
     <style>
       .s { font-family: Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
@@ -7,33 +7,24 @@
       .q { font-size: 12.5px; fill: #dfe3ff; }
     </style>
   </defs>
-  <rect x="1" y="1" width="1198" height="438" rx="18" fill="#0f1116" stroke="#262b36"/>
+  <rect x="1" y="1" width="1198" height="468" rx="18" fill="#0f1116" stroke="#262b36"/>
   <text x="48" y="58" class="m" font-size="14" fill="#8b95ff">FIGURE 5</text>
-  <text x="48" y="90" class="s" font-size="24" font-weight="600" fill="#f2f4f8">Miner emissions: five pools, each paying its top five</text>
+  <text x="48" y="90" class="s" font-size="24" font-weight="600" fill="#f2f4f8">Miner emissions: two pools, each paying its top five</text>
 
-  <!-- pools -->
+  <!-- pools: 60 and 40 of 1080 -->
   <g>
-    <rect x="60" y="124" width="212" height="58" rx="8" fill="#6d7cff"/>
-    <rect x="276" y="124" width="212" height="58" rx="8" fill="#2a3060"/>
-    <rect x="492" y="124" width="212" height="58" rx="8" fill="#2a3060"/>
-    <rect x="708" y="124" width="212" height="58" rx="8" fill="#2a3060"/>
-    <rect x="924" y="124" width="216" height="58" rx="8" fill="#2a3060"/>
-    <text x="166" y="151" class="s p" text-anchor="middle">SLM</text>
-    <text x="166" y="171" class="m q" text-anchor="middle" fill="#e6e8ff">20%</text>
-    <text x="382" y="151" class="s p" text-anchor="middle">Harness</text>
-    <text x="382" y="171" class="m q" text-anchor="middle">20%</text>
-    <text x="598" y="151" class="s p" text-anchor="middle">Router</text>
-    <text x="598" y="171" class="m q" text-anchor="middle">20%</text>
-    <text x="814" y="151" class="s p" text-anchor="middle">Escalation</text>
-    <text x="814" y="171" class="m q" text-anchor="middle">20%</text>
-    <text x="1032" y="151" class="s p" text-anchor="middle">System</text>
-    <text x="1032" y="171" class="m q" text-anchor="middle">20%</text>
+    <rect x="60" y="124" width="644" height="58" rx="8" fill="#6d7cff"/>
+    <rect x="708" y="124" width="432" height="58" rx="8" fill="#2a3060"/>
+    <text x="382" y="151" class="s p" text-anchor="middle">Specialist model</text>
+    <text x="382" y="171" class="m q" text-anchor="middle" fill="#e6e8ff">60%</text>
+    <text x="924" y="151" class="s p" text-anchor="middle">System</text>
+    <text x="924" y="171" class="m q" text-anchor="middle">40%</text>
   </g>
 
   <!-- zoom -->
-  <path d="M60 182 L60 254 M272 182 L1140 254" stroke="#6d7cff" stroke-opacity="0.6" stroke-width="1.5" stroke-dasharray="5 5" fill="none"/>
+  <path d="M60 182 L60 254 M704 182 L1140 254" stroke="#6d7cff" stroke-opacity="0.6" stroke-width="1.5" stroke-dasharray="5 5" fill="none"/>
   <path d="M60 182 L60 254" stroke="#6d7cff" stroke-opacity="0.6" stroke-width="1.5"/>
-  <polygon points="60,182 272,182 1140,254 60,254" fill="#6d7cff" fill-opacity="0.06"/>
+  <polygon points="60,182 704,182 1140,254 60,254" fill="#6d7cff" fill-opacity="0.06"/>
 
   <!-- ranks within a pool: 40 25 15 12 8 of 1080 -->
   <g>
@@ -54,7 +45,8 @@
     <text x="1098" y="305" class="m q" text-anchor="middle">8%</text>
   </g>
 
-  <text x="60" y="358" class="s" font-size="14.5" fill="#a7adbb">Ranked by score within each pool; an earlier commit wins a tie. A partial submission, such as a router alone, competes in its own pool.</text>
-  <text x="60" y="384" class="s" font-size="14.5" fill="#a7adbb">A pool with no eligible entry is burned rather than paid to weak work. A ladder keeps each artifact's best score.</text>
-  <text x="60" y="414" class="s" font-size="12.5" fill="#5d6474">Testnet parameters; mainnet values are set from measured epochs.</text>
+  <text x="60" y="358" class="s" font-size="14.5" fill="#a7adbb">Ranked by score within each pool; an earlier commit wins a tie. A model alone competes in the specialist model pool.</text>
+  <text x="60" y="384" class="s" font-size="14.5" fill="#a7adbb">Harness, router and escalation count through the system pool. A pool with no eligible entry is burned.</text>
+  <text x="60" y="410" class="s" font-size="14.5" fill="#a7adbb">A miner with no spot check result is not eligible in either pool that epoch. A ladder keeps each artifact's best score.</text>
+  <text x="60" y="444" class="s" font-size="12.5" fill="#5d6474">The same split on testnet and mainnet. Serving and compute take no share of miner emission.</text>
 </svg>

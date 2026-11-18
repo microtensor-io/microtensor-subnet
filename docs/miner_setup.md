@@ -1,6 +1,6 @@
 # Mining on Microtensor
 
-A submission is two Hugging Face repositories: the artifact (`<user>/microtensor_<arena>`: harness, router, escalation, manifest) and the model (`<user>/mt_slm_<arena>`: weights and the training record). Validators fetch both at the revision you commit on chain and run every part on their own GPUs.
+A submission is two Hugging Face repositories: the artifact (`<user>/microtensor_<arena>`: harness, router, escalation, manifest) and the model (`<user>/mt_slm_<arena>`: weights and the training record). The server mirrors both at the revision you commit on chain. You run every part yourself on your own GPU during the evaluation window and upload a signed transcript. Validators replay it on CPU, and the coordinator, or a validator with a GPU of your profile, spot checks sampled model calls with an exact token match.
 
 Start from the template: https://github.com/microtensor-io/microtensor-miner-template. Its README walks through the adapter for your arena's task, the two layouts, `mt submit manifest`, `mt submit validate`, `mt submit pay` and `mt submit commit`.
 

@@ -4,7 +4,7 @@ Netuid **576** on Bittensor testnet. An inference operator holds the certified s
 
 <img src="assets/serving-overview.png" width="100%" alt="How inference serving fits together: customers reach the gateway, the gateway routes to operator cards over outbound websockets, the coordinator probes through the gateway, validators score from the gateway's records">
 
-The gateway keeps the registry of cards, routes every request to one card, meters it and signs a receipt for it. The agent on each machine dials out, so nothing listens on a public port and a rented GPU works. The coordinator and permitted validators probe through the same gateway, and validators set the serving pool weights on CPU from the receipts and the probe verdicts. The frontier model answers only when no card can, and only where the gateway is given an upstream; otherwise such a request is refused and recorded.
+The gateway keeps the registry of cards, routes every request to one card, meters it and signs a receipt for it. The agent on each machine dials out, so nothing listens on a public port and a rented GPU works. The coordinator and permitted validators probe through the same gateway, and validators check the receipts and the probe verdicts on CPU. The frontier model answers only when no card can, and only where the gateway is given an upstream; otherwise such a request is refused and recorded.
 
 ## What you run
 
@@ -178,27 +178,13 @@ Calibration and the per model verifiability table wait for a GPU box. A threshol
 
 ## Earnings
 
-Two sources, both per arena, settled per card.
+Operators are paid from billing, per arena, settled per card. Serving takes no share of miner emission; all of it goes to the arena's specialist model and system pools, at 60% and 40%.
 
-**Revenue share.** When billing opens you receive 80% of the metered billing for the requests you served; Microtensor keeps 20%. A request that fell back to a frontier model is billed to the customer at the frontier list price and passed through; it is outside the 80%. On testnet every answered request counts as billed for the pool and no customer is charged.
+**Revenue share.** When billing opens you receive 80% of the metered billing for the requests you served; Microtensor keeps 20%. A request that fell back to a frontier model is billed to the customer at the frontier list price and passed through; it is outside the 80%. On testnet no customer is charged, so serving earns nothing there.
 
-**The serving pool.** Each arena's epoch emission sets aside a serving pool for inference operators, at most 10% at launch, and splits the rest equally across the five system pools (18% each). A serving epoch is one UTC day, closed at midnight, so every validator settles the same window from the same receipts. At epoch close every validator reads the published settlement, checks the receipts root and every gateway signature, recomputes the scores and pays the pool by score per card: a card's score is the requests it served successfully, each weighted 1.0 inside the envelope and 0.5 outside it, times the card's probe pass rate for the window; time spent paused earns nothing. Your share is your score over the sum of paid scores. The rebate keeps the pool at 1/25 of the billing served, and serving emission that no score earned is burned to the burn hotkey, the same rule as an empty system pool; it never flows back to the system pools.
+A serving epoch is one UTC day, closed at midnight, so every validator checks the same window from the same receipts. At epoch close every validator reads the published settlement and checks the receipts root, every gateway signature and each card's billed requests. Time spent paused or removed serves no requests and bills nothing.
 
-**One hotkey per coldkey.** Only the hotkey with the highest score under a coldkey is paid; the others score zero and their share burns. Operators the team flags as its own earn nothing from the pool.
-
-**New model bounty.** The first outside operator whose card goes live on a newly certified image earns the arena's `bounty_share` of the pool for that window (5% unless the arena sets otherwise); unclaimed bounties burn.
-
-The cap slides with the arena's billing over the last 30 days, read from the gateway each epoch, and the freed share returns to the five system pools:
-
-| Monthly billing | Serving pool |
-|---|---|
-| below 5,000 USD | 10% |
-| below 50,000 USD | 5% |
-| above | 2% |
-
-**Admission floor.** Where the arena sets one, a newly admitted operator earns a small fixed share of the serving pool for its first serving epochs even at zero traffic, so a new arena always has someone serving. After that, pay is usage only.
-
-**Receipts.** The gateway signs one receipt per request with its Ed25519 key (`policy.receipt_public_key` in the catalogue): request id, time, hashed customer key, model, image digest, operator, card, tokens, first token and total time, outcome, probe flag and price. The settlement names the Merkle root of the window's receipts and `GET /v1/public/inference/receipts?since=&until=` exports them; `mt operator audit` recomputes the root, checks the signatures and the scores, and a validator burns the pool rather than pay from a settlement whose receipts do not add up. Inputs above the arena's `long_above_tokens` count as inside the envelope under the long input limits (`long_ttft_ms`, `long_e2e_ms`) instead of the ordinary ones.
+**Receipts.** The gateway signs one receipt per request with its Ed25519 key (`policy.receipt_public_key` in the catalogue): request id, time, hashed customer key, model, image digest, operator, card, tokens, first token and total time, outcome, probe flag and price. The settlement names the Merkle root of the window's receipts and `GET /v1/public/inference/receipts?since=&until=` exports them; `mt operator audit` recomputes the root, checks the signatures and the scores, and a settlement whose receipts do not add up is not paid. Inputs above the arena's `long_above_tokens` count as inside the envelope under the long input limits (`long_ttft_ms`, `long_e2e_ms`) instead of the ordinary ones.
 
 ## Troubleshooting
 
