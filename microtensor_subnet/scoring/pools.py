@@ -10,10 +10,10 @@ HARNESS: Final[str] = "harness"
 ROUTER: Final[str] = "router"
 ESCALATION: Final[str] = "escalation"
 SYSTEM: Final[str] = "system"
-POOLS: Final[tuple[str, ...]] = (SLM, HARNESS, ROUTER, ESCALATION, SYSTEM)
+POOLS: Final[tuple[str, ...]] = (SLM, SYSTEM)
 SPOT_CHECKED: Final[tuple[str, ...]] = (SLM, SYSTEM)
 
-POOL_SHARES: Final[dict[str, float]] = dict.fromkeys(POOLS, 0.2)
+POOL_SHARES: Final[dict[str, float]] = {SLM: 0.6, SYSTEM: 0.4}
 RANK_PAYOUT: Final[tuple[float, ...]] = (0.40, 0.25, 0.15, 0.12, 0.08)
 LADDER_STEP: Final[float] = 0.01
 DIGITS: Final[int] = 9

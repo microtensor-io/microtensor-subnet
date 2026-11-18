@@ -41,30 +41,6 @@ DETAIL_KEYS: Final[dict[str, frozenset[str]]] = {
             "reason",
         }
     ),
-    pools.HARNESS: frozenset(
-        {
-            "baseline",
-            "baseline_pass_rate",
-            "miner_pass_rate",
-            "baselines",
-            "tokens_miner",
-            "tokens_baseline",
-            "allowance",
-            "standard_error",
-            "reason",
-            "limits",
-        }
-    ),
-    pools.ESCALATION: frozenset(
-        {
-            "redo_pass_rate",
-            "repair_cost_micros",
-            "redo_cost_micros",
-            "margin_over_reference_lb",
-            "gate",
-            "reason",
-        }
-    ),
     pools.SYSTEM: frozenset(
         {
             "floors",
@@ -74,18 +50,6 @@ DETAIL_KEYS: Final[dict[str, frozenset[str]]] = {
             "reason",
         }
     ),
-    pools.ROUTER: frozenset(
-        {"sources", "latency_p95_ms", "gate", "reason", "margin_over_reference_lb"}
-    ),
-}
-HARNESS_LIMIT_KEYS: Final[frozenset[str]] = frozenset(
-    {"max_model_calls", "added_wall_p95_ms", "added_wall_limit_ms", "within"}
-)
-ROUTER_SOURCE_KEYS: Final[frozenset[str]] = frozenset({"own", "reference", "peer", "adversarial"})
-NESTED_KEYS: Final[dict[tuple[str, str], tuple[frozenset[str] | None, bool]]] = {
-    (pools.HARNESS, "baselines"): (None, True),
-    (pools.HARNESS, "limits"): (HARNESS_LIMIT_KEYS, False),
-    (pools.ROUTER, "sources"): (ROUTER_SOURCE_KEYS, True),
 }
 FLOOR_KEYS: Final[frozenset[str]] = frozenset(
     {"pass_rate", "lower_bound", "cost_micros", "latency_p95_ms", "escalated", "value", "n", "met"}
@@ -179,9 +143,6 @@ def pool_detail(pool: str, detail: Mapping[str, Any]) -> dict[str, Any]:
                     for floor, row in value.items()
                     if isinstance(row, Mapping)
                 }
-            elif (pool, key) in NESTED_KEYS:
-                keys, numbers = NESTED_KEYS[(pool, key)]
-                found[key] = _flat(value, keys, numbers)
             continue
         kept = checklist.clean(value)
         if kept is not None:

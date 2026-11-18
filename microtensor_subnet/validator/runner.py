@@ -25,7 +25,7 @@ from microtensor_subnet.artifact.validate import (
 )
 from microtensor_subnet.core import profiles, transcript
 from microtensor_subnet.core.items import ItemError, unpack_bundle
-from microtensor_subnet.validator import collect, preflight, spotcheck
+from microtensor_subnet.validator import collect, preflight
 from microtensor_subnet.validator.client import ARENA_NETWORKS, ServerClient, ServerError
 from microtensor_subnet.validator.config import (
     REQUEST_SECONDS,
@@ -110,7 +110,6 @@ RECEIPT_FILE: Final[str] = "receipt.json"
 MIRRORED: Final[str] = "mirrored"
 RUNNING: Final[str] = "running"
 UPLOADED: Final[str] = "uploaded"
-ERRORS_TEXT: Final[str] = "the draft returned the wrong result"
 DEFAULT_CONTEXT: Final[int] = 8192
 ENGINE_ATTEMPTS: Final[int] = 3
 ROW_ATTEMPTS: Final[int] = 3
@@ -942,15 +941,8 @@ class Session:
         raise RunnerError(f"the engine failed {ENGINE_ATTEMPTS} times on {item.item_id}: {last}")
 
     @property
-    def planned_repairs(self) -> int:
-        if "escalation" not in self.miner.has:
-            return 0
-        chosen = self.inputs.pool(ESCALATION, self.config.item_limit)
-        return sum(1 for item in chosen if item.item_id in self.inputs.drafts)
-
-    @property
     def cap_micros(self) -> int:
-        planned = self.planned_repairs + len(self.inputs.pool(SYSTEM, self.config.item_limit))
+        planned = len(self.inputs.pool(SYSTEM, self.config.item_limit))
         return max(1, self.allowance_micros // max(1, planned))
 
     def ticket(self, item_id: str, purpose: str, *, renew: bool = False) -> str:
@@ -1083,80 +1075,17 @@ class Session:
             raise RunnerError("the inputs bundle carries no reference harness")
         return found
 
-    def reference_trees(self) -> list[Path]:
-        harness = self.inputs.trees.get(REFERENCE_HARNESS)
-        if harness is None:
-            raise RunnerError("the inputs bundle carries no reference harness")
-        return [harness, *self.inputs.variant_dirs]
-
     def plan(self) -> int:
         limit = self.config.item_limit
         slm = len(self.inputs.pool(SLM, limit))
-        harness = len(self.inputs.pool(HARNESS, limit))
-        conditions = 1 + len(self.reference_trees()) + (1 if "harness" in self.miner.has else 0)
         system = len(self.inputs.pool(SYSTEM, limit)) * len(floors_of(self.definition))
-        return slm + harness * conditions + self.planned_repairs + system
+        return slm + system
 
     def run_pools(self) -> None:
         limit = self.config.item_limit
         for item in [*self.inputs.originals(SLM, limit), *self.inputs.twins(SLM, limit)]:
             if not self.reused(item, SLM, transcript.MINER):
                 self.finish(self.generate(item, SLM, transcript.MINER))
-        harness_items = self.inputs.pool(HARNESS, limit)
-        if "harness" in self.miner.has:
-            for item in harness_items:
-                if self.reused(item, HARNESS, transcript.MINER):
-                    continue
-                self.finish(
-                    self.run_main(
-                        self.miner.artifact_dir,
-                        contract.HARNESS_RUN,
-                        item,
-                        HARNESS,
-                        transcript.MINER,
-                        {"item_id": item.item_id, "task": dict(item.task)},
-                    )
-                )
-        for item in harness_items:
-            if not self.reused(item, HARNESS, transcript.BARE):
-                self.finish(self.generate(item, HARNESS, transcript.BARE))
-        for index, tree in enumerate(self.reference_trees(), start=1):
-            condition = transcript.reference_condition(index)
-            for item in harness_items:
-                if self.reused(item, HARNESS, condition):
-                    continue
-                self.finish(
-                    self.run_main(
-                        tree,
-                        contract.HARNESS_RUN,
-                        item,
-                        HARNESS,
-                        condition,
-                        {"item_id": item.item_id, "task": dict(item.task)},
-                    )
-                )
-        if "escalation" in self.miner.has:
-            for item in self.inputs.pool(ESCALATION, limit):
-                draft = self.inputs.drafts.get(item.item_id)
-                if draft is None or self.reused(item, ESCALATION, transcript.REPAIR):
-                    continue
-                self.finish(
-                    self.run_main(
-                        self.miner.artifact_dir,
-                        contract.ESCALATION_REPAIR,
-                        item,
-                        ESCALATION,
-                        transcript.REPAIR,
-                        {
-                            "item_id": item.item_id,
-                            "task": dict(item.task),
-                            "draft": draft,
-                            "trace": "",
-                            "errors": ERRORS_TEXT,
-                        },
-                        purpose=REPAIR,
-                    )
-                )
         system_items = self.inputs.pool(SYSTEM, limit)
         for floor in floors_of(self.definition):
             condition = transcript.system_condition(floor)
@@ -1391,24 +1320,6 @@ def open_relay(client: ServerClient, config: RunnerConfig) -> tuple[TicketDesk |
     )
 
 
-def add_coordinator_drafts(
-    client: ServerClient, config: RunnerConfig, key: str, inputs: Inputs, miner: Miner
-) -> None:
-    if inputs.drafts or "escalation" not in miner.has or not inputs.pool(ESCALATION):
-        return
-    found = spotcheck.fetch(client, config.arena_id, config.epoch_index, key, leaves={})
-    if found is not None and found.drafts_complete:
-        inputs.drafts = dict(found.drafts)
-        return
-    if config.dry_run:
-        log.warning("the reference drafts are not published yet; this dry run has no repair rows")
-        return
-    raise RunnerError(
-        "the coordinator has not finished publishing the reference drafts for this epoch; "
-        "run again when it has, because a run without them has no repair rows"
-    )
-
-
 def build_transcript(
     config: RunnerConfig, miner: Miner, images: Images, entries: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
@@ -1521,7 +1432,6 @@ def run(
     config.work_dir.mkdir(parents=True, exist_ok=True)
     inputs = fetch_inputs(client, config, key, definition)
     miner = fetch_miner(client, config, definition, entry)
-    add_coordinator_drafts(client, config, key, inputs, miner)
     desk, allowance = (None, 0) if config.dry_run else open_relay(client, config)
     allowance = (
         relay_allowance_of(definition)
