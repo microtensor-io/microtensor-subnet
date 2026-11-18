@@ -33,8 +33,6 @@ MIRROR_READ_SECONDS: Final[float] = 120.0
 RANGE_START: Final[re.Pattern[str]] = re.compile(r"bytes (\d+)-")
 NOT_SENT: Final[int] = -1
 UNREACHED: Final[int] = 0
-LIVE: Final[str] = "live"
-PAUSED: Final[str] = "paused"
 
 
 ARENA_NETWORKS: dict[str, str] = {"test": "testnet", "finney": "mainnet"}
@@ -143,20 +141,14 @@ class ServerClient:
         except httpx.HTTPError as exc:
             raise ServerError(f"GET {path} failed: {exc}") from exc
 
-    def arena_states(self, network: str) -> dict[str, str] | None:
-        found = self._request("GET", "/v2/arenas")
-        if not isinstance(found, dict) or not isinstance(found.get("arenas"), list):
-            return None
-        wanted = ARENA_NETWORKS.get(network, network)
-        return {
-            str(a.get("id")): str(a.get("state") or "")
-            for a in found["arenas"]
-            if isinstance(a, dict) and a.get("network") == wanted and a.get("id")
-        }
-
     def live_arenas(self, network: str) -> list[str]:
-        states = self.arena_states(network) or {}
-        return sorted(a for a, state in states.items() if state == LIVE)
+        found = self._request("GET", "/v2/arenas") or {}
+        wanted = ARENA_NETWORKS.get(network, network)
+        return sorted(
+            str(a.get("id"))
+            for a in found.get("arenas") or []
+            if a.get("state") == "live" and a.get("network") == wanted and a.get("id")
+        )
 
     def arena(self, arena_id: str, block: int | None = None) -> dict[str, Any] | None:
         query = f"?block={block}" if block is not None else ""

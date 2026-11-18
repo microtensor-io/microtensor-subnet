@@ -49,7 +49,7 @@ from microtensor_subnet.serving.verifier import (
     stamped,
 )
 from microtensor_subnet.serving.verify import UNPROVEN, VerificationError
-from microtensor_subnet.validator.client import LIVE, PAUSED, ServerClient, ServerError
+from microtensor_subnet.validator.client import ServerClient, ServerError
 from microtensor_subnet.validator.config import PROFILE_ENV, EpochConfig
 from microtensor_subnet.validator.epoch import (
     EpochError,
@@ -610,7 +610,7 @@ def _poll_arena(
     state: Path,
     arena_id: str,
     block: int,
-) -> bool:
+) -> None:
     record = state / f"{arena_id}.epochs.json"
     done: set[int] = set()
     if record.is_file():
@@ -620,19 +620,18 @@ def _poll_arena(
     index = current.get("index")
     if arena is None:
         log.warning("arena %s is unknown to %s", arena_id, args.server)
-        return True
-    unsettled = _unsettled(server, arena_id, index)
+        return
     if not miner_mode_definition(dict(arena.get("definition") or {})):
         log.warning("arena %s carries no evaluation block; skipped", arena_id)
-        return unsettled
-    if unsettled and index is not None and int(index) not in done:
-        _burn_if_new_round(client, state, arena_id, int(index))
+        return
+    if index is not None and int(index) not in done:
+        _burn_if_new_round(client, server, state, arena_id, int(index))
     if current.get("phase") != "settling" or index is None or int(index) in done:
         log.info("block %d: %s epoch %s is %s", block, arena_id, index, current.get("phase"))
-        return unsettled
+        return
     if not _receipts_published(server, arena_id, int(index)):
         log.info("block %d: %s epoch %s waits for the Freeze 2 receipts", block, arena_id, index)
-        return unsettled
+        return
     log.info("epoch %s of %s is open at block %d", index, arena_id, block)
     settings = dataclasses.replace(_settings(args, config), arena_id=arena_id)
     outcome = run_miner_mode_epoch(settings, chain=client, wallet=wallet, epoch_index=int(index))
@@ -646,28 +645,18 @@ def _poll_arena(
         len(outcome.failures),
         len(outcome.weights),
     )
-    return True
 
 
-def _unsettled(server: ServerClient, arena_id: str, index: Any) -> bool:
-    if index is None:
-        return False
-    batch = dict((server.epoch(arena_id, int(index)) or {}).get("batch") or {})
-    return bool(batch) and batch.get("state") != "settled"
-
-
-def _burn_if_new_round(client: Any, state: Path, arena_id: str, index: int) -> None:
+def _burn_if_new_round(
+    client: Any, server: ServerClient, state: Path, arena_id: str, index: int
+) -> None:
     name = round_name(arena_id, index)
-    if name not in kept_rounds(state):
-        burn_for_round(client, state, name)
-
-
-def _paused_unsettled(server: ServerClient, arena_id: str, block: int) -> bool:
-    arena = server.arena(arena_id, block)
-    if arena is None:
-        return True
-    index = dict(arena.get("current_epoch") or {}).get("index")
-    return _unsettled(server, arena_id, index)
+    if name in kept_rounds(state):
+        return
+    batch = dict((server.epoch(arena_id, index) or {}).get("batch") or {})
+    if not batch or batch.get("state") == "settled":
+        return
+    burn_for_round(client, state, name)
 
 
 def _poll(
@@ -679,22 +668,12 @@ def _poll(
     state: Path,
     block: int,
 ) -> None:
-    arenas = server.arena_states(config.network)
-    if arenas is None:
-        log.warning("block %d: %s answered no arena list; the weights stay", block, args.server)
-        return
-    live = sorted(a for a, s in arenas.items() if s == LIVE)
-    if not live:
+    arena_ids = server.live_arenas(config.network)
+    if not arena_ids:
         log.info("block %d: the server lists no live arena on %s", block, config.network)
-    unsettled = False
-    for arena_id in live:
-        if _poll_arena(args, config, client, server, wallet, state, arena_id, block):
-            unsettled = True
-    for arena_id in sorted(a for a, s in arenas.items() if s == PAUSED):
-        if _paused_unsettled(server, arena_id, block):
-            unsettled = True
-    if not unsettled:
-        end_round_burn(client, state)
+    for arena_id in arena_ids:
+        _poll_arena(args, config, client, server, wallet, state, arena_id, block)
+    end_round_burn(client, server, state)
 
 
 def _keep_weights(client: Any, state: Path) -> None:
