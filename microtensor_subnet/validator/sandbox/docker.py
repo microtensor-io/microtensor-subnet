@@ -19,6 +19,7 @@ PULL_SECONDS = 3600.0
 PULL_ATTEMPTS = 3
 PULL_PAUSE_SECONDS = 15.0
 GPU_QUERY = ("nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits")
+CARD_QUERY = ("nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader")
 CONTAINER_MARKER = "/.dockerenv"
 MERGED_OUTPUT = frozenset({"logs"})
 FAILURE_LINES = 200
@@ -376,6 +377,18 @@ class Docker:
             if index.strip() and memory.strip().isdigit():
                 seen[index.strip()] = int(memory.strip())
         return {gpu: seen[gpu] for gpu in wanted if gpu in seen}
+
+    def card_names(self, image: str) -> dict[str, str]:
+        self.ensure_image(image)
+        raw = self.runner.run(
+            ["run", "--rm", "--network", "none", "--gpus", "all", image, *CARD_QUERY]
+        )
+        names: dict[str, str] = {}
+        for line in raw.splitlines():
+            index, _, name = line.partition(",")
+            if index.strip() and name.strip():
+                names[index.strip()] = name.strip()
+        return names
 
     def wait_running(self, name: str, seconds: float) -> bool:
         deadline = time.monotonic() + seconds

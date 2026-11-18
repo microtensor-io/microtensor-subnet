@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
 import platform
@@ -9,6 +10,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
@@ -53,6 +55,8 @@ from microtensor_subnet.validator.context import (
     Artifact,
     EpochContext,
 )
+from microtensor_subnet.validator.rerun import calls as sampling
+from microtensor_subnet.validator.rerun import own as own_checks
 from microtensor_subnet.validator.results import ArtifactOutcome, SlmRun
 from microtensor_subnet.validator.sandbox import Limits, SandboxHost, host_ip
 from microtensor_subnet.validator.sandbox import judge as probe_judge
@@ -637,6 +641,9 @@ class MinerModeRunner:
     coordinated: spotcheck.Coordinated | None = None
     spot_failures: dict[str, str] = field(default_factory=dict)
     parts: dict[str, duplicates.Entry] = field(default_factory=dict)
+    own: own_checks.OwnChecks | None = None
+    spot_sources: dict[str, str] = field(default_factory=dict)
+    disagreements: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     @property
     def evaluation(self) -> dict[str, Any]:
@@ -664,6 +671,8 @@ class MinerModeRunner:
         self.tap.stop()
         if self.agent is not None:
             self.agent.stop()
+        if self.own is not None:
+            self.own.close()
         self.docker.sweep()
 
 
@@ -838,6 +847,13 @@ def set_up_miner_mode(
     for banned in banned_hotkeys(client, context):
         if runner.mirror.pop(banned, None) is not None:
             log.info("%s is banned this epoch and is left out", banned)
+    runner.own = own_checks.start(
+        config,
+        context,
+        engine,
+        drafts={row.item_id: row.answer for row in labels.rows(SLM).values()},
+        seeds=inputs.seeds(),
+    )
     return runner
 
 
@@ -990,6 +1006,54 @@ def slim_transcript(runner: MinerModeRunner, hotkey: str) -> None:
         runner.miner_transcripts[hotkey] = {"items": kept}
 
 
+def own_draw(runner: MinerModeRunner, hotkey: str) -> list[sampling.Drawn]:
+    own = runner.own
+    if own is None or not own.takes(runner.mirror.get(hotkey) or {}):
+        return []
+    try:
+        drawn = own.draw_for(
+            runner.client,
+            runner.chain,
+            hotkey,
+            runner.transcript_shas[hotkey],
+            runner.miner_transcripts[hotkey],
+        )
+    except Exception as exc:
+        own.skip(hotkey, f"the sample was not drawn: {exc}")
+        return []
+    if not drawn:
+        own.skip(hotkey, "the transcript holds no model calls to check")
+    return drawn
+
+
+def own_submit(
+    runner: MinerModeRunner,
+    hotkey: str,
+    drawn: Sequence[sampling.Drawn],
+    result: replaying.ReplayResult,
+    slm_dir: Path,
+) -> bool:
+    own = runner.own
+    if own is None or not drawn:
+        return False
+    sampled, skipped = sampling.paired(runner.context, drawn, result.prompts)
+    if not sampled:
+        own.skip(hotkey, "no sampled call could be rebuilt from its recorded prompt")
+        return False
+    entry = runner.mirror.get(hotkey) or {}
+    own.submit(
+        own_checks.Job(
+            hotkey=hotkey,
+            sampled=sampled,
+            skipped=skipped,
+            slm_dir=slm_dir,
+            weights_sha256=str(entry.get("weights_sha256") or ""),
+            release=partial(drop_weights, slm_dir),
+        )
+    )
+    return True
+
+
 def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Replayer) -> None:
     entry = runner.mirror[hotkey]
     runner.parts[hotkey] = parts_entry(hotkey, entry)
@@ -1043,6 +1107,7 @@ def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Repl
         return
     runner.reporter.post(hotkey, progress.CHECKING)
     artifact = record.artifact
+    drawn = own_draw(runner, hotkey)
     count = replaying.token_counter(artifact.slm_dir) if artifact.slm_dir else None
     try:
         result = replayer.replay(
@@ -1050,6 +1115,7 @@ def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Repl
             artifact_dir=artifact.artifact_dir,
             has=artifact.has,
             count_tokens=count,
+            keep=own_checks.kept(drawn),
         )
     except Exception as exc:
         result = replaying.ReplayResult(ok=False).fail("", 0, f"replayer: {exc}")
@@ -1085,7 +1151,8 @@ def prepare_miner(runner: MinerModeRunner, hotkey: str, replayer: replaying.Repl
     record.file_issue = checks.file_problem(runner.context, artifact)
     record.memory_bytes = miner_memory(runner, artifact)
     checks.labels(slm_dir)
-    drop_weights(slm_dir)
+    if not own_submit(runner, hotkey, drawn, result, slm_dir):
+        drop_weights(slm_dir)
 
 
 def grade_miner(runner: MinerModeRunner, hotkey: str) -> ArtifactOutcome | None:
@@ -1319,7 +1386,66 @@ def coordinator_reference(runner: MinerModeRunner) -> None:
     add_reference_rows(runner, found)
 
 
+def own_waiting(runner: MinerModeRunner, end: int, give_up: float) -> bool:
+    if runner.config.dry_run:
+        return time.monotonic() < give_up
+    return still_waiting(runner, coordinator_deadline(runner, end), head_block(runner), give_up)
+
+
+def join_own(runner: MinerModeRunner) -> None:
+    own = runner.own
+    if own is None:
+        return
+    end = epoch_end(runner)
+    poll = int(
+        runner.config.extra.get("coordinator_poll_seconds") or spotcheck.DEFAULT_POLL_SECONDS
+    )
+    give_up = time.monotonic() + float(
+        runner.config.extra.get("coordinator_wait_seconds") or COORDINATOR_WAIT_SECONDS
+    )
+    own.join(lambda: own_waiting(runner, end, give_up), float(max(10, poll)))
+
+
+def take_reference_timing(runner: MinerModeRunner, timing: spotcheck.ReferenceTiming) -> None:
+    runner.reference_timing = timing
+    if runner.reference_slm is not None:
+        if timing.ttft_p95_ms:
+            runner.reference_slm.ttft_p95_ms = timing.ttft_p95_ms
+        if timing.tpot_p95_ms:
+            runner.reference_slm.tpot_p95_ms = timing.tpot_p95_ms
+        if timing.vram_peak_bytes:
+            runner.reference_slm.vram_peak_bytes = timing.vram_peak_bytes
+
+
+def spot_hotkeys(runner: MinerModeRunner, found: spotcheck.Coordinated | None) -> list[str]:
+    listed = list(found.spot_checks) if found is not None else []
+    if runner.own is not None:
+        listed += [h for h in sorted(runner.own.results) if h not in listed]
+    return listed
+
+
+def chosen_spot(
+    runner: MinerModeRunner, hotkey: str, found: spotcheck.Coordinated | None
+) -> spotcheck.SpotCheck | None:
+    spot = found.spot_checks.get(hotkey) if found is not None else None
+    timing = found.reference if found is not None else None
+    source = own_checks.COORDINATOR if spot is not None else ""
+    if runner.own is not None:
+        flags = found.flags.get(hotkey, []) if found is not None else []
+        spot, source, runner.disagreements[hotkey] = runner.own.combine(hotkey, spot, flags)
+        timing = runner.own.timing_for(hotkey) or timing
+    if spot is None:
+        return None
+    if timing is not None:
+        spot.reference_ttft_p95_ms = timing.ttft_p95_ms
+        spot.reference_tpot_p95_ms = timing.tpot_p95_ms
+        spot.reference_vram_peak_bytes = timing.vram_peak_bytes
+    runner.spot_sources[hotkey] = source
+    return spot
+
+
 def coordinator_phase(runner: MinerModeRunner) -> None:
+    join_own(runner)
     found = wait_for_coordinator(runner)
     runner.coordinated = found
     if coordinator_missing(runner):
@@ -1327,35 +1453,29 @@ def coordinator_phase(runner: MinerModeRunner) -> None:
             "no coordinator report came by the spot check deadline; "
             "the last settled weights are kept"
         )
-    if found is None:
+    if found is None and runner.own is None:
         return
-    runner.spot_failures = {h: why for h, why in found.failures.items() if h in runner.records}
-    timing = found.reference
-    if timing is not None:
-        runner.reference_timing = timing
-        if runner.reference_slm is not None:
-            if timing.ttft_p95_ms:
-                runner.reference_slm.ttft_p95_ms = timing.ttft_p95_ms
-            if timing.tpot_p95_ms:
-                runner.reference_slm.tpot_p95_ms = timing.tpot_p95_ms
-            if timing.vram_peak_bytes:
-                runner.reference_slm.vram_peak_bytes = timing.vram_peak_bytes
-    for hotkey, spot in found.spot_checks.items():
+    if found is not None:
+        runner.spot_failures = {h: why for h, why in found.failures.items() if h in runner.records}
+        if found.reference is not None:
+            take_reference_timing(runner, found.reference)
+    for hotkey in spot_hotkeys(runner, found):
         record = runner.records.get(hotkey)
         outcome = runner.outcomes.get(hotkey)
         transcript = runner.miner_transcripts.get(hotkey)
         if record is None or record.failure or outcome is None or transcript is None:
             continue
-        if timing is not None:
-            spot.reference_ttft_p95_ms = timing.ttft_p95_ms
-            spot.reference_tpot_p95_ms = timing.tpot_p95_ms
-            spot.reference_vram_peak_bytes = timing.vram_peak_bytes
+        spot = chosen_spot(runner, hotkey, found)
+        if spot is None:
+            continue
         runner.spot_checks[hotkey] = spot
         apply_spot_check(outcome, spot, transcript)
         note_checks_for(runner, record)
         runner.reporter.post(
             hotkey, progress.SPOT_CHECKED, detail={"matched": spot.matched, "calls": spot.calls}
         )
+    if found is None:
+        return
     for hotkey, canary in found.canaries.items():
         runner.canaries[hotkey] = dict(canary)
     log.info(
@@ -1381,6 +1501,9 @@ def collect_fraud(runner: MinerModeRunner) -> None:
             standing = found.standing(hotkey)
             if standing:
                 runner.fraud.setdefault(hotkey, standing[0].label())
+    if runner.own is not None:
+        for hotkey, label in runner.own.fraud(index).items():
+            runner.fraud.setdefault(hotkey, label)
     for hotkey, label in runner.fraud.items():
         record = runner.records.get(hotkey)
         if record is not None and not record.failure:
@@ -1402,6 +1525,18 @@ def zero_unchecked(
     for pool in pools.SPOT_CHECKED:
         if pool in found:
             found[pool] = zero_score(found[pool], pool, f"{spotcheck.NO_SPOT_CHECK}: {why}")
+
+
+def scoring_reference(runner: MinerModeRunner, held: SlmRun, hotkey: str) -> SlmRun:
+    timing = runner.own.timing_for(hotkey) if runner.own is not None else None
+    if timing is None:
+        return held
+    return dataclasses.replace(
+        held,
+        ttft_p95_ms=timing.ttft_p95_ms or held.ttft_p95_ms,
+        tpot_p95_ms=timing.tpot_p95_ms or held.tpot_p95_ms,
+        vram_peak_bytes=timing.vram_peak_bytes or held.vram_peak_bytes,
+    )
 
 
 def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[PoolScore]:
@@ -1427,7 +1562,7 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
         found[SLM] = _beats_base(
             score.slm_score(
                 outcome.slm,
-                runner.reference_slm,
+                scoring_reference(runner, runner.reference_slm, record.hotkey),
                 gate_ok=gate,
                 provenance_ok=bool(prov.get("passed")),
                 base=runner.base_slm.get(str(prov.get("declared_base", ""))),
@@ -1833,6 +1968,7 @@ def miner_mode_report(
     body["pool_shares"] = dict(pools.POOL_SHARES)
     if runner.reference_timing is not None:
         body["reference_spot_check"] = runner.reference_timing.to_dict()
+    body["validator_spot_check"] = runner.own.body() if runner.own is not None else None
     for row in body.get("miners") or []:
         hotkey = str(row.get("hotkey", ""))
         replay = runner.replays.get(hotkey)
@@ -1842,6 +1978,9 @@ def miner_mode_report(
         row["spot_check"] = spot.to_dict() if spot is not None else None
         row["canary"] = dict(runner.canaries.get(hotkey) or {"checked": 0, "hits": 0})
         row["spot_failure"] = runner.spot_failures.get(hotkey, "")
+        row["spot_check_source"] = runner.spot_sources.get(hotkey, "")
+        row["validator_spot_check"] = runner.own.row(hotkey) if runner.own is not None else None
+        row["spot_disagreements"] = list(runner.disagreements.get(hotkey) or [])
         kept = runner.records.get(hotkey)
         row["duplicates"] = dict(kept.duplicates) if kept is not None else {}
         row["over_limits"] = dict(kept.over_limits) if kept is not None else {}

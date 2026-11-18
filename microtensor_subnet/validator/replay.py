@@ -450,6 +450,7 @@ class Replayer:
         artifact_dir: Path,
         has: frozenset[str],
         count_tokens: Callable[[str], int] | None = None,
+        keep: frozenset[tuple[str, str, int]] = frozenset(),
     ) -> ReplayResult:
         result = ReplayResult(ok=True)
         hotkey = str(transcript.get("miner_hotkey", ""))
@@ -542,6 +543,8 @@ class Replayer:
                 prompts = self.tap.prompts(key)
                 if self.keep_prompts:
                     result.prompts.update(prompts)
+                else:
+                    result.prompts.update({k: v for k, v in prompts.items() if k in keep})
                 self._budget(result, item_id, condition, calls, prompts, count_tokens)
         except SandboxError as exc:
             return result.fail("", 0, f"sandbox: {exc}")
