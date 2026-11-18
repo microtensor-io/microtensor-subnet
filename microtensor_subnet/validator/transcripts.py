@@ -11,19 +11,10 @@ from typing import TYPE_CHECKING, Any, Final, cast
 
 from microtensor_subnet.core.items import Item
 from microtensor_subnet.scoring.stats import percentile
-from microtensor_subnet.validator.context import (
-    ESCALATION,
-    HARNESS,
-    SLM,
-    SYSTEM,
-    EpochContext,
-)
+from microtensor_subnet.validator.context import SLM, SYSTEM, EpochContext
 from microtensor_subnet.validator.results import (
     ArtifactOutcome,
-    Condition,
-    EscalationRun,
     FloorRun,
-    HarnessRun,
     ItemRun,
     SlmRun,
     SystemRun,
@@ -43,7 +34,6 @@ CONDITION_MINER: Final[str] = "miner"
 CONDITION_REPAIR: Final[str] = "repair"
 CONDITION_BARE: Final[str] = "B0"
 SYSTEM_PREFIX: Final[str] = "system@"
-MINER_CONDITION_NAME: Final[str] = "H"
 GZIP_MAGIC: Final[bytes] = b"\x1f\x8b"
 TRANSCRIPT_MODULE: Final[str] = "microtensor_subnet.core.transcript"
 RECEIPTS_MODULE: Final[str] = "microtensor_subnet.validator.receipts"
@@ -320,96 +310,12 @@ def slm_run(
     )
 
 
-def harness_run(
-    context: EpochContext, transcript: Mapping[str, Any], replay: ReplayResult
-) -> HarnessRun | None:
-    known = items_by_id(context)
-    conditions: dict[str, Condition] = {}
-    for row in items_of(transcript):
-        if str(row.get("pool", "")) != HARNESS:
-            continue
-        item = known.get(str(row.get("item_id", "")))
-        if item is None:
-            continue
-        name = str(row.get("condition", ""))
-        label = MINER_CONDITION_NAME if name == CONDITION_MINER else name
-        condition = conditions.setdefault(label, Condition(name=label, runs=[], tokens=0))
-        tokens_in, tokens_out = tokens_of(row)
-        condition.tokens += tokens_in + tokens_out
-        wall = replay.wall_ms.get((item.item_id, name), 0.0)
-        condition.runs.append(
-            _graded(
-                context,
-                item,
-                output_of(row),
-                replay.item_failures.get((item.item_id, name), ""),
-                latency_ms=wall,
-            )
-        )
-        if name == CONDITION_MINER:
-            condition.added_ms.append(replay.added_ms.get(item.item_id, wall))
-    miner = conditions.pop(MINER_CONDITION_NAME, None)
-    if miner is None:
-        return None
-    baselines = [conditions[name] for name in sorted(conditions)]
-    limit = float(context.harness_limits.get("added_wall_p95_ms") or 0)
-    added = percentile(miner.added_ms, 0.95)
-    limits_ok = not limit or added <= limit
-    reason = "" if limits_ok else f"added wall time p95 {added:.0f} ms is over {limit:.0f} ms"
-    over = sorted(replay.over_calls)
-    if over:
-        limits_ok = False
-        reason = reason or f"model calls over the limit on {len(over)} items"
-    return HarnessRun(miner=miner, baselines=baselines, limits_ok=limits_ok, limits_reason=reason)
-
-
 def _cost(row: Mapping[str, Any], token_price: float) -> tuple[int, int, float]:
     receipts = relay_receipts(row)
     relay_cost = receipt_cost(receipts)
     relay_latency = float(receipt_latency(receipts))
     tokens_in, tokens_out = tokens_of(row)
     return relay_cost + round((tokens_in + tokens_out) * token_price), relay_cost, relay_latency
-
-
-def escalation_run(
-    context: EpochContext,
-    transcript: Mapping[str, Any],
-    labels: LabelsBundle,
-    replay: ReplayResult,
-    *,
-    token_price: float,
-) -> EscalationRun | None:
-    known = items_by_id(context)
-    redo = labels.rows(ESCALATION)
-    repairs: list[ItemRun] = []
-    covered: list[str] = []
-    for row in items_of(transcript):
-        if str(row.get("condition", "")) != CONDITION_REPAIR:
-            continue
-        item = known.get(str(row.get("item_id", "")))
-        if item is None:
-            continue
-        cost, _, _ = _cost(row, token_price)
-        repairs.append(
-            _graded(
-                context,
-                item,
-                output_of(row),
-                replay.item_failures.get((item.item_id, CONDITION_REPAIR), ""),
-                latency_ms=replay.wall_ms.get((item.item_id, CONDITION_REPAIR), 0.0),
-                cost_micros=cost,
-            )
-        )
-        covered.append(item.item_id)
-    if not repairs:
-        return None
-    rows = [redo[i] for i in covered if i in redo]
-    redo_pass = sum(1 for r in rows if r.correct) / len(rows) if rows else 0.0
-    return EscalationRun(
-        repairs=repairs,
-        redo_pass_rate=redo_pass,
-        redo_cost_micros=sum(r.cost_micros for r in rows),
-    )
 
 
 def system_run(
@@ -488,27 +394,6 @@ def reference_slm_run(
     )
 
 
-def reference_escalation_run(context: EpochContext, labels: LabelsBundle) -> EscalationRun | None:
-    known = items_by_id(context)
-    repairs: list[ItemRun] = []
-    redo = labels.rows(ESCALATION)
-    covered: list[str] = []
-    for item_id, row in labels.rows(CONDITION_REPAIR).items():
-        item = known.get(item_id)
-        if item is None:
-            continue
-        repairs.append(_graded(context, item, row.answer, cost_micros=row.cost_micros))
-        covered.append(item_id)
-    if not repairs:
-        return None
-    rows = [redo[i] for i in covered if i in redo]
-    return EscalationRun(
-        repairs=repairs,
-        redo_pass_rate=sum(1 for r in rows if r.correct) / len(rows) if rows else 0.0,
-        redo_cost_micros=sum(r.cost_micros for r in rows),
-    )
-
-
 def to_outcome(
     context: EpochContext,
     hotkey: str,
@@ -535,10 +420,6 @@ def to_outcome(
         ttft_p95_ms=ttft_p95_ms,
         tpot_p95_ms=tpot_p95_ms,
         vram_peak_bytes=vram_peak_bytes,
-    )
-    outcome.harness = harness_run(context, transcript, replay)
-    outcome.escalation = escalation_run(
-        context, transcript, labels, replay, token_price=token_price
     )
     outcome.system = system_run(context, transcript, labels, replay, token_price=token_price)
     outcome.receipts = [r for item in items_of(transcript) for r in relay_receipts(item)]

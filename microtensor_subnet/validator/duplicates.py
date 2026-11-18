@@ -12,7 +12,7 @@ from typing import Any, Final
 
 from microtensor_subnet.artifact.params import QUANT_SUFFIXES, loaded_weights, read_header
 from microtensor_subnet.validator import transcripts
-from microtensor_subnet.validator.context import ROUTER, SLM, SYSTEM
+from microtensor_subnet.validator.context import SLM, SYSTEM
 
 log = logging.getLogger("microtensor_subnet.validator.duplicates")
 
@@ -35,9 +35,9 @@ MIN_COMMON_ITEMS: Final[int] = 20
 
 MODEL: Final[str] = "model"
 ROUTER_PART: Final[str] = "router"
-POOLS_OF: Final[dict[str, tuple[str, str]]] = {
+POOLS_OF: Final[dict[str, tuple[str, ...]]] = {
     MODEL: (SLM, SYSTEM),
-    ROUTER_PART: (ROUTER, SYSTEM),
+    ROUTER_PART: (SYSTEM,),
 }
 
 

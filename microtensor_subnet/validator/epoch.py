@@ -1,26 +1,18 @@
 from __future__ import annotations
 
 import contextlib
-import datetime as dt
 import json
 import logging
-import math
 import platform
 import shutil
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from fractions import Fraction
 from pathlib import Path
 from typing import Any, Final
 
-from microtensor_subnet.artifact.params import (
-    ParameterError,
-    footprint_bytes,
-    kv_cache_bytes,
-    model_parameters,
-)
+from microtensor_subnet.artifact.params import ParameterError, kv_cache_bytes, model_parameters
 from microtensor_subnet.artifact.validate import (
     Manifest,
     ManifestError,
@@ -36,9 +28,6 @@ from microtensor_subnet.chain.weights import quantise_weights, restrict_to_metag
 from microtensor_subnet.core.reports import PoolScore
 from microtensor_subnet.scoring import pools
 from microtensor_subnet.scoring.stats import percentile
-from microtensor_subnet.serving import audit as serving_audit
-from microtensor_subnet.serving import pools as serving_pools
-from microtensor_subnet.serving.client import ServerError as ServingServerError
 from microtensor_subnet.serving.probes import sets as probe_sets
 from microtensor_subnet.validator import (
     checks,
@@ -58,45 +47,24 @@ from microtensor_subnet.validator.client import ServerClient, ServerError
 from microtensor_subnet.validator.config import CPU_PROFILE, EpochConfig
 from microtensor_subnet.validator.context import (
     ESCALATION,
-    HARNESS,
     ROUTER,
     SLM,
     SYSTEM,
     Artifact,
     EpochContext,
 )
-from microtensor_subnet.validator.pools import escalation, harness, reference, router, slm, system
-from microtensor_subnet.validator.relay import RelayClient, TicketDesk
-from microtensor_subnet.validator.results import (
-    ArtifactOutcome,
-    EscalationRun,
-    HarnessRun,
-    ReferenceRun,
-    RouterRun,
-    SlmRun,
-    SystemRun,
-)
-from microtensor_subnet.validator.sandbox import (
-    GpuPool,
-    Limits,
-    Sandbox,
-    SandboxError,
-    SandboxHost,
-    host_ip,
-)
+from microtensor_subnet.validator.results import ArtifactOutcome, SlmRun
+from microtensor_subnet.validator.sandbox import Limits, SandboxHost, host_ip
 from microtensor_subnet.validator.sandbox import judge as probe_judge
-from microtensor_subnet.validator.sandbox import tools as tool_faults
 from microtensor_subnet.validator.sandbox.docker import (
     Docker,
     DockerError,
     own_container,
     pinned,
 )
-from microtensor_subnet.validator.sandbox.slm import SlmClient
 
 log = logging.getLogger("microtensor_subnet.validator.epoch")
 DEFAULT_CONTEXT = 8192
-LIVE_POOLS: Final[tuple[str, ...]] = (SLM, HARNESS, ESCALATION, SYSTEM)
 RECORDS_DIR: Final[str] = "records"
 ROUTERS_DIR: Final[str] = "routers"
 REPORT_FILE: Final[str] = "report.json"
@@ -106,8 +74,8 @@ WEIGHTS_REFRESH_BLOCKS: Final[int] = 300
 WEIGHTS_LOCK: Final[threading.Lock] = threading.Lock()
 KEPT_AT_CLOSE: Final[frozenset[str]] = frozenset({REPORT_FILE, probe_sets.PROBE_DIR})
 COORDINATOR_WAIT_SECONDS: Final[int] = 5 * 3600
-REFERENCE_POOLS: Final[tuple[str, ...]] = (SLM, SYSTEM, ESCALATION)
-GRADED_REFERENCE_POOLS: Final[tuple[str, ...]] = (SYSTEM, ESCALATION)
+REFERENCE_POOLS: Final[tuple[str, ...]] = (SLM, SYSTEM)
+GRADED_REFERENCE_POOLS: Final[tuple[str, ...]] = (SYSTEM,)
 
 
 class EpochError(RuntimeError):
@@ -163,24 +131,6 @@ class MinerRecord:
             "duplicates": dict(self.duplicates),
             "over_limits": dict(self.over_limits),
         }
-
-
-class Turns:
-    def __init__(self) -> None:
-        self._next = 0
-        self._done: set[int] = set()
-        self._cond = threading.Condition()
-
-    def wait(self, position: int) -> None:
-        with self._cond:
-            self._cond.wait_for(lambda: self._next >= position)
-
-    def done(self, position: int) -> None:
-        with self._cond:
-            self._done.add(position)
-            while self._next in self._done:
-                self._next += 1
-            self._cond.notify_all()
 
 
 def _window(arena: Mapping[str, Any], index: int) -> Epoch:
@@ -270,256 +220,6 @@ def load_context(
     )
 
 
-@dataclass(slots=True)
-class Runner:
-    config: EpochConfig
-    context: EpochContext
-    host: SandboxHost
-    relay: RelayClient
-    gpus: GpuPool
-    desk: TicketDesk
-    client: ServerClient
-    wallet: Any
-    hotkey: str
-    slot_count: int = 1
-    agent: probe_judge.ProbeAgent | None = None
-    base_dirs: dict[str, Path] = field(default_factory=dict)
-    known_public: set[str] = field(default_factory=set)
-    protected: set[Path] = field(default_factory=set)
-    reference_slm_dir: Path | None = None
-    outcomes: dict[str, ArtifactOutcome] = field(default_factory=dict)
-    records: dict[str, MinerRecord] = field(default_factory=dict)
-    holding: dict[str, tuple[Path, ...]] = field(default_factory=dict)
-    seen_manifests: dict[str, str] = field(default_factory=dict)
-    seen_weights: dict[str, str] = field(default_factory=dict)
-    turns: Turns = field(default_factory=Turns)
-    no_reference: dict[str, str] = field(default_factory=dict)
-    reference_slm: SlmRun | None = None
-    base_slm: dict[str, SlmRun] = field(default_factory=dict)
-    reference_run: ReferenceRun | None = None
-    reference_router: RouterRun | None = None
-    reference_escalation: Any = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    reporter: progress.Reporter = field(default_factory=progress.Reporter)
-
-    def _memory(self, model_dir: Path, config: Mapping[str, Any]) -> int:
-        slm = config.get("slm") or {}
-        length = self.context.max_model_len or int(
-            (slm.get("max_context") if isinstance(slm, Mapping) else None) or DEFAULT_CONTEXT
-        )
-        try:
-            return footprint_bytes(model_dir, length)
-        except (OSError, ParameterError) as exc:
-            log.warning("memory footprint of %s unknown: %s", model_dir.name, exc)
-            return 0
-
-    def _measured(self, sandbox: Sandbox, estimate: int) -> int:
-        if not self.limits.on_cpu:
-            return estimate
-        peak = int(self.host.docker.usage(sandbox.slm_container).get("memory_peak_bytes") or 0)
-        return peak or estimate
-
-    @property
-    def limits(self) -> Limits:
-        return Limits.from_definition(self.context.definition, self.context.max_model_len)
-
-    def _open(
-        self,
-        artifact_dir: Path,
-        slm_dir: Path,
-        router_dir: Path | None,
-        config: dict[str, Any],
-        slot: int,
-        gpu: str,
-    ) -> Sandbox:
-        return self.host.open(
-            artifact_dir=artifact_dir,
-            slm_dir=slm_dir,
-            router_dir=router_dir,
-            gpu=gpu,
-            config=config,
-            sample_database=self.context.sample_database,
-            fault_plan=tool_faults.FaultPlan(self.context.seed),
-            desk=self.desk,
-            slot=slot,
-            databases=self.context.items.databases,
-            item_databases=self.context.items.item_databases(),
-            limits=self.limits,
-        )
-
-    def _frontier_redo(self) -> ReferenceRun | None:
-        try:
-            found = reference.run(self.context, self.desk)
-        except Exception as exc:
-            reason = f"the frontier redo failed: {exc}"
-        else:
-            rows = [*found.system_answers.values(), *found.redo_answers.values()]
-            if not rows or any(r.answered for r in rows):
-                return found
-            reason = f"the frontier redo answered no item: {rows[0].reason}"
-        log.warning("the escalation and system pools have no reference this epoch: %s", reason)
-        self.no_reference = {pools.ESCALATION: reason, pools.SYSTEM: reason}
-        return None
-
-    def sources_for(
-        self,
-        own: Mapping[str, tuple[str, bool]],
-        peers: Mapping[str, Mapping[str, tuple[str, bool]]],
-        coldkeys: Mapping[str, str],
-    ) -> dict[str, Any]:
-        reference_drafts = self.reference_slm.drafts() if self.reference_slm else {}
-        return router.build_sources(
-            self.context, own=own, reference=reference_drafts, peers=peers, peer_coldkeys=coldkeys
-        )
-
-    def claim(self, artifact: Artifact, weights: str) -> str:
-        first = self.seen_manifests.get(artifact.manifest_sha)
-        if first is not None:
-            return f"artifact duplicates the earlier commitment by {first}"
-        first = self.seen_weights.get(weights) if weights else None
-        if first is not None:
-            return f"model weights duplicate the earlier commitment by {first}"
-        self.seen_manifests[artifact.manifest_sha] = artifact.hotkey
-        if weights:
-            self.seen_weights[weights] = artifact.hotkey
-        return ""
-
-    def slm_phase(self, artifact: Artifact, slot: int, gpu: str) -> None:
-        outcome = self.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
-        if artifact.slm_dir is None:
-            return
-        self.reporter.post(artifact.hotkey, SLM, 0, self.context.pool_size(SLM))
-        try:
-            sandbox = self._open(
-                self.context.reference.harness_dir,
-                artifact.slm_dir,
-                None,
-                artifact.config,
-                slot,
-                gpu,
-            )
-            try:
-                outcome.slm = slm.run(
-                    self.context,
-                    SlmClient(sandbox.slm_url),
-                    memory_bytes=self._memory(artifact.slm_dir, artifact.config),
-                    parameters=artifact.slm_parameters,
-                    progress=self.reporter.tracker(artifact.hotkey, SLM),
-                )
-                outcome.slm.vram_peak_bytes = self._measured(sandbox, outcome.slm.vram_peak_bytes)
-            finally:
-                outcome.usage = self.host.close(sandbox)
-        except (SandboxError, Exception) as exc:
-            outcome.failure = f"slm test: {exc}"
-            log.warning("%s slm test failed: %s", artifact.hotkey, exc)
-            return
-        record = self.records.get(artifact.hotkey)
-        if record is not None:
-            note_checks(self, record)
-        self.pool_done(artifact.hotkey, lambda: score_slm(self, artifact, outcome))
-
-    def pool_done(self, hotkey: str, make: Callable[[], PoolScore | None]) -> None:
-        try:
-            found = make()
-        except Exception as exc:
-            log.warning("%s pool not scored live: %s", hotkey, exc)
-            return
-        if found is not None:
-            self.outcomes[hotkey].scores[found.pool] = found
-        self.share(hotkey)
-
-    def share(self, hotkey: str) -> None:
-        record = self.records.get(hotkey)
-        if record is None or record.artifact is None or self.config.dry_run:
-            return
-        try:
-            outcome = self.outcomes.get(hotkey)
-            live = assembled(self, record.artifact, outcome.scores if outcome else {})
-            record.shared.update(s.pool for s in live)
-            body = result_body(self, record, live, final=False)
-            self.reporter.publish(hotkey, report.sign_artifact(body, self.wallet))
-        except Exception as exc:
-            log.debug("%s partial result not queued: %s", hotkey, exc)
-
-    def full_phase(self, artifact: Artifact, slot: int, gpu: str) -> None:
-        outcome = self.outcomes.setdefault(artifact.hotkey, ArtifactOutcome(hotkey=artifact.hotkey))
-        if outcome.failure or self.reference_slm is None:
-            return
-        if self.reference_run is None and "harness" not in artifact.has:
-            return
-        slm_dir = artifact.slm_dir or self.context.reference.slm_dir
-        router_dir = (
-            artifact.artifact_dir / "router"
-            if "router" in artifact.has
-            else self.context.reference.router_dir
-        )
-        artifact_dir = (
-            artifact.artifact_dir
-            if {"harness", "escalation"} & artifact.has
-            else self.context.reference.harness_dir
-        )
-        token_price = self.context.token_price(
-            artifact.slm_parameters or self.context.reference.slm_parameters
-        )
-        try:
-            sandbox = self._open(artifact_dir, slm_dir, router_dir, artifact.config, slot, gpu)
-            try:
-                if "harness" in artifact.has:
-                    ran = harness.run(
-                        self.context,
-                        self.host,
-                        sandbox,
-                        timeout=self.config.request_seconds,
-                        progress=self.reporter.tracker(artifact.hotkey, HARNESS),
-                    )
-                    outcome.harness = ran
-                    self.pool_done(artifact.hotkey, lambda: score_harness(self, ran))
-                    self.host.restart_main(sandbox, artifact_dir)
-                if "escalation" in artifact.has and self.reference_run is not None:
-                    drafts = escalation.wrong_drafts(
-                        self.context, self.reference_run, self.reference_slm.drafts()
-                    )
-                    repaired = escalation.run(
-                        self.context,
-                        sandbox,
-                        self.desk,
-                        miner=artifact.hotkey,
-                        drafts=drafts,
-                        reference=self.reference_run,
-                        timeout=self.config.request_seconds,
-                        token_price=token_price,
-                        progress=self.reporter.tracker(artifact.hotkey, ESCALATION),
-                    )
-                    outcome.escalation = repaired
-                    self.pool_done(artifact.hotkey, lambda: score_escalation(self, repaired))
-                if self.reference_run is not None:
-                    outcome.system = system.run(
-                        self.context,
-                        sandbox,
-                        self.desk,
-                        miner=artifact.hotkey,
-                        reference=self.reference_run,
-                        timeout=self.config.request_seconds,
-                        token_price=token_price,
-                        progress=self.reporter.tracker(artifact.hotkey, SYSTEM),
-                        on_floor=lambda partial: self.pool_done(
-                            artifact.hotkey, lambda: score_system(self, partial)
-                        ),
-                    )
-            finally:
-                outcome.usage = self.host.close(sandbox)
-        except (SandboxError, Exception) as exc:
-            outcome.failure = f"evaluation: {exc}"
-            log.warning("%s evaluation failed: %s", artifact.hotkey, exc)
-
-    def close(self) -> None:
-        self.reporter.close()
-        self.host.services.stop()
-        if self.agent is not None:
-            self.agent.stop()
-        self.host.docker.sweep()
-
-
 def declared_bases(config: EpochConfig, context: EpochContext) -> set[str]:
     from huggingface_hub import hf_hub_download
 
@@ -581,52 +281,6 @@ def cached_bases(config: EpochConfig, context: EpochContext) -> dict[str, Path]:
     return found
 
 
-def note_checks(runner: Runner, record: MinerRecord) -> None:
-    if record.artifact is None:
-        return
-    outcome = runner.outcomes.get(record.hotkey)
-    try:
-        record.checks = checks.build(
-            runner.context,
-            record.artifact,
-            claim=record.claim,
-            found=record.provenance or None,
-            run=outcome.slm if outcome is not None else None,
-        )
-    except Exception as exc:
-        log.debug("%s checks not listed: %s", record.hotkey, exc)
-
-
-def evaluate(runner: Runner, artifact: Artifact, slot: int, gpu: str) -> ArtifactOutcome:
-    runner.slm_phase(artifact, slot, gpu)
-    runner.full_phase(artifact, slot, gpu)
-    return runner.outcomes[artifact.hotkey]
-
-
-def score_slm(runner: Runner, artifact: Artifact, outcome: ArtifactOutcome) -> PoolScore | None:
-    if outcome.slm is None or runner.reference_slm is None or artifact.slm_dir is None:
-        return None
-    rules = score.Rules.from_definition(runner.context.definition)
-    if not outcome.provenance:
-        outcome.provenance = provenance.check(
-            artifact.slm_dir, base_dirs=runner.base_dirs, known_public=runner.known_public
-        )
-    prov = outcome.provenance
-    gate, envelope_ok = checks.gates(runner.context, artifact, outcome.slm, rules)
-    pool_score = score.slm_score(
-        outcome.slm,
-        runner.reference_slm,
-        gate_ok=gate,
-        provenance_ok=bool(prov.get("passed")),
-        base=runner.base_slm.get(str(prov.get("declared_base", ""))),
-        min_items=rules.min_items,
-        rules=rules,
-        envelope_ok=envelope_ok,
-        max_tokens=runner.context.max_tokens,
-    )
-    return _beats_base(pool_score)
-
-
 def _beats_base(pool_score: PoolScore) -> PoolScore:
     beats = pool_score.detail.get("beats_base_lb")
     if beats is not None and beats <= 0:
@@ -644,106 +298,6 @@ def _beats_base(pool_score: PoolScore) -> PoolScore:
             },
         )
     return pool_score
-
-
-def score_harness(runner: Runner, run: HarnessRun) -> PoolScore:
-    return score.harness_score(
-        run,
-        min_items=score.Rules.from_definition(runner.context.definition).min_items,
-        limits=runner.context.harness_limits,
-    )
-
-
-def score_escalation(runner: Runner, run: EscalationRun) -> PoolScore:
-    return score.escalation_score(
-        run,
-        runner.reference_escalation,
-        seed=runner.context.seed,
-        min_items=score.Rules.from_definition(runner.context.definition).min_items,
-    )
-
-
-def score_system(runner: Runner, run: SystemRun) -> PoolScore:
-    return score.system_score(
-        run, min_items=score.Rules.from_definition(runner.context.definition).min_items
-    )
-
-
-def assembled(
-    runner: Runner, artifact: Artifact, found: Mapping[str, PoolScore]
-) -> list[PoolScore]:
-    ordered = [found[pool] for pool in LIVE_POOLS if pool in found]
-    for pool, reason in runner.no_reference.items():
-        if pool == pools.SYSTEM or pool in artifact.has:
-            ordered.append(
-                PoolScore(pool, 0.0, 0.0, 0.0, 0, False, {"reason": f"no reference: {reason}"})
-            )
-    return ordered
-
-
-def reference_figures(runner: Runner, record: MinerRecord) -> dict[str, Any]:
-    found: dict[str, Any] = {}
-    run = runner.reference_slm
-    if run is not None:
-        wanted = {item.item_id for item in runner.context.items.originals(SLM)}
-        rows = [r for r in run.runs if r.item_id in wanted] or run.runs
-        found[SLM] = {
-            "pass_rate": round(sum(1 for r in rows if r.success) / len(rows), 6) if rows else 0.0,
-            "ttft_p95_ms": round(run.ttft_p95_ms, 1),
-            "tpot_p95_ms": round(run.tpot_p95_ms, 2),
-            "vram_peak_bytes": run.vram_peak_bytes,
-            "parameters": run.parameters,
-        }
-    name = str(record.provenance.get("declared_base") or "")
-    base = runner.base_slm.get(name) if name else None
-    if base is not None:
-        found["base"] = {"name": name, "pass_rate": round(base.pass_rate, 6)}
-    if runner.reference_run is not None:
-        found[SYSTEM] = {
-            "cost_micros": runner.reference_run.cost_micros,
-            "latency_p95_ms": round(runner.reference_run.latency_p95_ms, 1),
-            "items": len(runner.reference_run.system_answers),
-        }
-    return found
-
-
-def result_body(
-    runner: Runner, record: MinerRecord, scores: Sequence[PoolScore], *, final: bool
-) -> dict[str, Any]:
-    return report.artifact_body(
-        runner.context,
-        validator=runner.hotkey,
-        miner=record.hotkey,
-        artifact_sha=record.artifact_sha,
-        scores=scores,
-        provenance=record.provenance or _unchecked(record),
-        failure=record.failure if final else "",
-        pool_details=report.pool_details(scores),
-        checks=record.checks if record.artifact is not None else None,
-        reference=reference_figures(runner, record) if record.artifact is not None else None,
-        progress_final=final,
-    )
-
-
-def router_pool_score(
-    context: EpochContext, run: RouterRun, reference_router: RouterRun | None
-) -> PoolScore:
-    routed = [i.item_id for i in context.items.items(ROUTER)]
-    items_by_source = {
-        router.OWN: routed,
-        router.REFERENCE: routed,
-        router.PEER: routed,
-        router.ADVERSARIAL: [str(r.get("item_id", "")) for r in context.items.adversarial],
-    }
-    return score.router_score(
-        run,
-        reference_router,
-        floors=context.floors,
-        families=context.items.families,
-        items_by_source=items_by_source,
-        seed=context.seed,
-        rules=score.Rules.from_definition(context.definition),
-    )
 
 
 def withdrawn(record: MinerRecord) -> list[PoolScore]:
@@ -765,18 +319,6 @@ def clear_work_folder(work_dir: Path) -> None:
             shutil.rmtree(child, ignore_errors=True)
         else:
             child.unlink(missing_ok=True)
-
-
-def weights_for(
-    standings: Mapping[str, list[pools.Standing]], snapshot: Any, burn_to: str = ""
-) -> tuple[dict[str, float], dict[str, float], Any]:
-    weights, burned = pools.combine(standings, burn_to=burn_to)
-    uid_by_hotkey = snapshot.uid_by_hotkey
-    by_uid = {uid_by_hotkey[h]: w for h, w in weights.items() if h in uid_by_hotkey}
-    vector = (
-        quantise_weights(restrict_to_metagraph(by_uid, len(snapshot.neurons))) if by_uid else None
-    )
-    return weights, burned, vector
 
 
 def _unchecked(record: MinerRecord) -> dict[str, Any]:
@@ -1082,8 +624,6 @@ class MinerModeRunner:
     known_public: set[str] = field(default_factory=set)
     reference_slm: SlmRun | None = None
     base_slm: dict[str, SlmRun] = field(default_factory=dict)
-    reference_escalation: EscalationRun | None = None
-    reference_router: RouterRun | None = None
     reference_timing: spotcheck.ReferenceTiming | None = None
     no_reference: dict[str, str] = field(default_factory=dict)
     records: dict[str, MinerRecord] = field(default_factory=dict)
@@ -1097,7 +637,6 @@ class MinerModeRunner:
     coordinated: spotcheck.Coordinated | None = None
     spot_failures: dict[str, str] = field(default_factory=dict)
     parts: dict[str, duplicates.Entry] = field(default_factory=dict)
-    serving: dict[str, Any] | None = None
 
     @property
     def evaluation(self) -> dict[str, Any]:
@@ -1206,12 +745,9 @@ def reference_figures_from_labels(runner: MinerModeRunner) -> None:
             runner.base_slm[name] = transcripts.reference_slm_run(
                 context, base_rows, parameters=0, memory_bytes=0
             )
-    runner.reference_escalation = transcripts.reference_escalation_run(context, labels)
     if not labels.rows(SYSTEM):
         reason = "the labels bundle carries no reference system answers"
         runner.no_reference[pools.SYSTEM] = reason
-    if not labels.rows(ESCALATION):
-        runner.no_reference[pools.ESCALATION] = "the labels bundle carries no redo answers"
 
 
 def set_up_miner_mode(
@@ -1425,7 +961,7 @@ def parts_entry(hotkey: str, entry: Mapping[str, Any]) -> duplicates.Entry:
 def note_code(runner: MinerModeRunner, record: MinerRecord, artifact: Artifact) -> None:
     problem = checks.code_problem(runner.context, artifact.artifact_dir)
     if problem:
-        record.over_limits.update(dict.fromkeys((HARNESS, ESCALATION, SYSTEM), problem))
+        record.over_limits[SYSTEM] = problem
 
 
 def model_sketch(runner: MinerModeRunner, hotkey: str, slm_dir: Path, base: str) -> None:
@@ -1868,13 +1404,6 @@ def zero_unchecked(
             found[pool] = zero_score(found[pool], pool, f"{spotcheck.NO_SPOT_CHECK}: {why}")
 
 
-def coordinator_latency(run: RouterRun, spot: spotcheck.SpotCheck | None) -> None:
-    measured = spot.router_latency_p95_ms if spot is not None else None
-    run.latency_p95_ms = float(measured) if measured is not None else 0.0
-    if spot is not None and spot.router_reason:
-        run.reason = run.reason or spot.router_reason
-
-
 def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[PoolScore]:
     context = runner.context
     artifact = record.artifact
@@ -1910,31 +1439,17 @@ def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[Pool
         )
         if problem:
             found[SLM].detail["reason"] = problem
-    if outcome.harness is not None:
-        found[HARNESS] = score.harness_score(
-            outcome.harness, min_items=rules.min_items, limits=context.harness_limits
-        )
-    if outcome.escalation is not None:
-        found[ESCALATION] = score.escalation_score(
-            outcome.escalation,
-            runner.reference_escalation,
-            seed=context.seed,
-            min_items=rules.min_items,
-        )
     if outcome.system is not None:
         found[SYSTEM] = score.system_score(outcome.system, min_items=rules.min_items)
-    if outcome.router is not None:
-        coordinator_latency(outcome.router, runner.spot_checks.get(record.hotkey))
-        found[ROUTER] = router_pool_score(context, outcome.router, runner.reference_router)
     zero_unchecked(runner, record, found)
     for pool, reason in record.over_limits.items():
         found[pool] = zero_score(found.get(pool), pool, reason)
     for pool, earlier in record.duplicates.items():
         reason = f"duplicates the earlier submission by {earlier}"
         found[pool] = zero_score(found.get(pool), pool, reason)
-    ordered = [found[pool] for pool in (*LIVE_POOLS, ROUTER) if pool in found]
+    ordered = [found[pool] for pool in pools.POOLS if pool in found]
     for pool, reason in runner.no_reference.items():
-        if pool in found:
+        if pool in found or pool not in pools.POOLS:
             continue
         if pool == pools.SYSTEM or pool in artifact.has:
             ordered.append(
@@ -1958,6 +1473,14 @@ def router_base(runner: MinerModeRunner) -> Path | None:
         return None
 
 
+def note_router_size(runner: MinerModeRunner, record: MinerRecord, artifact: Artifact) -> None:
+    problem = checks.router_problem(
+        artifact.artifact_dir / ROUTER, runner.limits.router_max_parameters
+    )
+    if problem:
+        record.over_limits[SYSTEM] = problem
+
+
 def pull_router_weights(runner: MinerModeRunner) -> None:
     base = router_base(runner)
     for hotkey, record in runner.records.items():
@@ -1975,6 +1498,7 @@ def pull_router_weights(runner: MinerModeRunner) -> None:
         except (ServerError, EpochError, OSError) as exc:
             log.warning("%s router weights not pulled: %s", hotkey, exc)
             continue
+        note_router_size(runner, record, artifact)
         if base is None or hotkey not in runner.parts:
             continue
         try:
@@ -2016,70 +1540,6 @@ def duplicates_phase(runner: MinerModeRunner, queue: Sequence[str]) -> None:
         )
         note_checks_for(runner, record)
     runner.parts = {}
-
-
-def router_phase(runner: MinerModeRunner) -> None:
-    context = runner.context
-    reference_drafts = runner.reference_slm.drafts() if runner.reference_slm else {}
-    peers = {h: r.drafts for h, r in runner.records.items() if r.drafts is not None}
-    coldkeys = {h: r.coldkey for h, r in runner.records.items()}
-    gpu = (runner.config.gpus or ("0",))[0]
-    reference_dir = context.reference.router_dir
-    if reference_dir is not None:
-        runner.reference_router = run_router(
-            runner,
-            reference_dir,
-            dict(context.definition.get("reference_config") or {}),
-            router.build_sources(
-                context,
-                own=reference_drafts,
-                reference=reference_drafts,
-                peers={},
-                peer_coldkeys={},
-            ),
-            gpu,
-        )
-    for hotkey, record in runner.records.items():
-        artifact = record.artifact
-        if record.failure or artifact is None or "router" not in artifact.has:
-            continue
-        outcome = runner.outcomes.get(hotkey)
-        if outcome is None or ROUTER in record.duplicates:
-            continue
-        own = record.drafts if record.drafts is not None else reference_drafts
-        others = {h: d for h, d in peers.items() if h != hotkey}
-        sources = router.build_sources(
-            context, own=own, reference=reference_drafts, peers=others, peer_coldkeys=coldkeys
-        )
-        outcome.router = run_router(
-            runner, artifact.artifact_dir / "router", artifact.config, sources, gpu
-        )
-
-
-def run_router(
-    runner: MinerModeRunner,
-    router_dir: Path,
-    config: dict[str, Any],
-    sources: Mapping[str, Any],
-    gpu: str,
-) -> RouterRun:
-    if not router_dir.is_dir():
-        return RouterRun(sources=[], loaded=False, reason="no router was kept")
-    problem = checks.router_problem(router_dir, runner.limits.router_max_parameters)
-    if problem:
-        return RouterRun(sources=[], loaded=False, reason=problem)
-    process = None
-    try:
-        process, url = runner.host.open_router(
-            router_dir, slot=0, gpu=gpu, config=config, limits=runner.limits, device="cpu"
-        )
-        return router.run(runner.context, url, sources)
-    except Exception as exc:
-        log.warning("router in %s did not run: %s", router_dir, exc)
-        return RouterRun(sources=[], loaded=False, reason=f"router failed: {exc}")
-    finally:
-        if process is not None:
-            runner.host.close_router(process)
 
 
 def miner_mode_figures(runner: MinerModeRunner, record: MinerRecord) -> dict[str, Any]:
@@ -2150,78 +1610,6 @@ def post_miner_mode_result(runner: MinerModeRunner, record: MinerRecord) -> bool
     stage = progress.REFUSED if record.failure else progress.SENT
     runner.reporter.post(record.hotkey, stage, note=record.failure)
     return True
-
-
-SERVING_SCALE: Final[int] = 10**9
-BLOCK_SECONDS: Final[float] = 12.0
-
-
-def serving_fold(
-    config: EpochConfig, runner: MinerModeRunner
-) -> tuple[dict[str, Fraction], Fraction, Fraction]:
-    context = runner.context
-    arena_id = context.arena_id
-    serving = dict(context.definition.get("serving") or {})
-    record: dict[str, Any] = {"audit": None, "billing_usd": 0.0, "cap": None, "error": ""}
-    settled: list[Any] = []
-    operators: list[Mapping[str, Any]] = []
-    billing = 0.0
-    try:
-        document = serving_audit.fetch(config.server_url)
-        checked = serving_audit.check(
-            document, receipts=serving_audit.receipts_of(config.server_url, document)
-        )
-        record["audit"] = checked.to_dict()
-        if checked.holds:
-            settled = [
-                row
-                for row in serving_audit.recompute(dict(document.get("evidence") or {}))
-                if serving_pools.arena_of(str(row.model)) == arena_id
-            ]
-        billing = sum(
-            float(value)
-            for model, value in dict(document.get("billing_usd_30d") or {}).items()
-            if serving_pools.arena_of(str(model)) == arena_id
-        )
-        operators = [
-            op
-            for op in serving_audit.fetch_operators(config.server_url)
-            if any(serving_pools.arena_of(str(m)) == arena_id for m in op.get("models") or [])
-        ]
-    except (ServingServerError, ValueError, KeyError, TypeError) as exc:
-        record["error"] = str(exc)
-        log.warning("the serving settlement could not be read; its pool is burned: %s", exc)
-    try:
-        dials = serving_pools.dials_for(serving, billing)
-        floors = serving_pools.floors_for(
-            serving,
-            operators,
-            now=dt.datetime.now(dt.timezone.utc),
-            epoch_seconds=context.epoch_blocks * BLOCK_SECONDS,
-        )
-        split = serving_pools.divide(
-            SERVING_SCALE,
-            settled,
-            dials,
-            floors=floors,
-            bounty_share=serving_pools.bounty_share_of(serving),
-        )
-    except serving_pools.PoolError as exc:
-        record["error"] = str(exc)
-        log.error("the serving block of %s is invalid; its pool is burned: %s", arena_id, exc)
-        dials = serving_pools.Dials()
-        split = serving_pools.divide(SERVING_SCALE, [], dials)
-    record.update(split.to_dict())
-    record["cap"] = str(dials.cap)
-    record["billing_usd"] = round(billing, 6)
-    runner.serving = record
-    available = split.available or 1
-    shares = {
-        operator: Fraction(value, available)
-        for operator, value in split.shares.items()
-        if value > 0
-    }
-    return shares, Fraction(split.modelling, available), Fraction(split.burned, available)
 
 
 def kept_rounds(state: Path) -> set[str]:
@@ -2407,21 +1795,7 @@ def miner_mode_weights(
     burn_to = (
         _owner(chain) if score.Rules.from_definition(context.definition).burn_empty_pools else ""
     )
-    pooled, burned = pools.combine(standings, burn_to=burn_to)
-    shares, modelling, serving_burn = serving_fold(config, runner)
-    folded = {hotkey: value * float(modelling) for hotkey, value in pooled.items()}
-    for operator, share in shares.items():
-        folded[operator] = folded.get(operator, 0.0) + float(share)
-    if serving_burn > 0:
-        burned["serving"] = float(serving_burn)
-        if burn_to:
-            folded[burn_to] = folded.get(burn_to, 0.0) + float(serving_burn)
-    total = math.fsum(folded.values())
-    weights = (
-        {hotkey: round(value / total, pools.DIGITS) for hotkey, value in folded.items()}
-        if total > 0
-        else {}
-    )
+    weights, burned = pools.combine(standings, burn_to=burn_to)
     if weights and not config.dry_run:
         sent, reason = submit_weights(
             chain,
@@ -2454,8 +1828,9 @@ def miner_mode_report(
     ).body()
     body["receipt_root"] = runner.receipt_root
     body["validator_profile"] = runner.profile
-    body["serving"] = runner.serving
+    body["serving"] = None
     body["coordinator_reported"] = not coordinator_missing(runner)
+    body["pool_shares"] = dict(pools.POOL_SHARES)
     if runner.reference_timing is not None:
         body["reference_spot_check"] = runner.reference_timing.to_dict()
     for row in body.get("miners") or []:
@@ -2554,7 +1929,6 @@ def run_miner_mode_epoch(
         collect_fraud(runner)
         pull_router_weights(runner)
         duplicates_phase(runner, queue)
-        router_phase(runner)
         for miner, record in runner.records.items():
             if not record.failure:
                 try:
