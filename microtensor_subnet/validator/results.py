@@ -23,6 +23,11 @@ class ItemRun:
     escalated: bool = False
     probability: float | None = None
     answered: bool = True
+    model_calls: int = 0
+
+    def model_ms(self, ttft_ms: float, tpot_ms: float) -> float:
+        produced = max(0, self.completion_tokens - self.model_calls)
+        return self.model_calls * ttft_ms + tpot_ms * produced
 
 
 @dataclass(slots=True)
@@ -86,6 +91,8 @@ class SystemRun:
     reference_cost_micros: int
     reference_latency_p95_ms: float
     reference_items: int = 0
+    model_ttft_ms: float = 0.0
+    model_tpot_ms: float = 0.0
 
 
 @dataclass(slots=True)

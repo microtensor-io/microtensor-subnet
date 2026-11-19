@@ -337,6 +337,7 @@ def system_run(
         if item is None:
             continue
         cost, relay_cost, relay_latency = _cost(row, token_price)
+        tokens_in, tokens_out = tokens_of(row)
         output = row.get("output")
         route = str(output.get("route", "")) if isinstance(output, Mapping) else ""
         probability = output.get("p") if isinstance(output, Mapping) else None
@@ -347,6 +348,9 @@ def system_run(
                 output_of(row),
                 replay.item_failures.get((item.item_id, condition), ""),
                 latency_ms=replay.wall_ms.get((item.item_id, condition), 0.0) + relay_latency,
+                prompt_tokens=tokens_in,
+                completion_tokens=tokens_out,
+                model_calls=len(slm_calls(row)),
                 cost_micros=cost,
                 escalated=route == "escalated" or relay_cost > 0,
                 probability=float(probability)
@@ -422,6 +426,9 @@ def to_outcome(
         vram_peak_bytes=vram_peak_bytes,
     )
     outcome.system = system_run(context, transcript, labels, replay, token_price=token_price)
+    if outcome.system is not None and outcome.slm is not None:
+        outcome.system.model_ttft_ms = outcome.slm.ttft_p95_ms
+        outcome.system.model_tpot_ms = outcome.slm.tpot_p95_ms
     outcome.receipts = [r for item in items_of(transcript) for r in relay_receipts(item)]
     return outcome
 

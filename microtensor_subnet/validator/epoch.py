@@ -1215,6 +1215,9 @@ def apply_spot_check(
         run.tpot_p95_ms = spot.tpot_p95_ms
     if spot.vram_peak_bytes:
         run.vram_peak_bytes = spot.vram_peak_bytes
+    if outcome.system is not None:
+        outcome.system.model_ttft_ms = run.ttft_p95_ms
+        outcome.system.model_tpot_ms = run.tpot_p95_ms
     first_seq = {
         str(row.get("item_id", "")): int((transcripts.slm_calls(row) or [{}])[0].get("seq") or 0)
         for row in transcripts.items_of(transcript)
