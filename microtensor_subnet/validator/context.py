@@ -176,9 +176,9 @@ class EpochContext:
         return self.previous_best.get((hotkey, artifact_sha, pool))
 
     def token_price(self, parameters: int) -> float:
-        if parameters <= 1_000_000_000:
+        if parameters <= 2_000_000_000:
             return float(self.r_class.get("1b", 0.0))
-        if parameters <= 3_000_000_000:
+        if parameters <= 5_000_000_000:
             return float(self.r_class.get("3b", 0.0))
         return float(self.r_class.get("8b", 0.0))
 

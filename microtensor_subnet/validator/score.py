@@ -236,7 +236,10 @@ def system_score(run: SystemRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
         n = len(floor.runs)
         lower = wilson_lb(sum(1 for r in floor.runs if r.success), n)
         cost = floor.cost_micros
-        latency = percentile(floor.latencies, 0.95)
+        latency = percentile(
+            [r.latency_ms + r.model_ms(run.model_ttft_ms, run.model_tpot_ms) for r in floor.runs],
+            0.95,
+        )
         gain = COST_WEIGHT * _log_ratio(
             float(run.reference_cost_micros), float(cost)
         ) + LATENCY_WEIGHT * _log_ratio(run.reference_latency_p95_ms, latency)
