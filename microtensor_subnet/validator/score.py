@@ -240,8 +240,11 @@ def system_score(run: SystemRun, *, min_items: int = MIN_ITEMS) -> PoolScore:
             [r.latency_ms + r.model_ms(run.model_ttft_ms, run.model_tpot_ms) for r in floor.runs],
             0.95,
         )
+        reference_per_item = (
+            run.reference_cost_micros / run.reference_items if run.reference_items else 0.0
+        )
         gain = COST_WEIGHT * _log_ratio(
-            float(run.reference_cost_micros), float(cost)
+            reference_per_item, cost / n if n else 0.0
         ) + LATENCY_WEIGHT * _log_ratio(run.reference_latency_p95_ms, latency)
         value = (max(0.0, min(GAIN_CAP, gain)) / GAIN_CAP) if lower >= floor.floor else 0.0
         values.append(value)
