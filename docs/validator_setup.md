@@ -32,15 +32,29 @@ btcli subnet register --netuid 576 --subtensor.network test --wallet.name <coldk
 
 ## 3. Keys and access
 
-Ask the team to grant your hotkey access first. The server takes an X25519 key only from a hotkey it has granted, so a key registered before the grant is refused with `this hotkey is not a permitted validator`. Once access is granted, register the key:
+Ask the team to grant your hotkey access first. The server takes an X25519 key only from a hotkey it has granted, so a key registered before the grant is refused with `this hotkey is not a permitted validator`.
+
+The validator runs as uid 10001, and bittensor writes your hotkey readable only by you. Copy only the hotkey and `coldkeypub.txt` to a folder owned by uid 10001. Your coldkey stays out of it, because the validator signs with the hotkey alone:
+
+```bash
+export MT_WALLET_NAME=<coldkey> MT_WALLET_HOTKEY=<hotkey> MT_WALLET_DIR=/var/lib/microtensor-wallets
+sudo mkdir -p "$MT_WALLET_DIR/$MT_WALLET_NAME/hotkeys"
+sudo cp ~/.bittensor/wallets/$MT_WALLET_NAME/hotkeys/$MT_WALLET_HOTKEY "$MT_WALLET_DIR/$MT_WALLET_NAME/hotkeys/"
+sudo cp ~/.bittensor/wallets/$MT_WALLET_NAME/coldkeypub.txt "$MT_WALLET_DIR/$MT_WALLET_NAME/"
+sudo chown -R 10001:10001 "$MT_WALLET_DIR"
+sudo find "$MT_WALLET_DIR" -type d -exec chmod 700 {} +
+sudo find "$MT_WALLET_DIR" -type f -exec chmod 600 {} +
+```
+
+Once access is granted, register the key:
 
 ```bash
 docker run --rm -it \
   -v /var/lib/microtensor:/var/lib/microtensor \
-  -v ~/.bittensor/wallets:/wallets:ro \
+  -v "$MT_WALLET_DIR":/wallets:ro \
   -e MT_WALLET_PATH=/wallets \
   --entrypoint mt ghcr.io/microtensor-io/validator:1 \
-  epoch register-key --wallet.name <coldkey> --wallet.hotkey <hotkey> --home /var/lib/microtensor
+  epoch register-key --wallet-name "$MT_WALLET_NAME" --wallet-hotkey "$MT_WALLET_HOTKEY" --home /var/lib/microtensor
 ```
 
 Then fetch the relay token:
@@ -48,10 +62,10 @@ Then fetch the relay token:
 ```bash
 docker run --rm -it \
   -v /var/lib/microtensor:/var/lib/microtensor \
-  -v ~/.bittensor/wallets:/wallets:ro \
+  -v "$MT_WALLET_DIR":/wallets:ro \
   -e MT_WALLET_PATH=/wallets \
   --entrypoint mt ghcr.io/microtensor-io/validator:1 \
-  epoch relay-token --wallet.name <coldkey> --wallet.hotkey <hotkey> --home /var/lib/microtensor
+  epoch relay-token --wallet-name "$MT_WALLET_NAME" --wallet-hotkey "$MT_WALLET_HOTKEY" --home /var/lib/microtensor
 ```
 
 The key lives at `/var/lib/microtensor/keys/x25519.key` and the relay token beside it. Back the directory up; losing the key means re-registering and waiting for the next epoch's labels release.
@@ -61,7 +75,7 @@ The key lives at `/var/lib/microtensor/keys/x25519.key` and the relay token besi
 ```bash
 git clone https://github.com/microtensor-io/microtensor-subnet
 cd microtensor-subnet/deploy
-cp .env.example .env   # wallet names, DOCKER_GID
+cp .env.example .env   # MT_WALLET_NAME, MT_WALLET_HOTKEY, MT_WALLET_DIR from step 3, DOCKER_GID
 docker compose -f docker-compose.validator.yml up -d
 docker compose -f docker-compose.validator.yml logs -f
 ```
