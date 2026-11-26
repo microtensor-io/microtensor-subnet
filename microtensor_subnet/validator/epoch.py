@@ -74,6 +74,7 @@ ROUTERS_DIR: Final[str] = "routers"
 REPORT_FILE: Final[str] = "report.json"
 WEIGHTS_FILE: Final[str] = "weights.json"
 BURN_ROUNDS: Final[str] = "burn_rounds"
+LEGACY_CHAIN: Final[tuple[str, int]] = ("test", 576)
 WEIGHTS_GAP_BLOCKS: Final[int] = 100
 WEIGHTS_REFRESH_BLOCKS: Final[int] = 300
 WEIGHTS_LOCK: Final[threading.Lock] = threading.Lock()
@@ -1797,6 +1798,13 @@ def remember_weights(
     partial.replace(target)
 
 
+def state_dir(home: Path, network: str, netuid: int) -> Path:
+    base = Path(home) / "state"
+    if (network, int(netuid)) == LEGACY_CHAIN:
+        return base
+    return base / f"{network}-{int(netuid)}"
+
+
 def round_name(arena_id: str, epoch_index: int) -> str:
     return f"{arena_id}:{int(epoch_index)}"
 
@@ -1942,6 +1950,15 @@ def refresh_weights(chain: Any, state: Path) -> None:
     with WEIGHTS_LOCK:
         kept = kept_weights(state)
         if kept is None:
+            burn_to = _owner(chain)
+            if not burn_to:
+                log.error("nothing is held on this chain and the owner hotkey is unknown")
+                return
+            sent, reason = _submit(chain, state, {burn_to: 1.0})
+            if sent:
+                log.info("nothing is settled on this chain yet: emissions burn to the owner")
+            else:
+                log.error("the first burn was not sent; it goes again: %s", reason)
             return
         weights, since = kept
         block = int(chain.block())
@@ -1963,7 +1980,7 @@ def vector_for(weights: Mapping[str, float], snapshot: Any) -> Any:
 
 
 def held_weights(config: EpochConfig, chain: Any, runner: MinerModeRunner) -> dict[str, float]:
-    state = config.home / "state"
+    state = state_dir(config.home, config.chain.network, config.chain.netuid)
     if config.dry_run:
         return settled_weights(state) or {}
     rounds = (round_name(runner.context.arena_id, runner.context.epoch_index),)
@@ -1993,7 +2010,7 @@ def miner_mode_weights(
     if weights and not config.dry_run:
         sent, reason = submit_weights(
             chain,
-            config.home / "state",
+            state_dir(config.home, config.chain.network, config.chain.netuid),
             weights,
             (round_name(context.arena_id, context.epoch_index),),
             settled=True,

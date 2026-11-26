@@ -1,6 +1,6 @@
 # Serving certified systems
 
-Netuid **576** on Bittensor testnet. An inference operator holds the certified system of one or more arenas on its own GPUs and answers customer requests that the gateway at api.microtensor.cloud routes to it. Serving is a separate role from model mining and validating, with its own hotkey and its own settlement. The network shows every provider and every card at https://www.microtensor.cloud/network/inference.
+Netuid **129** on Bittensor mainnet (finney). An inference operator holds the certified system of one or more arenas on its own GPUs and answers customer requests that the gateway at api.microtensor.cloud routes to it. Serving is a separate role from model mining and validating, with its own hotkey and its own settlement. The network shows every provider and every card at https://www.microtensor.cloud/network/inference.
 
 <img src="assets/serving-overview.png" width="100%" alt="How inference serving fits together: customers reach the gateway, the gateway routes to operator cards over outbound websockets, the coordinator probes through the gateway, validators score from the gateway's records">
 
@@ -34,7 +34,7 @@ The sandbox is a locked down Docker container: no network except the gateway to 
 | Disk | NVMe, 100 GB per held model, under `/var/lib/microtensor` |
 | Software | Docker 27 or newer, NVIDIA Container Toolkit |
 | Network | outbound 443 only; one system downloads once per epoch |
-| Stake | none on testnet; mainnet collateral is announced before launch |
+| Stake | collateral per card, as the network names it; none while the amount is zero |
 
 Host preparation (Docker, the NVIDIA toolkit, `/var/lib/microtensor`) is the same as for a validator: follow step 1 of [validator_setup.md](validator_setup.md) and confirm the CUDA check passes.
 
@@ -46,7 +46,7 @@ docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/walle
   operator register --label "my node" --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
-On testnet that is all: the answer shows `collateral_required_tao: 0` and the hotkey can declare and serve at once. When the answer names an amount, transfer it to the coldkey it names and report the extrinsic:
+While the network asks no collateral, that is all: the answer shows `collateral_required_tao: 0` and the hotkey can declare and serve at once. When the answer names an amount, transfer it to the coldkey it names and report the extrinsic:
 
 ```bash
 docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/wallets \
@@ -180,7 +180,7 @@ Calibration and the per model verifiability table wait for a GPU box. A threshol
 
 Operators are paid from billing, per arena, settled per card. Serving takes no share of miner emission; all of it goes to the arena's specialist model and system pools, at 60% and 40%.
 
-**Revenue share.** When billing opens you receive 80% of the metered billing for the requests you served; Microtensor keeps 20%. A request that fell back to a frontier model is billed to the customer at the frontier list price and passed through; it is outside the 80%. On testnet no customer is charged, so serving earns nothing there.
+**Revenue share.** When billing opens you receive 80% of the metered billing for the requests you served; Microtensor keeps 20%. A request that fell back to a frontier model is billed to the customer at the frontier list price and passed through; it is outside the 80%. Until billing opens no customer is charged, so serving earns nothing yet.
 
 A serving epoch is one UTC day, closed at midnight, so every validator checks the same window from the same receipts. At epoch close every validator reads the published settlement and checks the receipts root, every gateway signature and each card's billed requests. Time spent paused or removed serves no requests and bills nothing.
 

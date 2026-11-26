@@ -60,6 +60,7 @@ from microtensor_subnet.validator.epoch import (
     refresh_weights,
     round_name,
     run_miner_mode_epoch,
+    state_dir,
 )
 from microtensor_subnet.validator.items import ReleaseError
 from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
@@ -696,7 +697,7 @@ def _loop(args: argparse.Namespace) -> int:
     client = open_client(config, wallet)
     _show_logs()
     server = ServerClient(args.server, hotkey_address(wallet), wallet)
-    state = Path(args.home) / "state"
+    state = state_dir(Path(args.home), config.network, config.netuid)
     state.mkdir(parents=True, exist_ok=True)
     if args.once:
         _keep_weights(client, state)

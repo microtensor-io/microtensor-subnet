@@ -23,7 +23,7 @@
   <text x="64" y="142" class="s" font-size="44" font-weight="600" fill="#f2f4f8">Verified small language models</text>
   <text x="64" y="186" class="s" font-size="19" fill="#a7adbb">Specialists trained by an open network, measured on hidden tests,</text>
   <text x="64" y="214" class="s" font-size="19" fill="#a7adbb">and served at a fraction of frontier cost.</text>
-  <text x="64" y="258" class="m" font-size="14" fill="#6f7685">Bittensor testnet · netuid 576</text>
+  <text x="64" y="258" class="m" font-size="14" fill="#6f7685">Bittensor mainnet · netuid 129</text>
 
   <!-- motif: many miners converge on one verified specialist -->
   <circle cx="1010" cy="150" r="120" fill="url(#glow)"/>
