@@ -11,7 +11,7 @@ Netuid **576** on Bittensor testnet.
 | Software | Docker 27 or newer |
 | Network | a stable connection; every epoch the loop downloads each miner's transcript and the epoch bundles |
 | Uptime | the loop must be running at each epoch's Freeze 2 and through the 6 hour grading window that follows |
-| Access | a hotkey registered on netuid 576, a registered X25519 key, relay access granted by the team |
+| Access | a hotkey registered on netuid 576, access granted to it by the team, and after that a registered X25519 key |
 | Spot check GPU | optional: an RTX 4090 for `P1` arenas, the NVIDIA driver and the NVIDIA Container Toolkit, the card free while the loop runs, and about 100 GB more disk for the engine image and the weights waiting for their check |
 
 ## 1. Host preparation
@@ -32,7 +32,7 @@ btcli subnet register --netuid 576 --subtensor.network test --wallet.name <coldk
 
 ## 3. Keys and access
 
-Register the key, then ask the team to grant relay access to your hotkey.
+Ask the team to grant your hotkey access first. The server takes an X25519 key only from a hotkey it has granted, so a key registered before the grant is refused with `this hotkey is not a permitted validator`. Once access is granted, register the key:
 
 ```bash
 docker run --rm -it \
@@ -43,7 +43,7 @@ docker run --rm -it \
   epoch register-key --wallet.name <coldkey> --wallet.hotkey <hotkey> --home /var/lib/microtensor
 ```
 
-Once access is granted:
+Then fetch the relay token:
 
 ```bash
 docker run --rm -it \
