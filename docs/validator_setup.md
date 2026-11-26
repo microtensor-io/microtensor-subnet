@@ -1,6 +1,6 @@
 # Running a Microtensor validator
 
-Netuid **576** on Bittensor testnet.
+Netuid **129** on Bittensor mainnet (finney).
 
 ## Requirements
 
@@ -11,7 +11,7 @@ Netuid **576** on Bittensor testnet.
 | Software | Docker 27 or newer |
 | Network | a stable connection; every epoch the loop downloads each miner's transcript and the epoch bundles |
 | Uptime | the loop must be running at each epoch's Freeze 2 and through the 6 hour grading window that follows |
-| Access | a hotkey registered on netuid 576, access granted to it by the team, and after that a registered X25519 key |
+| Access | a hotkey registered on netuid 129 with a validator permit, access granted to it by the team, and after that a registered X25519 key |
 | Spot check GPU | optional: an RTX 4090 for `P1` arenas, the NVIDIA driver and the NVIDIA Container Toolkit, the card free while the loop runs, and about 100 GB more disk for the engine image and the weights waiting for their check |
 
 ## 1. Host preparation
@@ -27,7 +27,7 @@ sudo mkdir -p /var/lib/microtensor && sudo chown 10001:10001 /var/lib/microtenso
 ## 2. Register the hotkey
 
 ```bash
-btcli subnet register --netuid 576 --subtensor.network test --wallet.name <coldkey> --wallet.hotkey <hotkey>
+btcli subnet register --netuid 129 --subtensor.network finney --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
 ## 3. Keys and access

@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://bittensor.com"><img src="https://img.shields.io/badge/Bittensor-subnet-6d7cff" alt="Bittensor subnet"></a>
-  <a href="https://microtensor.cloud/network"><img src="https://img.shields.io/badge/status-testnet%20576-f5b544" alt="Status: testnet 576"></a>
+  <a href="https://microtensor.cloud/network"><img src="https://img.shields.io/badge/status-mainnet%20SN129-34d399" alt="Status: mainnet SN129"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10%2B-34d399" alt="Python 3.10+"></a>
   <a href="https://www.microtensor.cloud/terms"><img src="https://img.shields.io/badge/license-proprietary-8b93a1" alt="License: proprietary"></a>
 </p>
@@ -228,7 +228,7 @@ pip install -e .
 mt check-model --slm ./slm_repo --profile P1 --arena ctx_compress
 ```
 
-Register on testnet with `btcli subnet register --netuid 576 --subtensor.network test`. The full documentation, including the training playbook, lives at [microtensor.cloud/docs](https://www.microtensor.cloud/docs/certified-inference).
+Register on mainnet with `btcli subnet register --netuid 129 --subtensor.network finney`. The full documentation, including the training playbook, lives at [microtensor.cloud/docs](https://www.microtensor.cloud/docs/certified-inference).
 
 ## 10. Arenas
 
@@ -236,8 +236,8 @@ Arena definitions live in [microtensor-arenas](https://github.com/microtensor-io
 
 | Arena | Task | Input → output | Base model | Status |
 |---|---|---|---|---|
-| [`ctx_compress`](https://www.microtensor.cloud/network/arenas/ctx_compress) | Agent context compression | Coding agent session, up to 29,696 tokens → JSON summary of files, errors, decisions and open tasks, at most 10% of the input | `Qwen/Qwen2.5-Coder-7B-Instruct` | Live on testnet |
-| [`doc_parse`](https://www.microtensor.cloud/network/arenas/doc_parse) | Document page parsing | One page image → Markdown with HTML tables and LaTeX equations | `lightonai/LightOnOCR-2-1B` | Testnet |
+| [`ctx_compress`](https://www.microtensor.cloud/network/arenas/ctx_compress) | Agent context compression | Coding agent session, up to 29,696 tokens → JSON summary of files, errors, decisions and open tasks, at most 10% of the input | `Qwen/Qwen2.5-Coder-7B-Instruct` | Testnet, closed |
+| [`doc_parse`](https://www.microtensor.cloud/network/arenas/doc_parse) | Document page parsing | One page image → Markdown with HTML tables and LaTeX equations | `lightonai/LightOnOCR-2-1B` | Testnet, draft |
 
 ## 11. Repository layout
 
