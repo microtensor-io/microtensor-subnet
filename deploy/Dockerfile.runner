@@ -6,10 +6,15 @@ ENV PYTHONUNBUFFERED=1 \
     MT_HOME=/var/lib/microtensor \
     DOCKER_VERSION=27.3.1
 
+ARG DOCKER_SHA256=9b4f6fe406e50f9085ee474c451e2bb5adb119a03591f467922d3b4e2ddf31d3
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git \
- && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
-    | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
+ && curl -fsSL -o /tmp/docker.tgz \
+    "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
+ && echo "${DOCKER_SHA256}  /tmp/docker.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker \
+ && rm -f /tmp/docker.tgz \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/microtensor

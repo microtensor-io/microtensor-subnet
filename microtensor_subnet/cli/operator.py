@@ -25,7 +25,7 @@ from microtensor_subnet.serving.client import ServerError
 from microtensor_subnet.serving.engines import LLAMA, LLAMA_IMAGE, SGLANG, SGLANG_IMAGE
 from microtensor_subnet.serving.host import HostConfig, HostError, ServingHost, read_catalogue
 from microtensor_subnet.serving.host.config import DEFAULT_GPU_GB, MEM_FRACTION, REVIEW_SECONDS
-from microtensor_subnet.validator.sandbox.docker import Docker
+from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
 
 log = logging.getLogger("microtensor_subnet.cli.operator")
 
@@ -132,26 +132,36 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--shim-url", action="append", default=[], metavar="[GPU=]URL", help=argparse.SUPPRESS
     )
     serve.add_argument(
-        "--no-auto-update",
-        dest="auto_update",
-        action="store_false",
-        help="keep running this image when the network publishes a newer one",
-    )
-    serve.add_argument(
-        "--compose-file",
-        default=os.environ.get("MT_COMPOSE_FILE", "/opt/microtensor/compose.yml"),
-        help="the compose file the updater restarts this service from",
-    )
-    serve.add_argument(
-        "--env-file",
-        default=os.environ.get("MT_ENV_FILE", "/opt/microtensor/.env"),
-        help="the env file the updater pins the new image in",
+        "--auto-update",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("MT_AUTO_UPDATE", "").strip().lower() in {"1", "true", "yes", "on"},
+        help="install agent images the network publishes, once their signature checks out "
+        "(env MT_AUTO_UPDATE; off unless set)",
     )
     _gpu_arguments(serve)
     _policy_arguments(serve)
     _engine_arguments(serve)
     _shared(serve)
     serve.set_defaults(handler=_run)
+
+    moved = inner.add_parser(
+        "apply-update", help="move a compose install to a signed agent image (run by the updater)"
+    )
+    moved.add_argument("--image", required=True, help="the agent image, pinned by digest")
+    moved.add_argument("--container", required=True, help="the agent container being replaced")
+    moved.set_defaults(handler=_apply_update)
+
+
+def _apply_update(args: argparse.Namespace) -> int:
+    try:
+        found = update.apply(Docker(), args.image, args.container)
+    except update.Unsteady as exc:
+        fail(str(exc))
+        return update.UNSTEADY_EXIT
+    except (update.UpdateError, DockerError) as exc:
+        return fail(str(exc))
+    print(f"the agent now runs {args.image} ({found[:19]})")
+    return 0
 
 
 def _gpu_arguments(parser: argparse.ArgumentParser) -> None:
@@ -456,11 +466,7 @@ def _run(args: argparse.Namespace) -> int:
         shim_urls[device] = url
     docker = Docker()
     updater = update.Updater(
-        server=args.server,
-        docker=docker,
-        compose_file=Path(args.compose_file),
-        env_file=Path(args.env_file),
-        enabled=bool(args.auto_update),
+        server=args.server, docker=docker, enabled=bool(args.auto_update), home=str(args.home)
     )
     host = ServingHost(
         config,

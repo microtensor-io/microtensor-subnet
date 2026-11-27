@@ -109,11 +109,28 @@ On start the host dials the gateway, then per card either pulls the model's cert
 
 ## Updates
 
-The agent image is pinned by digest. The network publishes the current image, its digest and the lowest version it still accepts (`GET /v2/agent`).
+Pin the agent image by digest in `.env` as `MT_AGENT_IMAGE`. The network publishes the lowest version it still accepts, and from agent 0.10.0 a signed release, at `GET /v2/agent`.
 
-Automatic updates are paused. The published release names no image, so the agent installs nothing. They come back once every release is signed and the agent checks that signature before it installs anything. Until then the agent does not check who built an image: it only checks that the image it pulled matches the published digest.
+Automatic updates are off unless you set `MT_AUTO_UPDATE=1` in `.env` or pass `--auto-update`, and they work only for the compose install. When they are on, the agent installs a published image only if all of these hold:
 
-To move to a newer image, pull it by digest yourself and set it in `.env` as `MT_AGENT_IMAGE`. Pass `--no-auto-update` to stay on your image whatever is published. A hello from an agent below the minimum version is refused at the gateway with both versions named.
+- it is `ghcr.io/microtensor-io/validator`, pinned by digest, and its `org.opencontainers.image.title` label is `validator`;
+- cosign verifies its signature, made without a key by this repository's `images.yml` workflow on `main`;
+- its version and build number (`org.opencontainers.image.version` and `io.microtensor.build`) are newer than the image the agent already runs.
+
+The agent checks all of this, and pulls the image, before it drains. A short lived helper, started from the image the agent already runs, then writes the new image into `.env` and recreates the service with docker compose. The new agent must stay up for a minute. If it doesn't, the helper puts `.env` back, starts the previous image again and records the refusal under `/var/lib/microtensor/state`, so the same release is not tried twice. Keep every setting in `.env`, because the helper reads nothing else.
+
+Agents before 0.10.0 check no signature and do not read the signed release, so move them by hand.
+
+To check an image yourself, use cosign 3 or newer:
+
+```bash
+cosign verify \
+  --certificate-identity https://github.com/microtensor-io/microtensor-subnet/.github/workflows/images.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/microtensor-io/validator@sha256:<digest>
+```
+
+To move by hand, set the checked image in `.env` as `MT_AGENT_IMAGE` and run `docker compose -f docker-compose.operator.yml up -d` from `deploy/`. A hello from an agent below the minimum version is refused at the gateway with both versions named.
 
 Certified systems run on the engine build their arena was certified with: the catalogue names the engine image and digest per model and the agent refuses any other.
 
@@ -195,5 +212,6 @@ A serving epoch is one UTC day, closed at midnight, so every validator checks th
 - `the docker socket is not reachable`: mount `/var/run/docker.sock` and set `DOCKER_GID`.
 - `the model server did not become ready`: the card is too small for the model or another process holds it; `nvidia-smi` on the host.
 - `this operator does not hold that system`: the gateway routed a model the plan dropped; it recovers at the next review.
-- `agent ... is below the ... this network requires`: the published minimum moved; pull a newer image by digest yourself.
+- `agent ... is below the ... this network requires`: the published minimum moved; check and pin a newer image yourself, or on a 0.10.0 or newer compose install set `MT_AUTO_UPDATE=1`.
+- `not installing agent image ...`: the published image failed one of the checks under Updates; the agent keeps its image and says which check failed. Refusals that will not change are kept in `/var/lib/microtensor/state/update-refused.json`.
 - A card stays `probing`: it is not admitted yet, or its model is not the admitted digest; `mt operator status` shows which.

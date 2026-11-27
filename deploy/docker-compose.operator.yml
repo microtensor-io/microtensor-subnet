@@ -18,12 +18,11 @@ services:
       MT_SGLANG_IMAGE: "${MT_SGLANG_IMAGE:-}"
       MT_LLAMA_IMAGE: "${MT_LLAMA_IMAGE:-}"
       MT_ACCEPT_LICENCES: "${MT_ACCEPT_LICENCES:-}"
+      MT_AUTO_UPDATE: "${MT_AUTO_UPDATE:-0}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/microtensor:/var/lib/microtensor
       - ${MT_WALLET_DIR:-~/.bittensor/wallets}:/wallets:ro
-      - ./docker-compose.operator.yml:/opt/microtensor/compose.yml:ro
-      - ./.env:/opt/microtensor/.env
     deploy:
       resources:
         reservations:

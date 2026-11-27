@@ -21,9 +21,6 @@ dependencies = [
     # hit AttributeError on the first block read. Raise this when the three
     # remaining call sites are adapted and verified against 11.
     "bittensor>=9.0.0,<11",
-    # Declared rather than leaned on through bittensor: this is what checks a
-    # release signature before auto-update runs the code, and a security check
-    # should not rest on another package's dependency list.
     "cryptography>=42",
 ]
 
