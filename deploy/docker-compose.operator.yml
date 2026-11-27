@@ -1,6 +1,6 @@
 services:
   operator:
-    image: ${MT_AGENT_IMAGE:-ghcr.io/microtensor-io/validator:1}
+    image: ${MT_AGENT_IMAGE:-ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0}
     container_name: microtensor-operator
     restart: unless-stopped
     stop_grace_period: 10m
@@ -13,6 +13,7 @@ services:
       MT_WALLET_HOTKEY: "${MT_WALLET_HOTKEY:?set the hotkey name}"
       MT_WALLET_PATH: /wallets
       MT_HOME: /var/lib/microtensor
+      MT_GATEWAY_IMAGE: "${MT_AGENT_IMAGE:-ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0}"
       HF_HOME: /var/lib/microtensor/cache/hf
       HF_TOKEN: "${HF_TOKEN:-}"
       MT_SGLANG_IMAGE: "${MT_SGLANG_IMAGE:-}"

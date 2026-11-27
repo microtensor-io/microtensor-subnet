@@ -1,6 +1,6 @@
 services:
   validator:
-    image: ghcr.io/microtensor-io/validator:1
+    image: ${MT_VALIDATOR_IMAGE:-ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0}
     container_name: microtensor-validator
     restart: unless-stopped
     stop_grace_period: 1h
@@ -13,6 +13,7 @@ services:
       MT_WALLET_HOTKEY: "${MT_WALLET_HOTKEY:?set the hotkey name}"
       MT_WALLET_PATH: /wallets
       MT_HOME: /var/lib/microtensor
+      MT_GATEWAY_IMAGE: "${MT_VALIDATOR_IMAGE:-ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0}"
       MT_SERVER_URL: "${MT_SERVER_URL:-https://api.microtensor.cloud}"
       MT_RELAY_URL: "${MT_RELAY_URL:-https://api.microtensor.cloud}"
       MT_GPUS: "${MT_GPUS:-0}"

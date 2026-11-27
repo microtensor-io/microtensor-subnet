@@ -38,11 +38,13 @@ The sandbox is a locked down Docker container: no network except the gateway to 
 
 Host preparation (Docker, the NVIDIA toolkit, `/var/lib/microtensor`) is the same as for a validator: follow step 1 of [validator_setup.md](validator_setup.md) and confirm the CUDA check passes.
 
+Every command below pins the current signed release by digest, never by a tag someone could move. `deploy/docker-compose.operator.yml` carries the same digest, so pulling this repository is how a new release reaches you. To check a digest yourself, run the cosign command under [Updates](#updates).
+
 ## 1. Register and post collateral
 
 ```bash
 docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator:1 \
+  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 \
   operator register --label "my node" --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
@@ -50,7 +52,7 @@ While the network asks no collateral, that is all: the answer shows `collateral_
 
 ```bash
 docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator:1 \
+  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 \
   operator collateral --reference <extrinsic hash> --block <block> --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
@@ -59,7 +61,8 @@ docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/walle
 <img src="assets/serving-demand.png" width="100%" alt="How capacity follows demand: customers send traffic, the gateway measures load per model, GPUs wanted is published, operators move to it">
 
 ```bash
-docker run --rm --gpus all --entrypoint mt ghcr.io/microtensor-io/validator:1 operator plan
+docker run --rm --gpus all --entrypoint mt \
+  ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 operator plan
 ```
 
 The plan lists the cards it found and reads the public catalogue (`GET /v1/public/inference/catalogue`), then gives each card the model that wants serving most: `wanted` first, then requests in the last hour divided by the cards already holding it, cold models first, held models kept unless something clearly wants serving more. `wanted` is one card when requests arrive and none is online, otherwise the cards needed to bring the model's utilisation above 55% back to 40%. A model whose `vram_gb` exceeds the smallest card is skipped with the reason. `--gpus 0,1` limits the cards; `--gpu-gb` is only read when `nvidia-smi` cannot be asked.
@@ -83,7 +86,7 @@ docker run -d --name mt-operator --gpus all --restart unless-stopped \
   -v ~/.bittensor/wallets:/wallets:ro \
   -v /var/lib/mt-operator:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/microtensor-io/mt-operator:latest --config /data/operator.yaml
+  ghcr.io/microtensor-io/mt-operator@sha256:fc4f6c532a16494437e9bda0dfe1b2b82e3df48f783a6f276dddab42a4ae5e10 --config /data/operator.yaml
 ```
 
 The image is the validator image with `mt operator run` as its entrypoint; flags on the command line override the file. `max_concurrency_per_gpu` is how many requests a card takes at once: the certified image runs that many workers against one engine, so the engine batches them. The compose file keeps working for hosts that prefer it:
