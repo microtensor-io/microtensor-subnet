@@ -53,7 +53,7 @@ docker run --rm -it \
   -v /var/lib/microtensor:/var/lib/microtensor \
   -v "$MT_WALLET_DIR":/wallets:ro \
   -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator:1 \
+  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 \
   epoch register-key --wallet-name "$MT_WALLET_NAME" --wallet-hotkey "$MT_WALLET_HOTKEY" --home /var/lib/microtensor
 ```
 
@@ -64,7 +64,7 @@ docker run --rm -it \
   -v /var/lib/microtensor:/var/lib/microtensor \
   -v "$MT_WALLET_DIR":/wallets:ro \
   -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator:1 \
+  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 \
   epoch relay-token --wallet-name "$MT_WALLET_NAME" --wallet-hotkey "$MT_WALLET_HOTKEY" --home /var/lib/microtensor
 ```
 
@@ -103,10 +103,19 @@ Replays and grades twenty items per pool, posts nothing and sets no weights. Use
 ## Updating
 
 ```bash
-docker compose pull && docker compose -f docker-compose.validator.yml up -d
+git pull && docker compose -f docker-compose.validator.yml up -d
 ```
 
-The validator image is built from `main` and tagged `ghcr.io/microtensor-io/validator:1`. The replayer and llama.cpp images are pulled by the validator itself, by the digests pinned in each arena's definition, never by tag alone.
+The validator image is built from `main` and signed with cosign by the repository's `images.yml` workflow. `docker-compose.validator.yml` pins it by digest, so pulling this repository is what moves you to a new release. The sandbox gateway the validator starts uses the same digest. To run another image, set `MT_VALIDATOR_IMAGE` in `deploy/.env` to `ghcr.io/microtensor-io/validator@sha256:<digest>`, and check it first with cosign 3 or newer:
+
+```bash
+cosign verify \
+  --certificate-identity https://github.com/microtensor-io/microtensor-subnet/.github/workflows/images.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/microtensor-io/validator@sha256:<digest>
+```
+
+The replayer and llama.cpp images are pulled by the validator itself, by the digests pinned in each arena's definition, never by tag alone.
 
 ## Spot checks
 
