@@ -109,7 +109,11 @@ On start the host dials the gateway, then per card either pulls the model's cert
 
 ## Updates
 
-The agent image is pinned by digest. The network publishes the current image, its digest and the lowest version it still accepts (`GET /v2/agent`). Every review the agent compares the image it runs with the published one; when they differ it pulls the published digest, verifies it, writes it to `.env` as `MT_AGENT_IMAGE` and restarts itself from the compose file through a short lived helper container, which is why the compose file and `.env` are mounted into the container. Pass `--no-auto-update` to stay on the image you chose; a hello from an agent below the minimum version is refused at the gateway with both versions named.
+The agent image is pinned by digest. The network publishes the current image, its digest and the lowest version it still accepts (`GET /v2/agent`).
+
+Automatic updates are paused. The published release names no image, so the agent installs nothing. They come back once every release is signed and the agent checks that signature before it installs anything. Until then the agent does not check who built an image: it only checks that the image it pulled matches the published digest.
+
+To move to a newer image, pull it by digest yourself and set it in `.env` as `MT_AGENT_IMAGE`. Pass `--no-auto-update` to stay on your image whatever is published. A hello from an agent below the minimum version is refused at the gateway with both versions named.
 
 Certified systems run on the engine build their arena was certified with: the catalogue names the engine image and digest per model and the agent refuses any other.
 
@@ -191,5 +195,5 @@ A serving epoch is one UTC day, closed at midnight, so every validator checks th
 - `the docker socket is not reachable`: mount `/var/run/docker.sock` and set `DOCKER_GID`.
 - `the model server did not become ready`: the card is too small for the model or another process holds it; `nvidia-smi` on the host.
 - `this operator does not hold that system`: the gateway routed a model the plan dropped; it recovers at the next review.
-- `agent ... is below the ... this network requires`: the published minimum moved; let the updater run, or pull the published digest yourself.
+- `agent ... is below the ... this network requires`: the published minimum moved; pull a newer image by digest yourself.
 - A card stays `probing`: it is not admitted yet, or its model is not the admitted digest; `mt operator status` shows which.
