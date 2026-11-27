@@ -26,7 +26,7 @@ def _ms(name: str, default: float) -> float:
 
 # What is packaged, tagged and compared to decide whether a release is newer.
 # Moves every release, including one that only fixes a bug.
-RELEASE_VERSION: Final[str] = "0.9.0"
+RELEASE_VERSION: Final[str] = "0.10.0"
 
 # What the rules are. Moves only when admission or scoring changes, because
 # validators on different values here measure the same round differently, and
@@ -132,13 +132,3 @@ MAX_MANIFEST_BYTES: Final[int] = 64 * 1024
 ARTIFACT_FETCH_RETRIES: Final[int] = 3
 ARTIFACT_FETCH_TIMEOUT_SECONDS: Final[int] = 900
 ARTIFACT_CACHE_CAP_BYTES: Final[int] = 200 * 1024**3
-
-RELEASE_CHANNELS: Final[tuple[str, ...]] = ("stable", "prerelease")
-# The public half of the release signing key. Public on purpose: a validator
-# needs it to verify a release before installing it, and a key only it holds
-# would verify nothing. The private seed lives in the repository's Actions
-# secrets as MT_RELEASE_SIGNING_SEED and is never committed — anyone holding
-# it can sign a release every auto-updating validator will run.
-RELEASE_SIGNING_KEY: Final[str] = (
-    "0x3d8ea239db66637d762ffedf71ad6c0c487c7bc73d5a50d9dd86a0fbc22bdb16"
-)

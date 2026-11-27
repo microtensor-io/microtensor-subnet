@@ -4,12 +4,30 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     MT_HOME=/var/lib/microtensor \
-    DOCKER_VERSION=27.3.1
+    DOCKER_VERSION=27.3.1 \
+    COMPOSE_VERSION=v2.40.3 \
+    COSIGN_VERSION=v3.1.6
+
+ARG DOCKER_SHA256=9b4f6fe406e50f9085ee474c451e2bb5adb119a03591f467922d3b4e2ddf31d3
+ARG COMPOSE_SHA256=dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372
+ARG COSIGN_SHA256=318a99ade4156a0c4113aa983b46c0a0830fa7896a096c63121ee47b610a94c6
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git \
- && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
-    | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
+ && curl -fsSL -o /tmp/docker.tgz \
+    "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
+ && echo "${DOCKER_SHA256}  /tmp/docker.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker \
+ && rm -f /tmp/docker.tgz \
+ && mkdir -p /usr/local/lib/docker/cli-plugins \
+ && curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+ && echo "${COMPOSE_SHA256}  /usr/local/lib/docker/cli-plugins/docker-compose" | sha256sum -c - \
+ && chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose \
+ && curl -fsSL -o /usr/local/bin/cosign \
+    "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+ && echo "${COSIGN_SHA256}  /usr/local/bin/cosign" | sha256sum -c - \
+ && chmod 0755 /usr/local/bin/cosign \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/microtensor

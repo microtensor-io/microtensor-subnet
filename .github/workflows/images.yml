@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "deploy/**"
+      - "deploy/Dockerfile.*"
+      - "deploy/validator-entrypoint.sh"
       - "microtensor_subnet/**"
       - "pyproject.toml"
       - ".github/workflows/images.yml"
@@ -12,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: images
@@ -20,36 +20,69 @@ concurrency:
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
         image: [sandbox, validator, runner, replayer]
+    env:
+      IMAGE: ghcr.io/microtensor-io/${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - id: release
+        name: Read the release version
+        run: |
+          version="$(sed -n 's/^RELEASE_VERSION: Final\[str\] = "\(.*\)"$/\1/p' microtensor_subnet/core/constants.py)"
+          test -n "${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: deploy/Dockerfile.${{ matrix.image }}
           push: true
-          tags: |
-            ghcr.io/microtensor-io/${{ matrix.image }}:1
-            ghcr.io/microtensor-io/${{ matrix.image }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            io.microtensor.build=${{ github.run_number }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab
+        with:
+          cosign-release: v3.1.6
+      - name: Sign the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "${DIGEST}"
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+      - name: Point the moving tag at the signed digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; }
+          skopeo copy --all --preserve-digests "docker://${IMAGE}@${DIGEST}" "docker://${IMAGE}:1"
+          moved="sha256:$(skopeo inspect --raw "docker://${IMAGE}:1" | sha256sum | cut -d' ' -f1)"
+          test "${moved}" = "${DIGEST}"
       - name: Record the digest
         run: |
           mkdir -p digests
           printf '%s\n' '${{ steps.build.outputs.digest }}' > "digests/${{ matrix.image }}"
-          echo "| ghcr.io/microtensor-io/${{ matrix.image }}:1 | \`${{ steps.build.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+          echo "| ${IMAGE} | \`${{ steps.build.outputs.digest }}\` | ${{ steps.release.outputs.version }} build ${{ github.run_number }} |" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: digest-${{ matrix.image }}
           path: digests/${{ matrix.image }}
@@ -57,35 +90,80 @@ jobs:
 
   operator:
     needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      IMAGE: ghcr.io/microtensor-io/mt-operator
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: digest-validator
+          path: digests
+      - id: base
+        name: Pin the base by digest
+        run: |
+          digest="$(tr -d '[:space:]' < digests/validator)"
+          test -n "${digest}"
+          echo "image=ghcr.io/microtensor-io/validator@${digest}" >> "$GITHUB_OUTPUT"
+      - id: release
+        name: Read the release version
+        run: |
+          version="$(sed -n 's/^RELEASE_VERSION: Final\[str\] = "\(.*\)"$/\1/p' microtensor_subnet/core/constants.py)"
+          test -n "${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: deploy/Dockerfile.mt-operator
           push: true
           build-args: |
-            BASE=ghcr.io/microtensor-io/validator:${{ github.sha }}
-          tags: |
-            ghcr.io/microtensor-io/mt-operator:latest
-            ghcr.io/microtensor-io/mt-operator:${{ github.sha }}
+            BASE=${{ steps.base.outputs.image }}
+          labels: |
+            org.opencontainers.image.title=mt-operator
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            io.microtensor.build=${{ github.run_number }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab
+        with:
+          cosign-release: v3.1.6
+      - name: Sign the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "${DIGEST}"
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+      - name: Point the moving tag at the signed digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; }
+          skopeo copy --all --preserve-digests "docker://${IMAGE}@${DIGEST}" "docker://${IMAGE}:latest"
+          moved="sha256:$(skopeo inspect --raw "docker://${IMAGE}:latest" | sha256sum | cut -d' ' -f1)"
+          test "${moved}" = "${DIGEST}"
       - name: Record the digest
         run: |
-          echo "| ghcr.io/microtensor-io/mt-operator:latest | \`${{ steps.build.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ${IMAGE} | \`${{ steps.build.outputs.digest }}\` | ${{ steps.release.outputs.version }} build ${{ github.run_number }} |" >> "$GITHUB_STEP_SUMMARY"
 
   digests:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: digest-*
           path: digests
@@ -106,7 +184,7 @@ jobs:
                   summary.write(f"| {image} | `{digest}` |\n")
           print(json.dumps(found, indent=2))
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: images.json
           path: images.json

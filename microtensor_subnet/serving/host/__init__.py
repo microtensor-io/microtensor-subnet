@@ -469,10 +469,18 @@ class ServingHost:
             return False
         outcome = self.updater.check()
         if outcome.get("applied"):
-            log.warning("a newer agent image was pulled; this process will be replaced")
+            log.warning("a signed agent image was pulled; this process will be replaced")
             return True
         if outcome.get("reason") and self.updater.last_error:
             log.warning("update check: %s", outcome["reason"])
+        return False
+
+    async def replaced(self, halt: asyncio.Event) -> bool:
+        if self.updater is None:
+            return halt.is_set()
+        if await asyncio.to_thread(self.updater.await_replacement, halt.is_set):
+            return True
+        log.warning("the update did not replace this agent; serving again")
         return False
 
     def settings(self) -> wire.Settings | None:
@@ -539,6 +547,8 @@ class ServingHost:
 
         def stopping() -> None:
             log.warning("stop requested; draining open requests")
+            if self.updater is not None:
+                self.updater.stopping.set()
             self.drain.set()
             halt.set()
 
@@ -559,13 +569,14 @@ class ServingHost:
             while not halt.is_set():
                 pending = await asyncio.to_thread(self.pending_update)
                 if pending is not None:
-                    log.warning("agent image %s is published; draining first", pending.digest[:19])
+                    log.warning(
+                        "signed agent image %s is published; draining first", pending.digest[:19]
+                    )
                     self.drain.set()
                     if dial is not None:
                         await asyncio.gather(dial, return_exceptions=True)
                         dial = None
-                    if await asyncio.to_thread(self.apply_update):
-                        halt.set()
+                    if await asyncio.to_thread(self.apply_update) and await self.replaced(halt):
                         break
                     self.drain = asyncio.Event()
                 try:
