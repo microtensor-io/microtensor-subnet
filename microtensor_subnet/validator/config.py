@@ -14,7 +14,9 @@ VLLM_IMAGE: Final[str] = "vllm/vllm-openai:v0.10.1"
 LLAMA_IMAGE: Final[str] = "ghcr.io/ggml-org/llama.cpp:server"
 SANDBOX_IMAGE: Final[str] = "ghcr.io/microtensor-io/sandbox:1"
 REPLAYER_IMAGE: Final[str] = "ghcr.io/microtensor-io/replayer:1"
-GATEWAY_IMAGE: Final[str] = "ghcr.io/microtensor-io/validator:1"
+GATEWAY_IMAGE: Final[str] = (
+    os.environ.get("MT_GATEWAY_IMAGE", "").strip() or "ghcr.io/microtensor-io/validator:1"
+)
 CUDA_IMAGE: Final[str] = "nvidia/cuda:12.4.1-base-ubuntu22.04"
 PROFILE_ENV: Final[str] = "MT_PROFILE"
 CPU_PROFILE: Final[str] = "C"
