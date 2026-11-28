@@ -212,6 +212,12 @@ class ServerClient:
         )
         return dict(found or {})
 
+    def report_status(self, body: dict[str, Any]) -> dict[str, Any]:
+        found = self._request(
+            "POST", "/v2/validators/status", body, signed=True, timeout=PROGRESS_TIMEOUT_SECONDS
+        )
+        return dict(found or {})
+
     def profiles(self) -> dict[str, Any]:
         found = self._request("GET", "/v2/profiles")
         return dict(found or {})

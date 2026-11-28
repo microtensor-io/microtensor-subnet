@@ -54,6 +54,21 @@ DETAIL_KEYS: Final[dict[str, frozenset[str]]] = {
 FLOOR_KEYS: Final[frozenset[str]] = frozenset(
     {"pass_rate", "lower_bound", "cost_micros", "latency_p95_ms", "escalated", "value", "n", "met"}
 )
+CONDITION_KEYS: Final[tuple[str, ...]] = (
+    "name",
+    "metric",
+    "against",
+    "compare",
+    "threshold",
+    "passed",
+    "measured",
+    "reference",
+    "target",
+    "items",
+    "reason",
+)
+CONDITION_LIMIT: Final[int] = 16
+PARAM_LIMIT: Final[int] = 8
 REFERENCE_KEYS: Final[dict[str, frozenset[str]]] = {
     "slm": frozenset({"pass_rate", "ttft_p95_ms", "tpot_p95_ms", "vram_peak_bytes", "parameters"}),
     "base": frozenset({"name", "pass_rate"}),
@@ -179,6 +194,20 @@ def tidy_reference(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+def tidy_conditions(raw: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for entry in list(raw)[:CONDITION_LIMIT]:
+        row = {key: checklist.clean(entry.get(key)) for key in CONDITION_KEYS}
+        params = entry.get("params")
+        row["params"] = {
+            str(key)[: checklist.TEXT_LIMIT]: checklist.clean(value)
+            for key, value in list(dict(params).items())[:PARAM_LIMIT]
+        } if isinstance(params, Mapping) else {}
+        row["passed"] = bool(row["passed"])
+        found.append(row)
+    return found
+
+
 def _size(live: Mapping[str, Any]) -> int:
     return len(json.dumps(live).encode("utf-8"))
 
@@ -207,6 +236,8 @@ def artifact_body(
     checks: Sequence[Mapping[str, Any]] | None = None,
     reference: Mapping[str, Any] | None = None,
     progress_final: bool | None = None,
+    conditions: Sequence[Mapping[str, Any]] | None = None,
+    spec_digest: str = "",
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "arena_id": context.arena_id,
@@ -232,6 +263,10 @@ def artifact_body(
     body.update(_fit(live))
     if progress_final is not None:
         body["progress_final"] = bool(progress_final)
+    if conditions is not None:
+        body["conditions"] = tidy_conditions(conditions)
+    if spec_digest:
+        body["spec_digest"] = spec_digest
     return body
 
 
