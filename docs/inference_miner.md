@@ -44,7 +44,7 @@ Every command below pins the current signed release by digest, never by a tag so
 
 ```bash
 docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 \
+  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:42a8f5575378fab7f40dd5c5137ad2734a50623ba077862e7669e256bc2d1ec4 \
   operator register --label "my node" --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
@@ -52,7 +52,7 @@ While the network asks no collateral, that is all: the answer shows `collateral_
 
 ```bash
 docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 \
+  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:42a8f5575378fab7f40dd5c5137ad2734a50623ba077862e7669e256bc2d1ec4 \
   operator collateral --reference <extrinsic hash> --block <block> --wallet.name <coldkey> --wallet.hotkey <hotkey>
 ```
 
@@ -62,7 +62,7 @@ docker run --rm -it -v ~/.bittensor/wallets:/wallets:ro -e MT_WALLET_PATH=/walle
 
 ```bash
 docker run --rm --gpus all --entrypoint mt \
-  ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 operator plan
+  ghcr.io/microtensor-io/validator@sha256:42a8f5575378fab7f40dd5c5137ad2734a50623ba077862e7669e256bc2d1ec4 operator plan
 ```
 
 The plan lists the cards it found and reads the public catalogue (`GET /v1/public/inference/catalogue`), then gives each card the model that wants serving most: `wanted` first, then requests in the last hour divided by the cards already holding it, cold models first, held models kept unless something clearly wants serving more. `wanted` is one card when requests arrive and none is online, otherwise the cards needed to bring the model's utilisation above 55% back to 40%. A model whose `vram_gb` exceeds the smallest card is skipped with the reason. `--gpus 0,1` limits the cards; `--gpu-gb` is only read when `nvidia-smi` cannot be asked.

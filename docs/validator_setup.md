@@ -53,7 +53,7 @@ docker run --rm -it \
   -v /var/lib/microtensor:/var/lib/microtensor \
   -v "$MT_WALLET_DIR":/wallets:ro \
   -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 \
+  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:42a8f5575378fab7f40dd5c5137ad2734a50623ba077862e7669e256bc2d1ec4 \
   epoch register-key --wallet-name "$MT_WALLET_NAME" --wallet-hotkey "$MT_WALLET_HOTKEY" --home /var/lib/microtensor
 ```
 
@@ -64,7 +64,7 @@ docker run --rm -it \
   -v /var/lib/microtensor:/var/lib/microtensor \
   -v "$MT_WALLET_DIR":/wallets:ro \
   -e MT_WALLET_PATH=/wallets \
-  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:091b435fedc29af7145554b33c59ff93234723a5f497943a65e08f6708980ff0 \
+  --entrypoint mt ghcr.io/microtensor-io/validator@sha256:42a8f5575378fab7f40dd5c5137ad2734a50623ba077862e7669e256bc2d1ec4 \
   epoch relay-token --wallet-name "$MT_WALLET_NAME" --wallet-hotkey "$MT_WALLET_HOTKEY" --home /var/lib/microtensor
 ```
 
@@ -124,13 +124,17 @@ It prints the release, the build number and the image digest. The validator also
 
 Updates need the compose install from step 4, with every setting in `deploy/.env`, because the helper reads nothing else. To turn them off, set `MT_AUTO_UPDATE=0` in `deploy/.env`. The validator then skips every epoch that names an image other than its own and logs why, so you fall out of consensus until you move by hand.
 
-Releases before 0.11.0 do not update themselves. Move to the first one by hand, once:
+Releases before 0.11.0 do not update themselves. Move to 0.11.0 by hand, once, while your validator is not scoring an epoch. Older releases ignore the stop signal, so stop the container with a short timeout first:
 
 ```bash
-git pull && docker compose -f docker-compose.validator.yml up -d
+cd microtensor-subnet/deploy
+git pull
+docker stop -t 30 microtensor-validator
+docker compose -f docker-compose.validator.yml up -d
+docker exec microtensor-validator mt version
 ```
 
-`docker-compose.validator.yml` pins the release by digest, so pulling this repository moves you to it. The sandbox gateway the validator starts uses the same digest. To run another image by hand, set `MT_VALIDATOR_IMAGE` in `deploy/.env` to `ghcr.io/microtensor-io/validator@sha256:<digest>`, and check it first with cosign 3 or newer:
+If `deploy/.env` sets `MT_VALIDATOR_IMAGE`, delete that line first so the pinned release applies. `docker-compose.validator.yml` pins the release by digest, so pulling this repository moves you to it. The sandbox gateway the validator starts uses the same digest. To run another image by hand, set `MT_VALIDATOR_IMAGE` in `deploy/.env` to `ghcr.io/microtensor-io/validator@sha256:<digest>`, and check it first with cosign 3 or newer:
 
 ```bash
 cosign verify \
