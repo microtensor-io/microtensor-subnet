@@ -120,7 +120,7 @@ Automatic updates are off unless you set `MT_AUTO_UPDATE=1` in `.env` or pass `-
 - cosign verifies its signature, made without a key by this repository's `images.yml` workflow on `main`;
 - its version and build number (`org.opencontainers.image.version` and `io.microtensor.build`) are newer than the image the agent already runs.
 
-The agent checks all of this, and pulls the image, before it drains. A short lived helper, started from the image the agent already runs, then writes the new image into `.env` and recreates the service with docker compose. The new agent must stay up for a minute. If it doesn't, the helper puts `.env` back, starts the previous image again and records the refusal under `/var/lib/microtensor/state`, so the same release is not tried twice. Keep every setting in `.env`, because the helper reads nothing else.
+The agent checks all of this, and pulls the image, before it drains. A short lived helper, started from the image the agent already runs, then writes the new image into `.env` and recreates the service with docker compose. The new agent must stay up for a minute. If it doesn't, the helper puts `.env` back, starts the previous image again and records the refusal under `/var/lib/microtensor/state`, so the same release is not tried twice. Keep every setting in `.env`, because the helper reads nothing else. `.env` may be a link to a file kept elsewhere; from 0.11.0 the helper follows it, and a line it cannot read as text is kept as it is.
 
 Agents before 0.10.0 check no signature and do not read the signed release, so move them by hand.
 

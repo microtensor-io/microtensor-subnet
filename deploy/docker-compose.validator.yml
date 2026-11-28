@@ -19,6 +19,7 @@ services:
       MT_GPUS: "${MT_GPUS:-0}"
       MT_SPOT_CHECK_GPUS: "${MT_SPOT_CHECK_GPUS:-}"
       MT_SLM_MEMORY_SHARE: "${MT_SLM_MEMORY_SHARE:-0}"
+      MT_AUTO_UPDATE: "${MT_AUTO_UPDATE:-1}"
       HF_HOME: /var/lib/microtensor/cache/hf
       HF_HUB_DISABLE_XET: "${HF_HUB_DISABLE_XET:-}"
       HF_TOKEN: "${HF_TOKEN:-}"

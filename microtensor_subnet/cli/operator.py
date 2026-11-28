@@ -149,12 +149,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     moved.add_argument("--image", required=True, help="the agent image, pinned by digest")
     moved.add_argument("--container", required=True, help="the agent container being replaced")
+    moved.add_argument(
+        "--pinned",
+        action="store_true",
+        help="the image is the one an epoch names, so an older signed release is allowed",
+    )
+    moved.add_argument("--env-file", default="", help="the real file behind the project's .env")
     moved.set_defaults(handler=_apply_update)
 
 
 def _apply_update(args: argparse.Namespace) -> int:
     try:
-        found = update.apply(Docker(), args.image, args.container)
+        found = update.apply(
+            Docker(), args.image, args.container, pinned=args.pinned, env_file=args.env_file
+        )
     except update.Unsteady as exc:
         fail(str(exc))
         return update.UNSTEADY_EXIT
