@@ -152,14 +152,14 @@ def hub_weights_sha256(repo: str, revision: str) -> str:
     try:
         info = HfApi().model_info(repo, revision=revision, files_metadata=True)
     except Exception as exc:
-        found = f"the files of {repo} at {revision[:12]} were not listed: {exc}"
-        raise CollectError(found) from exc
+        problem = f"the files of {repo} at {revision[:12]} were not listed: {exc}"
+        raise CollectError(problem) from exc
     files: dict[str, str] = {}
     for sibling in info.siblings or []:
         lfs = getattr(sibling, "lfs", None)
-        found = lfs.get("sha256") if isinstance(lfs, Mapping) else getattr(lfs, "sha256", None)
-        if found:
-            files[str(sibling.rfilename)] = str(found)
+        sha = lfs.get("sha256") if isinstance(lfs, Mapping) else getattr(lfs, "sha256", None)
+        if sha:
+            files[str(sibling.rfilename)] = str(sha)
     if not any(name.endswith(contract.WEIGHT_SUFFIXES) for name in files):
         raise CollectError(f"{repo} at {revision[:12]} lists no weight files")
     return weights_sha256(files)
