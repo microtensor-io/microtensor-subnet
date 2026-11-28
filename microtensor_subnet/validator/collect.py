@@ -18,6 +18,7 @@ from microtensor_subnet.artifact.validate import (
     check_slm_repo,
     load_manifest,
     manifest_sha256,
+    weights_sha256,
 )
 from microtensor_subnet.chain.client import ChainError
 from microtensor_subnet.chain.commitment import (
@@ -141,6 +142,27 @@ def fetched_paths(candidate: Candidate, cache_dir: Path) -> list[Path]:
     if manifest.slm is not None and manifest.slm.repo == commitment.slm_repo:
         found.append(cache_path(manifest.slm.repo, manifest.slm.revision, cache_dir))
     return found
+
+
+def hub_weights_sha256(repo: str, revision: str) -> str:
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as exc:
+        raise CollectError("huggingface_hub is required to read model files") from exc
+    try:
+        info = HfApi().model_info(repo, revision=revision, files_metadata=True)
+    except Exception as exc:
+        problem = f"the files of {repo} at {revision[:12]} were not listed: {exc}"
+        raise CollectError(problem) from exc
+    files: dict[str, str] = {}
+    for sibling in info.siblings or []:
+        lfs = getattr(sibling, "lfs", None)
+        sha = lfs.get("sha256") if isinstance(lfs, Mapping) else getattr(lfs, "sha256", None)
+        if sha:
+            files[str(sibling.rfilename)] = str(sha)
+    if not any(name.endswith(contract.WEIGHT_SUFFIXES) for name in files):
+        raise CollectError(f"{repo} at {revision[:12]} lists no weight files")
+    return weights_sha256(files)
 
 
 def download(repo: str, revision: str, into: Path) -> Path:

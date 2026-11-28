@@ -335,6 +335,7 @@ class RedoRow:
     model: str = ""
     ttft_ms: float = 0.0
     tpot_ms: float = 0.0
+    revision: str = ""
 
 
 @dataclass(slots=True)

@@ -27,8 +27,11 @@ from microtensor_subnet.chain.commitment import CommitmentError, SubmissionCommi
 from microtensor_subnet.chain.epochs import Epoch, epoch_seed
 from microtensor_subnet.chain.wallet import hotkey_address
 from microtensor_subnet.chain.weights import quantise_weights, restrict_to_metagraph
+from microtensor_subnet.core.constants import RELEASE_VERSION
 from microtensor_subnet.core.reports import PoolScore
+from microtensor_subnet.scoring import conditions as arena_conditions
 from microtensor_subnet.scoring import pools
+from microtensor_subnet.scoring.metrics import Evidence, Results
 from microtensor_subnet.scoring.stats import percentile
 from microtensor_subnet.serving.probes import sets as probe_sets
 from microtensor_subnet.validator import (
@@ -80,6 +83,8 @@ WEIGHTS_REFRESH_BLOCKS: Final[int] = 300
 WEIGHTS_LOCK: Final[threading.Lock] = threading.Lock()
 KEPT_AT_CLOSE: Final[frozenset[str]] = frozenset({REPORT_FILE, probe_sets.PROBE_DIR})
 COORDINATOR_WAIT_SECONDS: Final[int] = 5 * 3600
+SPEC_DOCUMENT: Final[str] = "spec"
+NEEDS_UPDATE: Final[str] = "needs_update"
 REFERENCE_POOLS: Final[tuple[str, ...]] = (SLM, SYSTEM)
 GRADED_REFERENCE_POOLS: Final[tuple[str, ...]] = (SYSTEM,)
 
@@ -120,6 +125,7 @@ class MinerRecord:
     over_limits: dict[str, str] = field(default_factory=dict)
     file_issue: str = ""
     memory_bytes: int = 0
+    conditions: list[arena_conditions.Check] = field(default_factory=list)
 
     def wire(self) -> dict[str, Any]:
         return {
@@ -136,6 +142,7 @@ class MinerRecord:
             "posted": self.posted,
             "duplicates": dict(self.duplicates),
             "over_limits": dict(self.over_limits),
+            "conditions": [check.to_dict() for check in self.conditions],
         }
 
 
@@ -386,6 +393,7 @@ MIRROR_KIND: Final[str] = "mirror"
 RECEIPT_ROOT_TAG: Final[str] = "mtrc"
 REPAIR_ROWS: Final[str] = "repair"
 BASE_ROWS: Final[str] = "base"
+BASELINE_ROWS: Final[str] = "baseline"
 MIRROR_COMMIT_BLOCK_KEYS: Final[tuple[str, ...]] = ("commit_block", "block", "committed_at")
 
 
@@ -646,6 +654,11 @@ class MinerModeRunner:
     own: own_checks.OwnChecks | None = None
     spot_sources: dict[str, dict[str, str]] = field(default_factory=dict)
     disagreements: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    conditions: arena_conditions.Conditions | None = None
+    spec_digest: str = ""
+    baseline_slm: SlmRun | None = None
+    baseline_loaded: bool = False
+    baseline_weights: str | None = None
 
     @property
     def evaluation(self) -> dict[str, Any]:
@@ -772,6 +785,7 @@ def set_up_miner_mode(
     wallet: Any,
     hotkey: str,
     reporter: progress.Reporter,
+    conditions: arena_conditions.Conditions | None = None,
 ) -> MinerModeRunner:
     key = items.server_key(client)
     profile = CPU_PROFILE
@@ -843,6 +857,7 @@ def set_up_miner_mode(
         agent=agent,
         base_dirs=base_dirs,
         known_public=provenance.public_checkpoint_hashes(config.home / "public_checkpoints.json"),
+        conditions=conditions,
     )
     coordinator_reference(runner)
     reference_figures_from_labels(runner)
@@ -1344,6 +1359,7 @@ def reference_row(runner: MinerModeRunner, row: Mapping[str, Any]) -> items.Redo
             model=str(row.get("model") or ""),
             ttft_ms=float(row.get("ttft_ms") or 0.0),
             tpot_ms=float(row.get("tpot_ms") or 0.0),
+            revision=str(row.get("revision") or ""),
         )
     except (TypeError, ValueError) as exc:
         log.warning("a reference row for %s was not read: %s", item_id, exc)
@@ -1368,7 +1384,9 @@ def add_reference_rows(runner: MinerModeRunner, found: spotcheck.Coordinated) ->
 
 
 def coordinator_reference(runner: MinerModeRunner) -> None:
-    rows_missing = any(not runner.labels.rows(pool) for pool in REFERENCE_POOLS)
+    rows_missing = any(not runner.labels.rows(pool) for pool in REFERENCE_POOLS) or (
+        separate_baseline(runner) and not baseline_rows(runner)
+    )
     drafts_missing = not runner.inputs.drafts and bool(runner.context.items.items(ESCALATION))
     if not rows_missing and not drafts_missing:
         return
@@ -1545,6 +1563,183 @@ def scoring_reference(runner: MinerModeRunner, held: SlmRun, hotkey: str) -> Slm
         tpot_p95_ms=timing.tpot_p95_ms or held.tpot_p95_ms,
         vram_peak_bytes=timing.vram_peak_bytes or held.vram_peak_bytes,
     )
+
+
+def frozen_definition(client: ServerClient, context: EpochContext) -> tuple[dict[str, Any], str]:
+    document = client.document(context.arena_id, context.epoch_index, SPEC_DOCUMENT)
+    if document is None:
+        return dict(context.definition), ""
+    try:
+        items.verify_document(document, items.server_key(client))
+    except items.ReleaseError as exc:
+        raise EpochError(f"the epoch's spec document is not trusted: {exc}") from exc
+    body = dict(document.get("body") or {})
+    held = body.get("definition")
+    if not isinstance(held, Mapping) or body.get("spec_digest") != arena_conditions.digest(held):
+        raise EpochError("the epoch's spec document does not match its fingerprint")
+    return dict(held), str(body["spec_digest"])
+
+
+def epoch_conditions(
+    client: ServerClient, context: EpochContext
+) -> tuple[arena_conditions.Conditions | None, str]:
+    definition, spec_digest = frozen_definition(client, context)
+    return arena_conditions.load(definition), spec_digest
+
+
+def report_needs_update(
+    config: EpochConfig,
+    client: ServerClient,
+    context: EpochContext,
+    problem: arena_conditions.NeedsUpdate,
+) -> None:
+    log.error(
+        "arena %s epoch %d is not scored here: %s",
+        context.arena_id,
+        context.epoch_index,
+        problem,
+    )
+    if config.dry_run:
+        return
+    try:
+        client.report_status(
+            {
+                "arena_id": context.arena_id,
+                "epoch_index": int(context.epoch_index),
+                "status": NEEDS_UPDATE,
+                "release": RELEASE_VERSION,
+                "unknown_metrics": list(problem.names),
+            }
+        )
+    except ServerError as exc:
+        log.warning("the server did not take the needs update status: %s", exc)
+
+
+def condition_results(
+    slm: SlmRun | None,
+    system: Any = None,
+    *,
+    name: str = "",
+    weights_sha256: str = "",
+    commit_block: int = 0,
+) -> Results:
+    runs: dict[str, tuple[Any, ...]] = {}
+    figures: dict[str, float] = {}
+    if slm is not None:
+        runs[SLM] = tuple(slm.runs)
+        figures = {
+            "pass_rate": slm.pass_rate,
+            "twin_rate": slm.twin_rate,
+            "ttft_p95_ms": slm.ttft_p95_ms,
+            "tpot_p95_ms": slm.tpot_p95_ms,
+            "vram_peak_bytes": float(slm.vram_peak_bytes),
+            "parameters": float(slm.parameters),
+        }
+    for floor in getattr(system, "floors", None) or []:
+        runs[f"{SYSTEM}/{floor.floor:g}"] = tuple(floor.runs)
+    return Results(
+        runs=runs,
+        figures=figures,
+        name=name,
+        weights_sha256=weights_sha256,
+        commit_block=commit_block,
+    )
+
+
+def separate_baseline(runner: MinerModeRunner) -> bool:
+    held = runner.conditions
+    if held is None or not held.needs_baseline:
+        return False
+    references = dict(runner.context.definition.get("references") or {})
+    named = (str(references.get("slm") or ""), str(references.get("slm_revision") or ""))
+    return (held.model, held.revision) != named
+
+
+def baseline_rows(runner: MinerModeRunner) -> list[items.RedoRow]:
+    held = runner.conditions
+    if held is None:
+        return []
+    return [
+        row
+        for row in runner.labels.rows(BASELINE_ROWS).values()
+        if row.model == held.model and row.revision in ("", held.revision)
+    ]
+
+
+def baseline_weights(runner: MinerModeRunner) -> str:
+    held = runner.conditions
+    if held is None:
+        return ""
+    if runner.baseline_weights is None:
+        try:
+            runner.baseline_weights = collect.hub_weights_sha256(held.model, held.revision)
+        except collect.CollectError as exc:
+            log.warning("the baseline's weights hash is unknown: %s", exc)
+            runner.baseline_weights = ""
+    return runner.baseline_weights
+
+
+def baseline_results(runner: MinerModeRunner, hotkey: str) -> Results | None:
+    held = runner.conditions
+    if held is None:
+        return None
+    if not separate_baseline(runner):
+        if runner.reference_slm is None:
+            return None
+        run: SlmRun | None = scoring_reference(runner, runner.reference_slm, hotkey)
+    else:
+        if not runner.baseline_loaded:
+            rows = baseline_rows(runner)
+            runner.baseline_slm = (
+                transcripts.reference_slm_run(runner.context, rows, parameters=0, memory_bytes=0)
+                if rows
+                else None
+            )
+            runner.baseline_loaded = True
+        run = runner.baseline_slm
+    if run is None:
+        return None
+    return condition_results(
+        run, name=f"{held.model}@{held.revision}", weights_sha256=baseline_weights(runner)
+    )
+
+
+def submission_results(runner: MinerModeRunner, record: MinerRecord) -> Results | None:
+    outcome = runner.outcomes.get(record.hotkey)
+    if outcome is None:
+        return None
+    return condition_results(
+        outcome.slm,
+        outcome.system,
+        name=record.hotkey,
+        weights_sha256=record.weights_digest,
+        commit_block=record.commit_block,
+    )
+
+
+def earlier_results(runner: MinerModeRunner, record: MinerRecord) -> tuple[Results, ...]:
+    mine = (record.commit_block, record.hotkey)
+    found = [
+        held
+        for other in runner.records.values()
+        if (other.commit_block, other.hotkey) < mine
+        and (held := submission_results(runner, other)) is not None
+    ]
+    return tuple(sorted(found, key=lambda r: (r.commit_block, r.name)))
+
+
+def apply_conditions(runner: MinerModeRunner, record: MinerRecord) -> None:
+    held = runner.conditions
+    submission = submission_results(runner, record)
+    if held is None or submission is None or not record.scores:
+        return
+    evidence = Evidence(
+        subject=submission,
+        baseline=baseline_results(runner, record.hotkey),
+        earlier=earlier_results(runner, record),
+    )
+    record.conditions = arena_conditions.evaluate(held, evidence)
+    record.scores = arena_conditions.gate(record.scores, record.conditions)
 
 
 def miner_mode_scores(runner: MinerModeRunner, record: MinerRecord) -> list[PoolScore]:
@@ -1729,6 +1924,12 @@ def post_miner_mode_result(runner: MinerModeRunner, record: MinerRecord) -> bool
         checks=record.checks if record.artifact is not None else None,
         reference=miner_mode_figures(runner, record) if record.artifact is not None else None,
         progress_final=True,
+        conditions=(
+            [check.to_dict() for check in record.conditions]
+            if runner.conditions is not None
+            else None
+        ),
+        spec_digest=runner.spec_digest,
     )
     try:
         try:
@@ -2062,6 +2263,17 @@ def miner_mode_report(
         kept = runner.records.get(hotkey)
         row["duplicates"] = dict(kept.duplicates) if kept is not None else {}
         row["over_limits"] = dict(kept.over_limits) if kept is not None else {}
+        if runner.conditions is not None:
+            row["conditions"] = report.tidy_conditions(
+                [check.to_dict() for check in kept.conditions] if kept is not None else []
+            )
+    if runner.spec_digest:
+        body["spec_digest"] = runner.spec_digest
+    if runner.conditions is not None:
+        body["conditions"] = {
+            "digest": runner.conditions.digest,
+            "baseline": runner.conditions.baseline,
+        }
     signed = report.sign_body(body, runner.wallet)
     if runner.config.dry_run:
         log.info("dry run, the epoch report is not posted")
@@ -2102,6 +2314,18 @@ def run_miner_mode_epoch(
         client, config.arena_id, context.epoch_index, enabled=not config.dry_run
     )
     try:
+        held, spec_digest = epoch_conditions(client, context)
+    except arena_conditions.NeedsUpdate as exc:
+        reporter.close()
+        report_needs_update(config, client, context, exc)
+        raise EpochError(str(exc)) from exc
+    except arena_conditions.ConditionError as exc:
+        reporter.close()
+        raise EpochError(f"the arena's conditions cannot be read: {exc}") from exc
+    except BaseException:
+        reporter.close()
+        raise
+    try:
         runner = set_up_miner_mode(
             config,
             client,
@@ -2112,10 +2336,12 @@ def run_miner_mode_epoch(
             wallet=wallet,
             hotkey=hotkey,
             reporter=reporter,
+            conditions=held,
         )
     except BaseException:
         reporter.close()
         raise
+    runner.spec_digest = spec_digest
     failures: dict[str, str] = {}
     try:
         queue = ordered_miners(runner)
@@ -2150,6 +2376,7 @@ def run_miner_mode_epoch(
             if not record.failure:
                 try:
                     record.scores = miner_mode_scores(runner, record)
+                    apply_conditions(runner, record)
                 except Exception as exc:
                     record.failure = f"scoring: {exc}"
                     log.warning("%s scoring failed: %s", miner, exc)
