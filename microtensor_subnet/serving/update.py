@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -38,6 +39,10 @@ HELPER_PREFIX: Final[str] = "mt-operator-update"
 ENTRYPOINT: Final[str] = "/usr/local/bin/mt-entrypoint"
 COMPOSE_SERVICE: Final[str] = "operator"
 IMAGE_KEY: Final[str] = "MT_AGENT_IMAGE"
+IMAGE_KEYS: Final[dict[str, str]] = {"operator": IMAGE_KEY, "validator": "MT_VALIDATOR_IMAGE"}
+PIN_FLOOR: Final[str] = "0.11.0"
+RESOLVE: Final[str] = "import os, sys; print(os.path.realpath(sys.argv[1]))"
+LINK_HOPS: Final[int] = 5
 PROJECT_LABEL: Final[str] = "com.docker.compose.project"
 SERVICE_LABEL: Final[str] = "com.docker.compose.service"
 WORKDIR_LABEL: Final[str] = "com.docker.compose.project.working_dir"
@@ -250,12 +255,39 @@ def newer_than(docker: Docker, reference: str, container: str) -> Build:
     return found
 
 
-def vet(docker: Docker, image: str, digest: str, container: str) -> str:
+def pinnable(docker: Docker, reference: str) -> Build:
+    offered = labels_of_image(docker, reference)
+    title = offered.get(TITLE_LABEL, "")
+    if title != TRUSTED_TITLE:
+        raise UpdateError(f"the named image is titled {title or 'nothing'}, not {TRUSTED_TITLE}")
+    found = build_of(offered)
+    if found.version < parse_version(PIN_FLOOR):
+        raise UpdateError(
+            f"the named image is {found.describe()}, older than {PIN_FLOOR}, the first "
+            "release that updates itself"
+        )
+    return found
+
+
+def vet(docker: Docker, image: str, digest: str, container: str, *, pinned: bool = False) -> str:
     reference = trusted_reference(image, digest)
     verify_signature(reference)
     docker.ensure_digest(TRUSTED_IMAGE, digest)
-    newer_than(docker, reference, container)
+    if pinned:
+        pinnable(docker, reference)
+    else:
+        newer_than(docker, reference, container)
     return reference
+
+
+def image_key(service: str) -> str:
+    found = IMAGE_KEYS.get(service)
+    if found is None:
+        raise UpdateError(
+            f"the {service or 'unnamed'} service cannot be updated; only "
+            f"{', '.join(sorted(IMAGE_KEYS))} can"
+        )
+    return found
 
 
 def own_container_id() -> str:
@@ -334,19 +366,56 @@ def host_settings(docker: Docker, container: str) -> dict[str, str]:
     return settings
 
 
-def with_image(text: str, reference: str) -> str:
-    kept = [line for line in text.splitlines() if not line.startswith(f"{IMAGE_KEY}=")]
-    kept.append(f"{IMAGE_KEY}={reference}")
-    return "".join(line + "\n" for line in kept)
+def with_image(data: bytes | str, reference: str, key: str = IMAGE_KEY) -> bytes:
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    prefix = f"{key}=".encode()
+    kept = [line for line in raw.splitlines() if not line.startswith(prefix)]
+    kept.append(prefix + reference.encode("utf-8"))
+    return b"".join(line + b"\n" for line in kept)
 
 
-def write_in_place(path: Path, text: str) -> None:
-    with path.open("a+", encoding="utf-8") as handle:
+def write_in_place(path: Path, data: bytes | str) -> None:
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    with path.open("a+b") as handle:
         handle.seek(0)
         handle.truncate()
-        handle.write(text)
+        handle.write(raw)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def restore(path: Path, before: bytes, existed: bool) -> None:
+    try:
+        if existed:
+            write_in_place(path, before)
+        else:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.error("%s could not be put back: %s", path, exc)
+
+
+def real_env_file(docker: Docker, image: str, project: Project) -> str:
+    mounts = list(project.folders())
+    found = ""
+    for _ in range(LINK_HOPS):
+        argv = ["run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "python3"]
+        for folder in mounts:
+            argv += ["-v", f"{folder}:{folder}:ro"]
+        argv += [image, "-c", RESOLVE, project.env_file]
+        resolved = docker.runner.run(argv, timeout=60.0).strip()
+        if not resolved.startswith("/"):
+            raise UpdateError(f"{project.env_file} could not be followed to a file")
+        if resolved == found:
+            return resolved
+        found = resolved
+        folder = posixpath.dirname(resolved)
+        if folder in SYSTEM_DIRS:
+            raise UpdateError(
+                f"{project.env_file} leads into {folder}; keep it elsewhere to update"
+            )
+        if folder not in mounts:
+            mounts.append(folder)
+    raise UpdateError(f"{project.env_file} goes through too many links")
 
 
 def refused_file(home: str | Path | None = None) -> Path:
@@ -431,22 +500,31 @@ def apply(
     settle: float = SETTLE_SECONDS,
     steady: float = STEADY_SECONDS,
     home: str | None = None,
+    pinned: bool = False,
+    env_file: str = "",
 ) -> str:
     image, _, digest = reference.partition("@")
-    reference = vet(docker, image, digest, container)
+    reference = vet(docker, image, digest, container, pinned=pinned)
     project = project_of(labels_of(docker, container))
+    if env_file:
+        project = dataclasses.replace(project, env_file=env_file)
+    key = image_key(project.service)
     os.environ.update(host_settings(docker, container))
     wanted = image_id(docker, reference)
     env_path = Path(project.env_file)
-    before = env_path.read_text(encoding="utf-8") if env_path.is_file() else ""
-    write_in_place(env_path, with_image(before, reference))
+    existed = env_path.is_file()
+    try:
+        before = env_path.read_bytes() if existed else b""
+        write_in_place(env_path, with_image(before, reference, key))
+    except OSError as exc:
+        raise UpdateError(f"{env_path} could not be rewritten: {exc}") from exc
     up = project.argv("up", "-d", "--no-deps", project.service)
     try:
         docker.runner.run(up, timeout=COMPOSE_SECONDS)
         settle_on(docker, project, wanted, settle, steady)
     except (DockerError, UpdateError) as exc:
         remember(refused_file(home), digest, f"the new agent did not stay up: {exc}")
-        write_in_place(env_path, before)
+        restore(env_path, before, existed)
         try:
             docker.runner.run(up, timeout=COMPOSE_SECONDS)
         except DockerError as again:
@@ -609,7 +687,7 @@ class Updater:
         log.warning("moving to agent image %s through %s", reference, self.helper)
         return {"applied": True, "digest": digest, "helper": self.helper}
 
-    def restart(self, container: str, reference: str, digest: str) -> str:
+    def restart(self, container: str, reference: str, digest: str, *, pinned: bool = False) -> str:
         if not container:
             raise UpdateError("this agent cannot find its own container")
         project = project_of(labels_of(self.docker, container))
@@ -623,12 +701,56 @@ class Updater:
         state = mount_source(self.docker, container, self.home or HOME)
         if state:
             argv += ["-v", f"{state}:{HOME}"]
-        for folder in project.folders():
+        folders = project.folders()
+        for folder in folders:
             argv += ["-v", f"{folder}:{folder}"]
+        real = real_env_file(self.docker, current, project)
+        if posixpath.dirname(real) not in folders:
+            argv += ["-v", f"{real}:{real}"]
         argv += [current, "operator", "apply-update"]
-        argv += ["--image", reference, "--container", container]
+        argv += ["--image", reference, "--container", container, "--env-file", real]
+        if pinned:
+            argv.append("--pinned")
         self.docker.runner.run(argv, timeout=60.0)
         return helper
+
+    def on(self, digest: str) -> bool:
+        try:
+            return running_digest(self.docker, own_container_id()) == digest
+        except DockerError:
+            return False
+
+    def switch(self, image: str, digest: str) -> str:
+        if not self.enabled:
+            raise UpdateError("automatic updates are off (MT_AUTO_UPDATE=0)")
+        refused = self.refusal(digest)
+        if refused:
+            raise UpdateError(refused)
+        container = own_container_id()
+        try:
+            if not container:
+                raise UpdateError("this validator cannot find its own container")
+            reference = trusted_reference(image, digest)
+            project = project_of(labels_of(self.docker, container))
+            image_key(project.service)
+        except (UpdateError, DockerError) as exc:
+            self.refuse(digest, str(exc), lasting=True)
+            raise UpdateError(str(exc)) from exc
+        try:
+            verify_signature(reference)
+            self.docker.ensure_digest(TRUSTED_IMAGE, digest)
+        except (UpdateError, DockerError) as exc:
+            self.refuse(digest, str(exc), lasting=False)
+            raise UpdateError(str(exc)) from exc
+        try:
+            pinnable(self.docker, reference)
+            self.helper = self.restart(container, reference, digest, pinned=True)
+        except (UpdateError, DockerError) as exc:
+            self.refuse(digest, str(exc), lasting=True)
+            raise UpdateError(str(exc)) from exc
+        self.applied = digest
+        log.warning("moving to validator image %s through %s", reference, self.helper)
+        return self.helper
 
     def await_replacement(
         self, halted: Callable[[], bool], timeout: float = HELPER_SECONDS

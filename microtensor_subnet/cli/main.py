@@ -25,6 +25,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
+    shown = subparsers.add_parser(
+        "version", help="the release, build and image digest this container runs"
+    )
+    shown.set_defaults(handler=_version)
     submit_cmd.register(subparsers)
     epoch_cmd.register(subparsers)
     operator_cmd.register(subparsers)
@@ -32,6 +36,21 @@ def build_parser() -> argparse.ArgumentParser:
     miner_cmd.register(subparsers)
     check_model_cmd.register(subparsers)
     return parser
+
+
+def _version(args: argparse.Namespace) -> int:
+    from microtensor_subnet.serving import update
+    from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
+
+    print(f"microtensor {RELEASE_VERSION} (mechanism {MECHANISM_VERSION})")
+    try:
+        docker = Docker()
+        container = update.own_container_id()
+        print(f"release {epoch_cmd.version_line(docker)}")
+        print(f"image {update.running_digest(docker, container) or 'unknown'}")
+    except (DockerError, OSError) as exc:
+        print(f"image unknown: {exc}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import signal
 import sys
 import threading
 import time
@@ -25,9 +26,9 @@ from microtensor_subnet.cli.common import (
     open_client,
     open_wallet,
 )
-from microtensor_subnet.core.constants import PUBLIC_SERVER_URL
+from microtensor_subnet.core.constants import PUBLIC_SERVER_URL, RELEASE_VERSION
 from microtensor_subnet.core.items import key_registration_message, new_recipient_key
-from microtensor_subnet.serving import engines, markers, probes
+from microtensor_subnet.serving import engines, markers, probes, update
 from microtensor_subnet.serving.client import ServerError as ServingError
 from microtensor_subnet.serving.engines import LLAMA, SGLANG, EngineError
 from microtensor_subnet.serving.host import GENERAL, read_catalogue
@@ -62,13 +63,14 @@ from microtensor_subnet.validator.epoch import (
     run_miner_mode_epoch,
     state_dir,
 )
-from microtensor_subnet.validator.items import ReleaseError
+from microtensor_subnet.validator.items import ReleaseError, server_key, verify_document
 from microtensor_subnet.validator.sandbox.docker import Docker, DockerError
 from microtensor_subnet.validator.transcripts import client_method
 
 log = logging.getLogger("microtensor_subnet.cli.epoch")
 KEY_BLOCKS = 2_600_000
 WEIGHTS_KEEPER_SECONDS = 300.0
+OFF = frozenset({"0", "false", "no", "off"})
 PUBLIC_GATEWAY_URL = "https://api.microtensor.cloud"
 SETUP_ERRORS = (
     VerificationError,
@@ -81,6 +83,33 @@ SETUP_ERRORS = (
     httpx.HTTPError,
     OSError,
 )
+
+
+class Replacing(RuntimeError):
+    pass
+
+
+class Scoring:
+    def __init__(self) -> None:
+        self.busy = False
+        self.asked = False
+
+    def __enter__(self) -> Scoring:
+        self.busy = True
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.busy = False
+
+    def stop(self, *_: object) -> None:
+        if self.busy:
+            self.asked = True
+            log.warning("asked to stop; the epoch being scored finishes first")
+            return
+        raise SystemExit(0)
+
+
+SCORING = Scoring()
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -130,6 +159,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     _add_gpu_sharing(loop)
     _add_profile(loop)
     loop.add_argument("--poll-seconds", type=int, default=600)
+    loop.add_argument(
+        "--auto-update",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("MT_AUTO_UPDATE", "1").strip().lower() not in OFF,
+        help="move to the signed validator image each epoch names before scoring it "
+        "(env MT_AUTO_UPDATE; on unless set to 0)",
+    )
     loop.add_argument("--once", action="store_true", help="one poll, then exit")
     loop.add_argument("--item-limit", type=int, default=0, help="development only")
     loop.add_argument("--dry-run", action="store_true", help="evaluate and report, set no weights")
@@ -633,9 +669,14 @@ def _poll_arena(
     if not _receipts_published(server, arena_id, int(index)):
         log.info("block %d: %s epoch %s waits for the Freeze 2 receipts", block, arena_id, index)
         return
+    if not _on_named_release(args, server, arena_id, int(index)):
+        return
     log.info("epoch %s of %s is open at block %d", index, arena_id, block)
     settings = dataclasses.replace(_settings(args, config), arena_id=arena_id)
-    outcome = run_miner_mode_epoch(settings, chain=client, wallet=wallet, epoch_index=int(index))
+    with SCORING:
+        outcome = run_miner_mode_epoch(
+            settings, chain=client, wallet=wallet, epoch_index=int(index)
+        )
     done.add(int(index))
     record.write_text(json.dumps(sorted(done)), encoding="utf-8")
     log.info(
@@ -646,6 +687,46 @@ def _poll_arena(
         len(outcome.failures),
         len(outcome.weights),
     )
+    if SCORING.asked:
+        raise SystemExit(0)
+
+
+def named_release(server: ServerClient, arena_id: str, index: int) -> tuple[str, str] | None:
+    document = server.document(arena_id, index, "inputs")
+    if document is None:
+        return None
+    verify_document(document, server_key(server))
+    named = dict(document.get("body") or {}).get("validator")
+    if not isinstance(named, dict) or not named.get("digest"):
+        return None
+    return str(named.get("image") or update.TRUSTED_IMAGE), str(named["digest"])
+
+
+def _on_named_release(
+    args: argparse.Namespace, server: ServerClient, arena_id: str, index: int
+) -> bool:
+    updater: update.Updater | None = getattr(args, "updater", None)
+    named = named_release(server, arena_id, index)
+    if named is None or updater is None or updater.on(named[1]):
+        return True
+    image, digest = named
+    try:
+        helper = updater.switch(image, digest)
+    except update.UpdateError as exc:
+        log.warning(
+            "epoch %s of %s names validator %s@%s and this validator runs another build; "
+            "not scored: %s",
+            index,
+            arena_id,
+            image,
+            digest[:19],
+            exc,
+        )
+        return False
+    log.warning(
+        "epoch %s of %s names %s@%s; moving through %s", index, arena_id, image, digest[:19], helper
+    )
+    raise Replacing(helper)
 
 
 def _burn_if_new_round(
@@ -699,6 +780,16 @@ def _loop(args: argparse.Namespace) -> int:
     server = ServerClient(args.server, hotkey_address(wallet), wallet)
     state = state_dir(Path(args.home), config.network, config.netuid)
     state.mkdir(parents=True, exist_ok=True)
+    args.updater = update.Updater(
+        server=args.server, docker=Docker(), enabled=bool(args.auto_update), home=str(args.home)
+    )
+    signal.signal(signal.SIGTERM, SCORING.stop)
+    log.info(
+        "validator %s, image %s, automatic updates %s",
+        version_line(Docker()),
+        running_image(Docker()),
+        "on" if args.auto_update else "off",
+    )
     if args.once:
         _keep_weights(client, state)
     else:
@@ -710,6 +801,29 @@ def _loop(args: argparse.Namespace) -> int:
             _poll(args, config, client, server, wallet, state, client.block())
         except (EpochError, ReleaseError, ChainError, ServerError) as exc:
             log.error("epoch loop: %s", exc)
-        if args.once:
+        except Replacing:
+            args.updater.await_replacement(lambda: False)
+            log.warning("the move to the named validator image did not happen; carrying on")
+        if args.once or SCORING.asked:
             return 0
         time.sleep(max(30, int(args.poll_seconds)))
+
+
+def running_image(docker: Docker) -> str:
+    try:
+        return update.running_digest(docker, update.own_container_id()) or "unknown"
+    except DockerError:
+        return "unknown"
+
+
+def version_line(docker: Docker) -> str:
+    labels: dict[str, str] = {}
+    container = update.own_container_id()
+    image = update.own_image(docker, container)
+    if image:
+        try:
+            labels = update.labels_of_image(docker, image)
+        except DockerError:
+            labels = {}
+    build = labels.get(update.BUILD_LABEL, "")
+    return f"{RELEASE_VERSION}" + (f" build {build}" if build else "")

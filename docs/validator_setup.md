@@ -98,15 +98,39 @@ The loop takes every live arena from the server itself. At each epoch's Freeze 2
 docker compose -f docker-compose.validator.yml run --rm validator epoch run --arena ctx_compress --dry-run --item-limit 20 --home /var/lib/microtensor
 ```
 
-Replays and grades twenty items per pool, posts nothing and sets no weights. Use it after installation and after every image update.
+Replays and grades twenty items per pool, posts nothing and sets no weights. Use it after installation and after any image change you make by hand.
 
-## Updating
+## Updates
+
+Updates are automatic. You do nothing when a release comes out.
+
+Each epoch names the validator image it is scored with, by digest, in its signed `inputs` document. The name is fixed when the epoch's window opens, so a release published later applies from the next epoch. Before scoring an epoch the validator compares its own image with the one the epoch names. When they differ it moves to the named image first, between epochs and never during scoring, and then scores the epoch with it. So every validator scores an epoch with the same code.
+
+Before it moves, the validator checks:
+
+- the image is `ghcr.io/microtensor-io/validator`, titled `validator`;
+- it is signed with cosign by this repository's `images.yml` workflow on `main`;
+- it is release 0.11.0 or newer, the first release that updates itself.
+
+A short lived helper, started from the image you already run, then writes the new digest into `deploy/.env` as `MT_VALIDATOR_IMAGE` and recreates the service with docker compose. `.env` may be a link to a file kept elsewhere; the helper follows it. The new validator must stay up for a minute. If it doesn't, the helper puts `.env` back, starts the previous image again and records the refusal in `/var/lib/microtensor/state/update-refused.json`, and that epoch is not scored by this validator.
+
+To see what you run:
+
+```bash
+docker exec microtensor-validator mt version
+```
+
+It prints the release, the build number and the image digest. The validator also logs them when it starts, with whether automatic updates are on, and logs every move: `epoch N of ARENA names ...; moving through ...`.
+
+Updates need the compose install from step 4, with every setting in `deploy/.env`, because the helper reads nothing else. To turn them off, set `MT_AUTO_UPDATE=0` in `deploy/.env`. The validator then skips every epoch that names an image other than its own and logs why, so you fall out of consensus until you move by hand.
+
+Releases before 0.11.0 do not update themselves. Move to the first one by hand, once:
 
 ```bash
 git pull && docker compose -f docker-compose.validator.yml up -d
 ```
 
-The validator image is built from `main` and signed with cosign by the repository's `images.yml` workflow. `docker-compose.validator.yml` pins it by digest, so pulling this repository is what moves you to a new release. The sandbox gateway the validator starts uses the same digest. To run another image, set `MT_VALIDATOR_IMAGE` in `deploy/.env` to `ghcr.io/microtensor-io/validator@sha256:<digest>`, and check it first with cosign 3 or newer:
+`docker-compose.validator.yml` pins the release by digest, so pulling this repository moves you to it. The sandbox gateway the validator starts uses the same digest. To run another image by hand, set `MT_VALIDATOR_IMAGE` in `deploy/.env` to `ghcr.io/microtensor-io/validator@sha256:<digest>`, and check it first with cosign 3 or newer:
 
 ```bash
 cosign verify \
