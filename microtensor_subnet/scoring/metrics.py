@@ -14,7 +14,7 @@ KINDS: Final[dict[str, tuple[type, ...]]] = {
     "text": (str,),
     "flag": (bool,),
 }
-PROVIDERS: Final[tuple[str, ...]] = ()
+PROVIDERS: Final[tuple[str, ...]] = ("microtensor_subnet.scoring.standard",)
 
 
 class MetricError(ValueError):
@@ -50,6 +50,9 @@ class Param:
 class Results:
     runs: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
     figures: Mapping[str, float] = field(default_factory=dict)
+    name: str = ""
+    weights_sha256: str = ""
+    commit_block: int = 0
 
     def part(self, name: str) -> tuple[Any, ...]:
         return tuple(self.runs.get(name, ()))
@@ -64,14 +67,44 @@ class Results:
                 for name, runs in self.runs.items()
             },
             figures=dict(self.figures),
+            name=self.name,
+            weights_sha256=self.weights_sha256,
+            commit_block=self.commit_block,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class Evidence:
+    subject: Results
+    baseline: Results | None = None
+    earlier: tuple[Results, ...] = ()
+
+    def part(self, name: str) -> tuple[Any, ...]:
+        found = self.subject.part(name)
+        if not found:
+            raise MetricError(f"no scored items in {name}")
+        return found
+
+    def pairs(self, name: str) -> list[tuple[Any, Any]]:
+        if self.baseline is None:
+            raise MetricError("this metric needs the baseline's results")
+        theirs = {str(run.item_id): run for run in self.baseline.part(name)}
+        found = [
+            (run, theirs[str(run.item_id)])
+            for run in self.subject.part(name)
+            if str(run.item_id) in theirs
+        ]
+        if not found:
+            raise MetricError(f"no items in {name} in common with the baseline")
+        return found
 
 
 @dataclass(frozen=True, slots=True)
 class Metric:
     name: str
-    compute: Callable[[Results, Mapping[str, Any]], float]
+    compute: Callable[[Evidence, Mapping[str, Any]], float]
     params: Mapping[str, Param] = field(default_factory=dict)
+    compares: bool = False
     grader: str = ""
 
     def checked(self, given: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -89,8 +122,8 @@ class Metric:
                 found[key] = param.default
         return found
 
-    def value(self, results: Results, params: Mapping[str, Any]) -> float:
-        found = float(self.compute(results, params))
+    def value(self, evidence: Evidence, params: Mapping[str, Any]) -> float:
+        found = float(self.compute(evidence, params))
         if not math.isfinite(found):
             raise MetricError(f"metric {self.name} gave {found}")
         return found

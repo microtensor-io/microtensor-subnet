@@ -59,7 +59,8 @@ CONDITION_KEYS: Final[tuple[str, ...]] = (
     "metric",
     "against",
     "compare",
-    "threshold",
+    "margin",
+    "ratio",
     "passed",
     "measured",
     "reference",
@@ -199,10 +200,20 @@ def tidy_conditions(raw: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     for entry in list(raw)[:CONDITION_LIMIT]:
         row = {key: checklist.clean(entry.get(key)) for key in CONDITION_KEYS}
         params = entry.get("params")
-        row["params"] = {
-            str(key)[: checklist.TEXT_LIMIT]: checklist.clean(value)
-            for key, value in list(dict(params).items())[:PARAM_LIMIT]
-        } if isinstance(params, Mapping) else {}
+        row["params"] = (
+            {
+                str(key)[: checklist.TEXT_LIMIT]: checklist.clean(value)
+                for key, value in list(dict(params).items())[:PARAM_LIMIT]
+            }
+            if isinstance(params, Mapping)
+            else {}
+        )
+        held = entry.get("pools")
+        row["pools"] = (
+            [str(pool)[: checklist.TEXT_LIMIT] for pool in held][: len(pools.POOLS)]
+            if isinstance(held, list | tuple)
+            else None
+        )
         row["passed"] = bool(row["passed"])
         found.append(row)
     return found
